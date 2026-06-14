@@ -508,5 +508,5 @@ export class GoeSteveCard extends LitElement {
   description:
     "Live energy flow, charging mode & battery policy with the brain's reasoning, inline controls and per-RFID energy.",
   preview: true,
-  documentationURL: "https://github.com/chriskrammer/HASteveGoe",
+  documentationURL: "https://github.com/JustChr/HAgoe_steve",
 });
