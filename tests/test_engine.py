@@ -204,6 +204,54 @@ def test_pv_price_falls_back_to_solar_when_expensive():
     assert "Waiting" in d.reason
 
 
+def test_cheap_grid_protect_trims_to_avoid_battery_drain():
+    # Cheap grid wants full 16 A, but the home battery is discharging 3000 W to
+    # cover the car → PROTECT trims that off so the grid carries it instead.
+    # 3000 W / (3·230) ≈ 4.35 A trimmed from 16 A → ~11.65 A.
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.should_charge is True
+    assert d.target_current_a == pytest.approx(16.0 - 3000 / (3 * 230), abs=0.1)
+    assert "battery" in d.reason.lower()
+
+
+def test_cheap_grid_share_also_protects_battery():
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-2000.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.SHARE),
+    )
+    assert d.target_current_a < 16.0
+
+
+def test_cheap_grid_assist_allows_full_power():
+    # ASSIST opts out of the guard — it may back the car from the battery.
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.ASSIST),
+    )
+    assert d.target_current_a == 16.0
+
+
+def test_cheap_grid_ignores_small_battery_noise():
+    # A trickle of discharge (≤ tolerance) should not trim the current.
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-50.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.target_current_a == 16.0
+
+
+def test_cheap_grid_guard_floors_at_min_current():
+    # Huge discharge would trim below the EV floor → clamp to min_current_a.
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-15000.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.target_current_a == 6.0
+
+
 def _forecast(now, prices):
     return [
         PriceSlot(start=now + timedelta(hours=i), price=p)

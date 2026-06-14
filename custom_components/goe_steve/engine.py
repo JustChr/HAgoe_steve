@@ -149,6 +149,11 @@ class Decision:
     reason: str = ""
 
 
+# Ignore tiny home-battery discharge (sensor noise / standby) before the guard
+# below starts trimming grid-charge current.
+_BATTERY_DRAIN_TOLERANCE_W: float = 100.0
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
@@ -200,6 +205,32 @@ def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
             surplus = max(surplus, assist_ceiling)
 
     return surplus
+
+
+def _battery_guard_current(
+    full_current_a: float, phases: int, inp: ChargerInputs, cfg: EngineConfig
+) -> tuple[float, bool]:
+    """Trim grid-charge current so the home battery isn't drained into the car.
+
+    Cheap-grid (and deadline) charging draws from the grid, but on many inverters
+    the home battery will happily discharge to cover part of the car's load —
+    paying a round-trip loss and a battery cycle for energy the cheap grid could
+    supply directly. Under ``PROTECT``/``SHARE`` we therefore subtract whatever the
+    battery is currently discharging from the car's target current, so the grid
+    carries that load and the battery holds its charge. ``ASSIST`` opts out: it
+    exists precisely to back the car from the battery. Re-evaluated every cycle, so
+    it converges as the inverter responds.
+
+    Returns ``(current, guarded)`` where ``guarded`` flags that we trimmed.
+    """
+    if cfg.battery_policy is BatteryPolicy.ASSIST or inp.battery_power_w is None:
+        return full_current_a, False
+    discharge_w = max(0.0, -inp.battery_power_w)
+    if discharge_w <= _BATTERY_DRAIN_TOLERANCE_W:
+        return full_current_a, False
+    trim_a = _power_to_current(discharge_w, max(1, phases), inp.voltage_v)
+    guarded_a = max(cfg.min_current_a, full_current_a - trim_a)
+    return guarded_a, guarded_a < full_current_a
 
 
 def _battery_held(inp: ChargerInputs, cfg: EngineConfig) -> bool:
@@ -392,6 +423,9 @@ def decide(
 
     if cheap_now or deadline_now:
         phases = cfg.max_phases if cfg.auto_phase else inp.phases
+        current, guarded = _battery_guard_current(
+            cfg.max_current_a, phases, inp, cfg
+        )
         if cheap_now:
             reason = (
                 f"Cheap grid {inp.price_now:.3f}/kWh ≤ "
@@ -399,11 +433,13 @@ def decide(
             )
         else:
             reason = deadline_reason
+        if guarded:
+            reason += f" (protecting home battery → {current:.1f} A)"
         want = _apply_charge_dwell(True, inp, cfg, state)
         return Decision(
             control=True,
             should_charge=want,
-            target_current_a=cfg.max_current_a if want else 0.0,
+            target_current_a=current if want else 0.0,
             target_phases=phases,
             reason=reason if want else "Holding off (anti-flap dwell)",
         )
