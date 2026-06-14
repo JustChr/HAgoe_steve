@@ -1,0 +1,13 @@
+{
+  "domain": "goe_steve",
+  "name": "go-e + SteVe Smart Charging",
+  "version": "0.1.0",
+  "documentation": "https://github.com/chriskrammer/HASteveGoe",
+  "issue_tracker": "https://github.com/chriskrammer/HASteveGoe/issues",
+  "codeowners": ["@chriskrammer"],
+  "config_flow": true,
+  "dependencies": [],
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "requirements": []
+}

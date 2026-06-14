@@ -1,0 +1,87 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energiequellen",
+        "description": "Verbinde die Steuerung mit den Sensoren deines Hausenergiesystems. Nur der Netzzähler ist erforderlich — füge PV und Batterie für solar-optimiertes Laden hinzu.",
+        "data": {
+          "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
+          "pv_power_entity": "PV-Erzeugung (optional)",
+          "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
+          "battery_power_entity": "Leistung Hausbatterie (optional)"
+        }
+      },
+      "charger": {
+        "title": "go-e Wallbox",
+        "description": "Wähle die Entitäten, mit denen die Steuerung deine go-e Wallbox liest und steuert.",
+        "data": {
+          "goe_current_number": "Ladestrom-Steuerung (Number)",
+          "goe_connected_entity": "Status: Fahrzeug verbunden",
+          "goe_charging_entity": "Ladestatus (optional)",
+          "goe_power_entity": "Ladeleistung (optional)",
+          "voltage": "Netzspannung pro Phase",
+          "phases": "Phasen für das Laden"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Entitäten neu zuordnen",
+        "description": "Ändere die von der Steuerung verwendeten Sensoren oder Wallbox-Entitäten.",
+        "data": {
+          "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
+          "pv_power_entity": "PV-Erzeugung (optional)",
+          "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
+          "battery_power_entity": "Leistung Hausbatterie (optional)",
+          "goe_current_number": "Ladestrom-Steuerung (Number)",
+          "goe_connected_entity": "Status: Fahrzeug verbunden",
+          "goe_charging_entity": "Ladestatus (optional)",
+          "goe_power_entity": "Ladeleistung (optional)",
+          "voltage": "Netzspannung pro Phase",
+          "phases": "Phasen für das Laden"
+        }
+      }
+    }
+  },
+  "selector": {
+    "phases": {
+      "options": {
+        "1": "Einphasig",
+        "3": "Dreiphasig"
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "charging_mode": {
+        "name": "Lademodus",
+        "state": {
+          "off": "Aus (manuell)",
+          "pv_only": "Nur Solarüberschuss",
+          "pv_minimum": "Solar + Minimum",
+          "fast": "Schnell"
+        }
+      }
+    },
+    "switch": {
+      "smart_control": { "name": "Intelligente Steuerung" }
+    },
+    "number": {
+      "min_current": { "name": "Mindeststrom" },
+      "max_current": { "name": "Maximalstrom" },
+      "battery_reserve_soc": { "name": "Reserve Hausbatterie" },
+      "min_grid_floor": { "name": "Mindest-Ladeleistung" }
+    },
+    "sensor": {
+      "status": { "name": "Status" },
+      "surplus_for_car": { "name": "Überschuss fürs Auto" },
+      "target_current": { "name": "Soll-Strom" }
+    },
+    "binary_sensor": {
+      "controlling": { "name": "Steuerung aktiv" },
+      "charging_requested": { "name": "Laden angefordert" }
+    }
+  }
+}

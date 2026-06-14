@@ -1,0 +1,87 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy sources",
+        "description": "Point the brain at the sensors that describe your home's energy. Only the grid meter is required — add PV and battery for solar-aware charging.",
+        "data": {
+          "grid_power_entity": "Grid power (+ import / − export)",
+          "pv_power_entity": "PV production (optional)",
+          "battery_soc_entity": "Home battery charge level (optional)",
+          "battery_power_entity": "Home battery power (optional)"
+        }
+      },
+      "charger": {
+        "title": "go-e charger",
+        "description": "Select the entities the brain uses to read and control your go-e wallbox.",
+        "data": {
+          "goe_current_number": "Charging current control (number)",
+          "goe_connected_entity": "Car connected status",
+          "goe_charging_entity": "Charging status (optional)",
+          "goe_power_entity": "Charging power (optional)",
+          "voltage": "Grid voltage per phase",
+          "phases": "Phases used for charging"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Re-map entities",
+        "description": "Change any of the sensors or charger entities the brain uses.",
+        "data": {
+          "grid_power_entity": "Grid power (+ import / − export)",
+          "pv_power_entity": "PV production (optional)",
+          "battery_soc_entity": "Home battery charge level (optional)",
+          "battery_power_entity": "Home battery power (optional)",
+          "goe_current_number": "Charging current control (number)",
+          "goe_connected_entity": "Car connected status",
+          "goe_charging_entity": "Charging status (optional)",
+          "goe_power_entity": "Charging power (optional)",
+          "voltage": "Grid voltage per phase",
+          "phases": "Phases used for charging"
+        }
+      }
+    }
+  },
+  "selector": {
+    "phases": {
+      "options": {
+        "1": "Single phase",
+        "3": "Three phase"
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "charging_mode": {
+        "name": "Charging mode",
+        "state": {
+          "off": "Off (manual)",
+          "pv_only": "Solar surplus only",
+          "pv_minimum": "Solar + minimum",
+          "fast": "Fast"
+        }
+      }
+    },
+    "switch": {
+      "smart_control": { "name": "Smart control" }
+    },
+    "number": {
+      "min_current": { "name": "Minimum current" },
+      "max_current": { "name": "Maximum current" },
+      "battery_reserve_soc": { "name": "Home battery reserve" },
+      "min_grid_floor": { "name": "Minimum charge power" }
+    },
+    "sensor": {
+      "status": { "name": "Status" },
+      "surplus_for_car": { "name": "Surplus for car" },
+      "target_current": { "name": "Target current" }
+    },
+    "binary_sensor": {
+      "controlling": { "name": "Brain controlling" },
+      "charging_requested": { "name": "Charging requested" }
+    }
+  }
+}
