@@ -6,7 +6,7 @@
   "issue_tracker": "https://github.com/JustChr/HAgoe_steve/issues",
   "codeowners": ["@JustChr"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http", "frontend"],
   "integration_type": "hub",
   "iot_class": "calculated",
   "requirements": []
