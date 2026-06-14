@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_BATTERY_POWER,
@@ -16,20 +19,33 @@ from .const import (
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
+    CONF_GOE_PHASE,
     CONF_GOE_POWER,
     CONF_GRID_POWER,
+    CONF_PRICE,
+    CONF_PRICE_FORECAST_ATTR,
     CONF_PV_POWER,
     CONF_PHASES,
     CONF_VOLTAGE,
+    DEFAULT_AUTO_PHASE,
+    DEFAULT_BATTERY_FLOOR_SOC,
     DEFAULT_BATTERY_RESERVE_SOC,
+    DEFAULT_CHEAP_PRICE,
     DEFAULT_MAX_CURRENT,
     DEFAULT_MIN_CURRENT,
     DEFAULT_MIN_GRID_FLOOR_W,
     DEFAULT_PHASES,
+    DEFAULT_PRICE_FORECAST_ATTR,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_TARGET_ENERGY_KWH,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    MIN_OFF_DWELL_S,
+    MIN_ON_DWELL_S,
+    MIN_UPDATE_INTERVAL_S,
     MIN_WRITE_DELTA_A,
+    PHASE_DWELL_S,
+    SMOOTHING_SAMPLES,
 )
 from .engine import (
     BatteryPolicy,
@@ -37,6 +53,8 @@ from .engine import (
     ChargingMode,
     Decision,
     EngineConfig,
+    EngineState,
+    PriceSlot,
     decide,
 )
 
@@ -62,6 +80,11 @@ class RuntimeSettings:
     max_current_a: float = DEFAULT_MAX_CURRENT
     battery_reserve_soc: float = DEFAULT_BATTERY_RESERVE_SOC
     min_grid_floor_w: float = DEFAULT_MIN_GRID_FLOOR_W
+    cheap_price: float = DEFAULT_CHEAP_PRICE
+    battery_floor_soc: float = DEFAULT_BATTERY_FLOOR_SOC
+    target_energy_kwh: float = DEFAULT_TARGET_ENERGY_KWH
+    departure: datetime | None = None
+    auto_phase: bool = DEFAULT_AUTO_PHASE
 
 
 class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
@@ -81,7 +104,13 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self.settings = RuntimeSettings()
         self._voltage = float(self._cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
         self._phases = int(self._cfg.get(CONF_PHASES, DEFAULT_PHASES))
+        self._state = EngineState(phases=self._phases)
         self._last_written_a: float | None = None
+        self._last_written_phases: int | None = None
+        self._last_write_at: datetime | None = None
+        # Rolling-average buffers for input smoothing.
+        self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
+        self._grid_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
 
     # --- State reading helpers --------------------------------------------------
     def _get_float(self, conf_key: str) -> float | None:
@@ -114,27 +143,62 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         except (ValueError, TypeError):
             return None
 
+    def _read_price(self) -> tuple[float | None, list[PriceSlot] | None]:
+        """Read the current price and (best-effort) the forecast list."""
+        entity_id = self._cfg.get(CONF_PRICE)
+        if not entity_id:
+            return None, None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
+            return None, None
+        try:
+            price_now: float | None = float(state.state)
+        except (ValueError, TypeError):
+            price_now = None
+
+        attr = self._cfg.get(CONF_PRICE_FORECAST_ATTR, DEFAULT_PRICE_FORECAST_ATTR)
+        forecast: list[PriceSlot] = []
+        # Concatenate today + tomorrow when the provider splits them.
+        for candidate in (attr, "raw_tomorrow", "forecast"):
+            forecast.extend(_parse_forecast(state.attributes.get(candidate)))
+        forecast = _dedupe_slots(forecast)
+        return price_now, (forecast or None)
+
+    @staticmethod
+    def _smooth(buffer: deque[float], value: float | None) -> float | None:
+        if value is None:
+            return None
+        buffer.append(value)
+        return sum(buffer) / len(buffer)
+
     # --- The regulation loop ----------------------------------------------------
     async def _async_update_data(self) -> Decision:
         connected = self._get_bool(CONF_GOE_CONNECTED)
-        grid = self._get_float(CONF_GRID_POWER)
+        grid_raw = self._get_float(CONF_GRID_POWER)
 
         # Required signals missing/stale → keep hands off rather than guess.
-        if connected is None or grid is None:
+        if connected is None or grid_raw is None:
             return Decision(
                 control=False,
                 reason="Waiting for charger / grid data",
             )
 
+        grid = self._smooth(self._grid_samples, grid_raw)
+        pv = self._smooth(self._pv_samples, self._get_float(CONF_PV_POWER))
+        price_now, forecast = self._read_price()
+
         inputs = ChargerInputs(
             car_connected=connected,
             car_actual_power_w=self._get_float(CONF_GOE_POWER) or 0.0,
-            phases=self._phases,
+            phases=self._state.phases or self._phases,
             voltage_v=self._voltage,
-            grid_power_w=grid,
-            pv_power_w=self._get_float(CONF_PV_POWER),
+            grid_power_w=grid if grid is not None else grid_raw,
+            pv_power_w=pv,
             battery_soc=self._get_float(CONF_BATTERY_SOC),
             battery_power_w=self._get_float(CONF_BATTERY_POWER),
+            price_now=price_now,
+            price_forecast=forecast,
+            now=dt_util.utcnow(),
         )
         cfg = EngineConfig(
             mode=self.settings.mode,
@@ -144,24 +208,54 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             max_current_a=self.settings.max_current_a,
             battery_reserve_soc=self.settings.battery_reserve_soc,
             min_grid_floor_w=self.settings.min_grid_floor_w,
+            cheap_price=self.settings.cheap_price,
+            battery_floor_soc=self.settings.battery_floor_soc,
+            target_energy_kwh=self.settings.target_energy_kwh,
+            departure=self.settings.departure,
+            auto_phase=self.settings.auto_phase,
+            max_phases=max(self._phases, 3),
+            phase_dwell_s=PHASE_DWELL_S,
+            min_on_dwell_s=MIN_ON_DWELL_S,
+            min_off_dwell_s=MIN_OFF_DWELL_S,
         )
 
-        decision = decide(inputs, cfg)
+        decision = decide(inputs, cfg, self._state)
         await self._apply(decision)
         return decision
 
     async def _apply(self, decision: Decision) -> None:
-        """Write the target current to the go-e, avoiding redundant writes."""
+        """Write target current/phases to the go-e, avoiding redundant writes."""
         if not decision.control:
             self._last_written_a = None  # we relinquished control
             return
 
+        now = dt_util.utcnow()
+        target = round(decision.target_current_a) if decision.should_charge else 0
+
+        # Rate-limit writes, but always allow a stop and a phase change through.
+        phase_change = (
+            self.settings.auto_phase
+            and self._last_written_phases is not None
+            and decision.target_phases != self._last_written_phases
+        )
+        if (
+            target != 0
+            and self._last_write_at is not None
+            and (now - self._last_write_at).total_seconds() < MIN_UPDATE_INTERVAL_S
+            and not phase_change
+        ):
+            return
+
+        await self._write_phases(decision)
+
         current_entity = self._cfg.get(CONF_GOE_CURRENT)
         if not current_entity:
             return
-
-        target = round(decision.target_current_a) if decision.should_charge else 0
-        if self._last_written_a is not None and abs(target - self._last_written_a) < MIN_WRITE_DELTA_A:
+        if (
+            self._last_written_a is not None
+            and abs(target - self._last_written_a) < MIN_WRITE_DELTA_A
+            and not phase_change
+        ):
             return
 
         try:
@@ -172,9 +266,85 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                 blocking=False,
             )
             self._last_written_a = float(target)
+            self._last_write_at = now
         except Exception as err:  # noqa: BLE001 - never let a write break the loop
             _LOGGER.warning("Failed to set charger current via %s: %s", current_entity, err)
+
+    async def _write_phases(self, decision: Decision) -> None:
+        """Write the phase count when auto-phase is on and an entity is mapped."""
+        if not self.settings.auto_phase:
+            return
+        phase_entity = self._cfg.get(CONF_GOE_PHASE)
+        if not phase_entity:
+            return
+        if self._last_written_phases == decision.target_phases:
+            return
+
+        domain = phase_entity.split(".", 1)[0]
+        value: object = decision.target_phases
+        service = "set_value"
+        data: dict[str, object] = {"entity_id": phase_entity, "value": value}
+        if domain == "select":
+            service = "select_option"
+            data = {"entity_id": phase_entity, "option": str(decision.target_phases)}
+
+        try:
+            await self.hass.services.async_call(domain, service, data, blocking=False)
+            self._last_written_phases = decision.target_phases
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to set phases via %s: %s", phase_entity, err)
 
     def request_apply(self) -> None:
         """Ask for an immediate re-evaluation after a settings change."""
         self.hass.async_create_task(self.async_request_refresh())
+
+
+def _parse_forecast(raw: object) -> list[PriceSlot]:
+    """Tolerantly parse a provider forecast list into :class:`PriceSlot`.
+
+    Accepts the common shapes: a list of dicts with ``start``/``value`` (Nordpool,
+    EnergyZero, EPEX) or ``start_time``/``price``/``total`` keys; ISO strings are
+    parsed and slots without a usable timestamp are skipped.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    slots: list[PriceSlot] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        start = (
+            item.get("start")
+            or item.get("start_time")
+            or item.get("from")
+            or item.get("hour")
+        )
+        price = item.get("value")
+        if price is None:
+            price = item.get("price")
+        if price is None:
+            price = item.get("total")
+        if start is None or price is None:
+            continue
+        if isinstance(start, str):
+            start = dt_util.parse_datetime(start)
+        if not isinstance(start, datetime):
+            continue
+        if start.tzinfo is None:  # assume HA local time for naive timestamps
+            start = start.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        try:
+            slots.append(PriceSlot(start=dt_util.as_utc(start), price=float(price)))
+        except (ValueError, TypeError):
+            continue
+    return slots
+
+
+def _dedupe_slots(slots: list[PriceSlot]) -> list[PriceSlot]:
+    """Sort by start time and drop duplicate timestamps (today/tomorrow overlap)."""
+    seen: set[datetime] = set()
+    out: list[PriceSlot] = []
+    for slot in sorted(slots, key=lambda s: s.start):
+        if slot.start in seen:
+            continue
+        seen.add(slot.start)
+        out.append(slot)
+    return out

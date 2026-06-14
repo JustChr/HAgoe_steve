@@ -9,17 +9,24 @@ concept document; this file is the actionable to-do list.
   EN/DE translations, 12 passing engine tests. Modes: Off / Solar surplus / Solar+minimum / Fast;
   battery **Protect** policy.
 
-## Phase 2 — Smart modes
-- [ ] `PV + price` mode: solar normally, full/high power when price < configurable threshold.
-- [ ] `Price-optimized` mode: cheapest-hours charging to a target energy by a departure deadline.
-- [ ] `Combined` mode: surplus + opportunistic cheap-grid + deadline, respecting battery policy.
-- [ ] Departure `datetime` + target-energy `number` entities.
-- [ ] Provider-agnostic price input wiring (config: price/forecast entity).
-- [ ] **Automatic 1↔3 phase switching** with hysteresis + dwell timer (avoid contactor flapping).
-- [ ] Battery policies **Share** and **Assist** (Assist = battery may discharge into the car,
-      down to a floor SoC; opt-in, optionally price/deadline-gated). Add battery-policy `select`,
-      battery-floor-SoC + cheap-price-threshold `number`s.
-- [ ] Input smoothing: rolling average on PV/grid, deadband, min update interval, min on/off dwell.
+## Phase 2 — Smart modes ✅ (done, on `main`)
+- [x] `PV + price` mode: solar normally, full/high power when price < configurable threshold.
+- [x] `Price-optimized` mode: cheapest-hours charging to a target energy by a departure deadline
+      (greedy re-planned each cycle from the forecast).
+- [x] `Combined` mode: surplus + opportunistic cheap-grid + deadline, respecting battery policy.
+- [x] Departure `datetime` + target-energy `number` entities.
+- [x] Provider-agnostic price input wiring (config: price entity + forecast attribute; tolerant
+      parsing of Nordpool/EPEX/EnergyZero-style `raw_today`/`raw_tomorrow` lists).
+- [x] **Automatic 1↔3 phase switching** with hysteresis + dwell timer (avoid contactor flapping).
+      Engine computes `target_phases`; coordinator writes a mapped phase `number`/`select`.
+- [x] Battery policies **Share** and **Assist** (Assist = battery may discharge into the car,
+      down to a floor SoC). Battery-policy `select`, battery-floor-SoC + cheap-price-threshold
+      `number`s, auto-phase `switch`.
+- [x] Input smoothing: rolling average on PV/grid, deadband, min update interval, min on/off dwell.
+
+  Follow-ups worth revisiting: Assist sizing is coarse (lifts availability to max current rather
+  than tracking real battery discharge headroom); price planning does not yet subtract energy
+  already delivered (no car-SoC signal); deadline planning assumes hourly-ish forecast slots.
 
 ## Phase 3 — SteVe linkage (via SteVe API)
 - [ ] Read transactions/kWh → sensors (last session, active transaction, **per-RFID/user energy**).

@@ -26,13 +26,17 @@ from .const import (
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
+    CONF_GOE_PHASE,
     CONF_GOE_POWER,
     CONF_GRID_POWER,
     CONF_PHASES,
+    CONF_PRICE,
+    CONF_PRICE_FORECAST_ATTR,
     CONF_PV_POWER,
     CONF_VOLTAGE,
     DEFAULT_NAME,
     DEFAULT_PHASES,
+    DEFAULT_PRICE_FORECAST_ATTR,
     DEFAULT_VOLTAGE,
     DOMAIN,
 )
@@ -47,6 +51,13 @@ _BATTERY_SENSOR = selector.EntitySelector(
 _NUMBER_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="number")
 )
+_PHASE_ENTITY = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=["number", "select"])
+)
+_PRICE_ENTITY = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=["sensor", "input_number"])
+)
+_TEXT = selector.TextSelector()
 _STATUS_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
 )
@@ -58,6 +69,10 @@ def _charger_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_GOE_CURRENT, default=defaults.get(CONF_GOE_CURRENT)
             ): _NUMBER_ENTITY,
+            vol.Optional(
+                CONF_GOE_PHASE,
+                description={"suggested_value": defaults.get(CONF_GOE_PHASE)},
+            ): _PHASE_ENTITY,
             vol.Required(
                 CONF_GOE_CONNECTED, default=defaults.get(CONF_GOE_CONNECTED)
             ): _STATUS_ENTITY,
@@ -105,6 +120,18 @@ def _energy_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_BATTERY_POWER,
                 description={"suggested_value": defaults.get(CONF_BATTERY_POWER)},
             ): _OPTIONAL_POWER_SENSOR,
+            vol.Optional(
+                CONF_PRICE,
+                description={"suggested_value": defaults.get(CONF_PRICE)},
+            ): _PRICE_ENTITY,
+            vol.Optional(
+                CONF_PRICE_FORECAST_ATTR,
+                description={
+                    "suggested_value": defaults.get(
+                        CONF_PRICE_FORECAST_ATTR, DEFAULT_PRICE_FORECAST_ATTR
+                    )
+                },
+            ): _TEXT,
         }
     )
 

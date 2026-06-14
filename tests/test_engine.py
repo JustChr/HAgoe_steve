@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -29,8 +30,10 @@ _spec.loader.exec_module(engine)
 
 ChargerInputs = engine.ChargerInputs
 EngineConfig = engine.EngineConfig
+EngineState = engine.EngineState
 ChargingMode = engine.ChargingMode
 BatteryPolicy = engine.BatteryPolicy
+PriceSlot = engine.PriceSlot
 decide = engine.decide
 
 
@@ -133,7 +136,188 @@ def test_pv_minimum_tops_up_from_grid():
     assert d.target_current_a >= 6.0
 
 
-def test_unimplemented_mode_is_safe():
-    d = decide(_inputs(grid_power_w=-6000.0), _cfg(mode=ChargingMode.COMBINED))
-    assert d.control is False
-    assert "Phase 2" in d.reason
+# --- Phase 2: battery policies --------------------------------------------------
+
+def test_share_reclaims_battery_charge_power():
+    # Grid balanced, but 5000 W is flowing into the home battery → Share lets the
+    # car take it (above the 4140 W three-phase floor) instead of holding.
+    d = decide(
+        _inputs(grid_power_w=0.0, battery_power_w=5000.0, battery_soc=50.0),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.SHARE),
+    )
+    assert d.should_charge is True
+    assert d.surplus_w == pytest.approx(5000.0, abs=1.0)
+
+
+def test_share_does_not_hold_below_reserve():
+    d = decide(
+        _inputs(grid_power_w=-6000.0, battery_soc=30.0),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.SHARE),
+    )
+    assert d.should_charge is True
+
+
+def test_assist_charges_from_battery_above_floor():
+    # No surplus at all, but battery is well above the floor → Assist still charges.
+    d = decide(
+        _inputs(grid_power_w=0.0, battery_soc=60.0),
+        _cfg(
+            mode=ChargingMode.PV_ONLY,
+            battery_policy=BatteryPolicy.ASSIST,
+            battery_floor_soc=20.0,
+        ),
+    )
+    assert d.should_charge is True
+
+
+def test_assist_stops_at_floor():
+    d = decide(
+        _inputs(grid_power_w=0.0, battery_soc=15.0),
+        _cfg(
+            mode=ChargingMode.PV_ONLY,
+            battery_policy=BatteryPolicy.ASSIST,
+            battery_floor_soc=20.0,
+        ),
+    )
+    assert d.should_charge is False
+
+
+# --- Phase 2: price modes -------------------------------------------------------
+
+def test_pv_price_full_power_when_cheap():
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.08),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15),
+    )
+    assert d.should_charge is True
+    assert d.target_current_a == 16.0
+    assert "Cheap grid" in d.reason
+
+
+def test_pv_price_falls_back_to_solar_when_expensive():
+    # Expensive grid → behaves like PV-only; tiny surplus means it waits.
+    d = decide(
+        _inputs(grid_power_w=-500.0, price_now=0.40),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15),
+    )
+    assert d.should_charge is False
+    assert "Waiting" in d.reason
+
+
+def _forecast(now, prices):
+    return [
+        PriceSlot(start=now + timedelta(hours=i), price=p)
+        for i, p in enumerate(prices)
+    ]
+
+
+def test_price_mode_charges_in_cheapest_slot():
+    now = datetime(2026, 6, 14, 20, 0, tzinfo=timezone.utc)
+    # Cheapest hour is right now (0.05); target needs only ~1 slot.
+    fc = _forecast(now, [0.05, 0.30, 0.30, 0.30])
+    d = decide(
+        _inputs(now=now, price_forecast=fc, price_now=0.05),
+        _cfg(
+            mode=ChargingMode.PRICE,
+            target_energy_kwh=5.0,
+            departure=now + timedelta(hours=4),
+            max_current_a=16.0,
+        ),
+    )
+    assert d.should_charge is True
+    assert "Cheap-hours" in d.reason
+
+
+def test_price_mode_waits_in_expensive_slot():
+    now = datetime(2026, 6, 14, 20, 0, tzinfo=timezone.utc)
+    # Now is the most expensive hour; a cheaper one comes later.
+    fc = _forecast(now, [0.40, 0.05, 0.10, 0.10])
+    d = decide(
+        _inputs(now=now, price_forecast=fc, price_now=0.40),
+        _cfg(
+            mode=ChargingMode.PRICE,
+            target_energy_kwh=5.0,
+            departure=now + timedelta(hours=4),
+        ),
+    )
+    assert d.should_charge is False
+
+
+def test_combined_uses_cheap_grid():
+    now = datetime(2026, 6, 14, 20, 0, tzinfo=timezone.utc)
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, now=now),
+        _cfg(mode=ChargingMode.COMBINED, cheap_price=0.15),
+    )
+    assert d.should_charge is True
+    assert d.target_current_a == 16.0
+
+
+# --- Phase 2: phase switching ---------------------------------------------------
+
+def test_auto_phase_drops_to_single_on_small_surplus():
+    state = EngineState(phases=3)
+    now = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+    # ~2500 W: below 1-phase max (16 A·230 = 3680 W) → switch down to 1 phase.
+    d = decide(
+        _inputs(grid_power_w=-2500.0, now=now),
+        _cfg(mode=ChargingMode.PV_ONLY, auto_phase=True, max_phases=3),
+        state,
+    )
+    assert d.target_phases == 1
+    assert d.should_charge is True
+
+
+def test_auto_phase_dwell_blocks_rapid_switch():
+    now = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+    state = EngineState(phases=1, phase_changed_at=now)
+    # Big surplus would warrant 3 phases, but the dwell timer hasn't elapsed.
+    d = decide(
+        _inputs(grid_power_w=-8000.0, now=now + timedelta(seconds=30)),
+        _cfg(
+            mode=ChargingMode.PV_ONLY,
+            auto_phase=True,
+            max_phases=3,
+            phase_dwell_s=300.0,
+        ),
+        state,
+    )
+    assert d.target_phases == 1
+
+
+def test_auto_phase_switches_up_after_dwell():
+    now = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+    state = EngineState(phases=1, phase_changed_at=now)
+    d = decide(
+        _inputs(grid_power_w=-8000.0, now=now + timedelta(seconds=600)),
+        _cfg(
+            mode=ChargingMode.PV_ONLY,
+            auto_phase=True,
+            max_phases=3,
+            phase_dwell_s=300.0,
+        ),
+        state,
+    )
+    assert d.target_phases == 3
+
+
+# --- Phase 2: anti-flap dwell ---------------------------------------------------
+
+def test_min_off_dwell_holds_paused():
+    now = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+    # Was paused 10 s ago; surplus now justifies charging but off-dwell is 120 s.
+    state = EngineState(charging=False, charge_changed_at=now)
+    d = decide(
+        _inputs(grid_power_w=-6000.0, now=now + timedelta(seconds=10)),
+        _cfg(mode=ChargingMode.PV_ONLY, min_off_dwell_s=120.0),
+        state,
+    )
+    assert d.should_charge is False
+    assert "dwell" in d.reason.lower()
+
+
+def test_unimplemented_mode_still_safe_by_default():
+    # A bare Decision for an unknown enum value should never charge silently;
+    # here we confirm Combined with no inputs simply doesn't charge.
+    d = decide(_inputs(grid_power_w=0.0), _cfg(mode=ChargingMode.COMBINED))
+    assert d.should_charge is False

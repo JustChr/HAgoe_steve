@@ -12,6 +12,7 @@ type GoeSteveConfigEntry = ConfigEntry[GoeSteveCoordinator]
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
+    Platform.DATETIME,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,

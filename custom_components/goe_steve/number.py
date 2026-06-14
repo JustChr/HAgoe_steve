@@ -6,7 +6,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from homeassistant.components.number import NumberEntity, NumberEntityDescription
-from homeassistant.const import PERCENTAGE, UnitOfElectricCurrent, UnitOfPower
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfElectricCurrent,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -74,6 +79,42 @@ NUMBERS: tuple[GoeNumberDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         getter=lambda s: s.min_grid_floor_w,
         setter=lambda s, v: setattr(s, "min_grid_floor_w", v),
+    ),
+    GoeNumberDescription(
+        key="cheap_price",
+        attr="cheap_price",
+        icon="mdi:cash",
+        native_min_value=0,
+        native_max_value=2,
+        native_step=0.01,
+        native_unit_of_measurement="/kWh",
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.cheap_price,
+        setter=lambda s, v: setattr(s, "cheap_price", v),
+    ),
+    GoeNumberDescription(
+        key="battery_floor_soc",
+        attr="battery_floor_soc",
+        icon="mdi:battery-low",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.battery_floor_soc,
+        setter=lambda s, v: setattr(s, "battery_floor_soc", v),
+    ),
+    GoeNumberDescription(
+        key="target_energy",
+        attr="target_energy_kwh",
+        icon="mdi:battery-charging",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.target_energy_kwh,
+        setter=lambda s, v: setattr(s, "target_energy_kwh", v),
     ),
 )
 

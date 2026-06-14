@@ -3,12 +3,14 @@
     "step": {
       "user": {
         "title": "Energiequellen",
-        "description": "Verbinde die Steuerung mit den Sensoren deines Hausenergiesystems. Nur der Netzzähler ist erforderlich — füge PV und Batterie für solar-optimiertes Laden hinzu.",
+        "description": "Verbinde die Steuerung mit den Sensoren deines Hausenergiesystems. Nur der Netzzähler ist erforderlich — füge PV, Batterie und Strompreis für solar- und preisoptimiertes Laden hinzu.",
         "data": {
           "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
           "pv_power_entity": "PV-Erzeugung (optional)",
           "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
-          "battery_power_entity": "Leistung Hausbatterie (optional)"
+          "battery_power_entity": "Leistung Hausbatterie (optional)",
+          "price_entity": "Strompreis (optional)",
+          "price_forecast_attr": "Attribut der Preisprognose (optional)"
         }
       },
       "charger": {
@@ -16,6 +18,7 @@
         "description": "Wähle die Entitäten, mit denen die Steuerung deine go-e Wallbox liest und steuert.",
         "data": {
           "goe_current_number": "Ladestrom-Steuerung (Number)",
+          "goe_phase_entity": "Phasenumschaltung (optional)",
           "goe_connected_entity": "Status: Fahrzeug verbunden",
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
@@ -35,7 +38,10 @@
           "pv_power_entity": "PV-Erzeugung (optional)",
           "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
           "battery_power_entity": "Leistung Hausbatterie (optional)",
+          "price_entity": "Strompreis (optional)",
+          "price_forecast_attr": "Attribut der Preisprognose (optional)",
           "goe_current_number": "Ladestrom-Steuerung (Number)",
+          "goe_phase_entity": "Phasenumschaltung (optional)",
           "goe_connected_entity": "Status: Fahrzeug verbunden",
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
@@ -61,18 +67,36 @@
           "off": "Aus (manuell)",
           "pv_only": "Nur Solarüberschuss",
           "pv_minimum": "Solar + Minimum",
+          "pv_price": "Solar + günstiger Netzstrom",
+          "price": "Preisoptimiert",
+          "combined": "Kombiniert",
           "fast": "Schnell"
+        }
+      },
+      "battery_policy": {
+        "name": "Batterie-Strategie",
+        "state": {
+          "protect": "Schützen (Batterie zuerst)",
+          "share": "Teilen (Auto darf Ladeleistung nutzen)",
+          "assist": "Unterstützen (Batterie hilft dem Auto)"
         }
       }
     },
     "switch": {
-      "smart_control": { "name": "Intelligente Steuerung" }
+      "smart_control": { "name": "Intelligente Steuerung" },
+      "auto_phase": { "name": "Automatische Phasenumschaltung" }
     },
     "number": {
       "min_current": { "name": "Mindeststrom" },
       "max_current": { "name": "Maximalstrom" },
       "battery_reserve_soc": { "name": "Reserve Hausbatterie" },
-      "min_grid_floor": { "name": "Mindest-Ladeleistung" }
+      "min_grid_floor": { "name": "Mindest-Ladeleistung" },
+      "cheap_price": { "name": "Schwelle günstiger Preis" },
+      "battery_floor_soc": { "name": "Batterie-Untergrenze (Unterstützen)" },
+      "target_energy": { "name": "Zielenergie bis Abfahrt" }
+    },
+    "datetime": {
+      "departure": { "name": "Abfahrtszeit" }
     },
     "sensor": {
       "status": { "name": "Status" },

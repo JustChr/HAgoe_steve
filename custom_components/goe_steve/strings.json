@@ -3,12 +3,14 @@
     "step": {
       "user": {
         "title": "Energy sources",
-        "description": "Point the brain at the sensors that describe your home's energy. Only the grid meter is required — add PV and battery for solar-aware charging.",
+        "description": "Point the brain at the sensors that describe your home's energy. Only the grid meter is required — add PV, battery and price for solar- and price-aware charging.",
         "data": {
           "grid_power_entity": "Grid power (+ import / − export)",
           "pv_power_entity": "PV production (optional)",
           "battery_soc_entity": "Home battery charge level (optional)",
-          "battery_power_entity": "Home battery power (optional)"
+          "battery_power_entity": "Home battery power (optional)",
+          "price_entity": "Electricity price (optional)",
+          "price_forecast_attr": "Price forecast attribute (optional)"
         }
       },
       "charger": {
@@ -16,6 +18,7 @@
         "description": "Select the entities the brain uses to read and control your go-e wallbox.",
         "data": {
           "goe_current_number": "Charging current control (number)",
+          "goe_phase_entity": "Phase switch control (optional)",
           "goe_connected_entity": "Car connected status",
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
@@ -35,7 +38,10 @@
           "pv_power_entity": "PV production (optional)",
           "battery_soc_entity": "Home battery charge level (optional)",
           "battery_power_entity": "Home battery power (optional)",
+          "price_entity": "Electricity price (optional)",
+          "price_forecast_attr": "Price forecast attribute (optional)",
           "goe_current_number": "Charging current control (number)",
+          "goe_phase_entity": "Phase switch control (optional)",
           "goe_connected_entity": "Car connected status",
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
@@ -61,18 +67,36 @@
           "off": "Off (manual)",
           "pv_only": "Solar surplus only",
           "pv_minimum": "Solar + minimum",
+          "pv_price": "Solar + cheap grid",
+          "price": "Price-optimized",
+          "combined": "Combined",
           "fast": "Fast"
+        }
+      },
+      "battery_policy": {
+        "name": "Battery policy",
+        "state": {
+          "protect": "Protect (battery first)",
+          "share": "Share (car may take charge power)",
+          "assist": "Assist (battery helps the car)"
         }
       }
     },
     "switch": {
-      "smart_control": { "name": "Smart control" }
+      "smart_control": { "name": "Smart control" },
+      "auto_phase": { "name": "Automatic phase switching" }
     },
     "number": {
       "min_current": { "name": "Minimum current" },
       "max_current": { "name": "Maximum current" },
       "battery_reserve_soc": { "name": "Home battery reserve" },
-      "min_grid_floor": { "name": "Minimum charge power" }
+      "min_grid_floor": { "name": "Minimum charge power" },
+      "cheap_price": { "name": "Cheap price threshold" },
+      "battery_floor_soc": { "name": "Battery floor (Assist)" },
+      "target_energy": { "name": "Target energy by departure" }
+    },
+    "datetime": {
+      "departure": { "name": "Departure time" }
     },
     "sensor": {
       "status": { "name": "Status" },
