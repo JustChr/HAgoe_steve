@@ -5,3 +5,7 @@ __pycache__/
 venv/
 *.egg-info/
 .DS_Store
+
+# Card build tooling — the bundled output in custom_components/.../www is committed.
+card/node_modules/
+card/package-lock.json

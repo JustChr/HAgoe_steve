@@ -8,19 +8,23 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 *"may it charge / how much did it charge"*. They coexist because the go-e applies the
 **minimum of all active current limits**. See [`docs/concept`](#concept) for the full design.
 
-> **Status: Phase 3 (SteVe linkage).** All charging modes (solar, price-aware, combined),
+> **Status: v1.0 — first release.** All charging modes (solar, price-aware, combined),
 > automatic phase switching and the Protect/Share/Assist battery policies are in place, plus
-> SteVe metering (per-RFID kWh, sessions) and authorization/remote-control services. A custom
-> Lovelace card follows in Phase 4.
+> SteVe metering (per-RFID kWh, sessions), authorization/remote-control services, and a bundled
+> **Lovelace card** with a live energy-flow visualization and inline controls.
 
 ## What it does today
 
-- Reads your existing HA entities (grid power, optional PV / home-battery SoC & power, go-e state).
+- Reads your existing HA entities (grid power, optional PV / home-battery SoC & power, price, go-e state).
 - Every ~30 s it computes a target charging current and writes it back to the go-e's
   current-control `number` entity.
-- **Modes:** Off (manual), Solar surplus only, Solar + minimum, Fast.
-- **Battery policy (Protect):** the car waits until the home battery reaches a configurable
-  reserve SoC, so the house battery fills first.
+- **Modes:** Off (manual), Solar surplus only, Solar + minimum, Solar + cheap grid,
+  Price-optimized (cheapest hours to a departure deadline), Combined, and Fast.
+- **Battery policies:** Protect (home battery first, to a reserve SoC), Share (car may take what
+  would charge the battery), Assist (battery may back the car down to a floor SoC).
+- **Automatic 1↔3 phase switching** with anti-flap hysteresis and dwell timers.
+- **Lovelace card:** live PV → house / battery / car / grid energy flow, the brain's
+  plain-language reason, mode/battery-policy/smart-control controls, and per-RFID energy.
 - Safety: if the car isn't connected or required data is stale, the brain keeps its hands off;
   turning **Smart control** off returns full manual control.
 
@@ -49,6 +53,29 @@ The config flow has three steps:
 
 Everything can be re-mapped later via the integration's *Configure* (options) dialog.
 
+## Dashboard card
+
+The integration ships a custom Lovelace card and **registers it automatically** — no manual
+dashboard *Resources* entry needed. After setup, edit a dashboard, *Add card*, and pick
+**go-e + SteVe Smart Charging** (it also appears in the card picker preview).
+
+It shows a live energy-flow diagram (PV → house / battery / car / grid), the brain's current
+reason and mode/policy chips, inline controls (charging mode, battery policy, smart-control
+toggle), and per-RFID energy. With one Smart Charging device it auto-discovers all entities; if
+you run more than one, pick the device in the card's visual editor.
+
+```yaml
+type: custom:goe-steve-card
+# device: <optional — auto-detected when there's only one>
+# title: My Wallbox
+# show_flow: true
+# show_controls: true
+# show_sessions: true
+```
+
+The card source (TypeScript + Lit) lives in [`card/`](card/); the built bundle is committed to
+`custom_components/goe_steve/www/` and rebuilt with `cd card && npm install && npm run build`.
+
 ## Entities created
 
 | Entity | Purpose |
@@ -61,6 +88,7 @@ Everything can be re-mapped later via the integration's *Configure* (options) di
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the battery policy |
 | `sensor` Target current | What the brain is asking for |
+| `sensor` Power flow | Live PV/grid/battery/house/car balance (attributes) — drives the card |
 | `binary_sensor` Brain controlling / Charging requested | Brain state |
 | `sensor` Active session / Last session energy | SteVe transactions (when configured) |
 | `sensor` `{tag} energy` (one per RFID) | Cumulative kWh charged per id-tag |
@@ -104,5 +132,5 @@ modes, SteVe linkage, Lovelace card, roadmap) is documented in the project plan.
   switching; Share/Assist battery policies.
 - **Phase 3 ✅** SteVe linkage — per-RFID kWh/transactions, authorization + remote start/stop
   services via the SteVe REST API.
-- **Phase 4** Modern Lovelace card (live energy-flow + controls).
+- **Phase 4 ✅** Modern Lovelace card — live energy-flow, reason, inline controls, per-RFID kWh.
 - **Phase 5** Forecast-aware planning & polish.

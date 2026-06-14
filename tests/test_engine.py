@@ -35,6 +35,7 @@ ChargingMode = engine.ChargingMode
 BatteryPolicy = engine.BatteryPolicy
 PriceSlot = engine.PriceSlot
 decide = engine.decide
+compute_power_flow = engine.compute_power_flow
 
 
 def _inputs(**kw) -> "engine.ChargerInputs":
@@ -369,3 +370,41 @@ def test_unimplemented_mode_still_safe_by_default():
     # here we confirm Combined with no inputs simply doesn't charge.
     d = decide(_inputs(grid_power_w=0.0), _cfg(mode=ChargingMode.COMBINED))
     assert d.should_charge is False
+
+
+# --- Phase 4: power-flow derivation for the card --------------------------------
+
+def test_power_flow_solar_charging_no_battery():
+    # 5 kW PV, exporting 1 kW, car taking 3 kW, no battery → house = 1 kW.
+    flow = compute_power_flow(
+        _inputs(pv_power_w=5000.0, grid_power_w=-1000.0, car_actual_power_w=3000.0)
+    )
+    assert flow.pv_w == 5000.0
+    assert flow.battery_w is None
+    assert flow.car_w == 3000.0
+    assert flow.house_w == pytest.approx(1000.0)
+
+
+def test_power_flow_battery_discharge_counts_as_input():
+    # No PV, importing 200 W, battery discharging 2 kW, car off → house = 2.2 kW.
+    flow = compute_power_flow(
+        _inputs(
+            pv_power_w=0.0,
+            grid_power_w=200.0,
+            battery_power_w=-2000.0,
+            car_actual_power_w=0.0,
+        )
+    )
+    assert flow.house_w == pytest.approx(2200.0)
+
+
+def test_power_flow_house_never_negative():
+    flow = compute_power_flow(
+        _inputs(pv_power_w=4000.0, grid_power_w=-3900.0, car_actual_power_w=0.0)
+    )
+    assert flow.house_w == pytest.approx(100.0)
+    # Pathological over-export shouldn't push house below zero.
+    flow2 = compute_power_flow(
+        _inputs(pv_power_w=1000.0, grid_power_w=-5000.0, car_actual_power_w=0.0)
+    )
+    assert flow2.house_w == 0.0

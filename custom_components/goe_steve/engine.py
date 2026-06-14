@@ -154,6 +154,50 @@ class Decision:
 _BATTERY_DRAIN_TOLERANCE_W: float = 100.0
 
 
+@dataclass(slots=True)
+class PowerFlow:
+    """Live power balance (W) for the energy-flow visualization.
+
+    Sign conventions match :class:`ChargerInputs`: ``grid`` is + import / −
+    export, ``battery`` is + charging / − discharging. ``house`` is everything
+    the home consumes *other* than the car, derived from the balance
+    ``pv + grid_import + battery_discharge = house + car + battery_charge``.
+    """
+
+    pv_w: float
+    grid_w: float
+    battery_w: float | None
+    battery_soc: float | None
+    car_w: float
+    house_w: float
+
+
+def compute_power_flow(inp: ChargerInputs) -> PowerFlow:
+    """Derive the home energy balance from a world snapshot.
+
+    ``house`` consumption is what's left once the car and the home battery's
+    charge/discharge are accounted for; clamped at zero so sensor noise can't
+    show the house "producing" power.
+    """
+    pv = inp.pv_power_w or 0.0
+    grid = inp.grid_power_w
+    battery = inp.battery_power_w
+    car = max(0.0, inp.car_actual_power_w)
+    # available in = production + net import + battery discharge
+    available = pv + grid + max(0.0, -(battery or 0.0))
+    # consumed elsewhere = car + battery charge
+    other = car + max(0.0, battery or 0.0)
+    house = max(0.0, available - other)
+    return PowerFlow(
+        pv_w=pv,
+        grid_w=grid,
+        battery_w=battery,
+        battery_soc=inp.battery_soc,
+        car_w=car,
+        house_w=house,
+    )
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 

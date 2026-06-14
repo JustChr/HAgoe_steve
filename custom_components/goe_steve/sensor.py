@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoeSteveConfigEntry
 from .coordinator import SteVeCoordinator
+from .engine import compute_power_flow
 from .entity import GoeSteveEntity, SteVeEntity
 
 
@@ -27,6 +28,7 @@ async def async_setup_entry(
             StatusSensor(coordinator),
             SurplusSensor(coordinator),
             TargetCurrentSensor(coordinator),
+            PowerFlowSensor(coordinator),
         ]
     )
 
@@ -129,6 +131,48 @@ class TargetCurrentSensor(GoeSteveEntity, SensorEntity):
         if decision is None:
             return None
         return decision.target_current_a if decision.should_charge else 0.0
+
+
+class PowerFlowSensor(GoeSteveEntity, SensorEntity):
+    """Live home energy balance — the data behind the card's flow diagram.
+
+    State is the car's charging power; the PV/grid/battery/house breakdown rides
+    along as attributes so the Lovelace card can render the whole flow from a
+    single entity, no extra wiring required.
+    """
+
+    _attr_icon = "mdi:transit-connection-variant"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "power_flow")
+
+    @property
+    def native_value(self) -> float | None:
+        inputs = self.coordinator.last_inputs
+        if inputs is None:
+            return None
+        return round(compute_power_flow(inputs).car_w)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        inputs = self.coordinator.last_inputs
+        if inputs is None:
+            return {}
+        flow = compute_power_flow(inputs)
+        return {
+            "pv_w": round(flow.pv_w),
+            "grid_w": round(flow.grid_w),
+            "battery_w": round(flow.battery_w) if flow.battery_w is not None else None,
+            "battery_soc": flow.battery_soc,
+            "car_w": round(flow.car_w),
+            "house_w": round(flow.house_w),
+            "car_connected": inputs.car_connected,
+            "phases": inputs.phases,
+        }
 
 
 # --- SteVe sensors (Phase 3) -------------------------------------------------------

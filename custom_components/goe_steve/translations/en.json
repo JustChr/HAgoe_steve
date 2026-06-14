@@ -157,6 +157,7 @@
       "status": { "name": "Status" },
       "surplus_for_car": { "name": "Surplus for car" },
       "target_current": { "name": "Target current" },
+      "power_flow": { "name": "Power flow" },
       "active_transaction": { "name": "Active session" },
       "last_session_energy": { "name": "Last session energy" },
       "tag_energy": { "name": "{tag} energy" }

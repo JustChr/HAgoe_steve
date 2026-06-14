@@ -43,10 +43,20 @@ concept document; this file is the actionable to-do list.
   start/stop endpoint/payload assumes a recent SteVe (PR #1291/#1949); verify against the
   instance's OpenAPI (`/manager/v3/api-docs`).
 
-## Phase 4 — Lovelace card
-- [ ] Modern custom card (TypeScript + Lit, HACS-distributed): live energy-flow visualization
+## Phase 4 — Lovelace card ✅ (done, on `main`)
+- [x] Modern custom card (TypeScript + Lit): live energy-flow visualization
       (PV → house/battery/car/grid), active mode + battery policy with plain-language reason,
       inline controls, per-RFID kWh.
+- [x] Source in `card/` (esbuild bundle), built output committed to `custom_components/goe_steve/www/`.
+- [x] **Auto-registered** by the integration (static path + `add_extra_js_url`) — no manual
+      dashboard resource. Self-contained data source: a `power_flow` sensor exposes the live
+      PV/grid/battery/house/car balance as attributes (derived by pure `compute_power_flow`).
+- [x] Visual config editor with a device selector; auto-discovers entities for a single device.
+
+  Follow-ups worth revisiting: the flow diagram assumes the standard 5-node layout; very large
+  installs (multiple cars) aren't modelled. Entity discovery prefers the registry
+  `translation_key` with an entity_id-suffix fallback. Card i18n is currently EN-only (it does
+  localize select-option labels via the integration's translations).
 
 ## Phase 5 — Polish & forecasting
 - [ ] PV/price forecast-aware planning.
@@ -62,4 +72,7 @@ concept document; this file is the actionable to-do list.
 
 ## Repo / housekeeping
 - [ ] Decide on repo name (currently `HAgoe_steve`; alternatives `ha-goe-steve`, `HASteveGoe`).
-- [ ] Add `LICENSE`, `info.md` (HACS), and CI for hassfest + HACS validation before HACS submission.
+- [x] Add `LICENSE` (MIT), `info.md` (HACS), and CI (`.github/workflows/validate.yml`:
+      hassfest + HACS validation + engine tests + card build/stale-bundle check). (v1.0)
+- [ ] Submit to home-assistant/brands for the integration logo, then drop `ignore: brands` in CI.
+- [ ] Tag/release `v1.0.0` (manifest bumped to 1.0.0).

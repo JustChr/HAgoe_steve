@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
+from .const import DOMAIN
 from .coordinator import GoeSteveCoordinator, SteVeCoordinator
 from .services import async_setup_services, async_unload_services
+
+_LOGGER = logging.getLogger(__name__)
 
 type GoeSteveConfigEntry = ConfigEntry[GoeSteveCoordinator]
 
@@ -20,9 +26,17 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
 ]
 
+# Bundled Lovelace card — served and registered automatically so the user never
+# has to add a dashboard resource by hand.
+CARD_URL = f"/{DOMAIN}/goe-steve-card.js"
+CARD_FILENAME = "goe-steve-card.js"
+_FRONTEND_REGISTERED = f"{DOMAIN}_frontend_registered"
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> bool:
     """Set up go-e + SteVe Smart Charging from a config entry."""
+    await _async_register_frontend(hass)
+
     coordinator = GoeSteveCoordinator(hass, entry)
     entry.runtime_data = coordinator
 
@@ -55,3 +69,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) ->
 async def _async_reload_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> None:
     """Reload the entry when its options change."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _async_register_frontend(hass: HomeAssistant) -> None:
+    """Serve and register the bundled Lovelace card exactly once.
+
+    Failure here is non-fatal: the integration still works, the user just won't
+    get the card auto-loaded (they can add it as a manual resource instead).
+    """
+    if hass.data.get(_FRONTEND_REGISTERED):
+        return
+
+    card_dir = Path(__file__).parent / "www"
+    card_path = card_dir / CARD_FILENAME
+    if not card_path.is_file():
+        _LOGGER.debug("Bundled card %s not found; skipping auto-registration", card_path)
+        return
+
+    try:
+        from homeassistant.components.http import StaticPathConfig
+
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(f"/{DOMAIN}", str(card_dir), cache_headers=False)]
+        )
+
+        from homeassistant.components.frontend import add_extra_js_url
+
+        # Cache-bust on file mtime so a HACS update reloads the card.
+        version = int(card_path.stat().st_mtime)
+        add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+        hass.data[_FRONTEND_REGISTERED] = True
+        _LOGGER.debug("Registered Lovelace card at %s", CARD_URL)
+    except Exception as err:  # noqa: BLE001 - never block setup on a card hiccup
+        _LOGGER.warning("Could not auto-register the Lovelace card: %s", err)

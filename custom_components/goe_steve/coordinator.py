@@ -114,6 +114,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self.settings = RuntimeSettings()
         # Optional SteVe metering/authorization coordinator (None when unconfigured).
         self.steve: "SteVeCoordinator | None" = None
+        # Latest world snapshot, retained so the power-flow sensor (and card) can
+        # surface live PV/grid/battery/car values without re-reading every entity.
+        self.last_inputs: ChargerInputs | None = None
         self._voltage = float(self._cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
         self._phases = int(self._cfg.get(CONF_PHASES, DEFAULT_PHASES))
         self._state = EngineState(phases=self._phases)
@@ -217,6 +220,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             price_forecast=forecast,
             now=dt_util.utcnow(),
         )
+        self.last_inputs = inputs
         cfg = EngineConfig(
             mode=self.settings.mode,
             battery_policy=self.settings.battery_policy,
