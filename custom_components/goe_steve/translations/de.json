@@ -11,6 +11,14 @@
           "battery_power_entity": "Leistung Hausbatterie (optional)",
           "price_entity": "Strompreis (optional)",
           "price_forecast_attr": "Attribut der Preisprognose (optional)"
+        },
+        "data_description": {
+          "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
+          "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
+          "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
+          "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
+          "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
+          "price_forecast_attr": "Name des Attributs am Preissensor mit den kommenden Stundenpreisen. Nur ändern, wenn dein Sensor einen anderen Namen verwendet."
         }
       },
       "charger": {
@@ -24,6 +32,15 @@
           "goe_power_entity": "Ladeleistung (optional)",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden"
+        },
+        "data_description": {
+          "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
+          "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
+          "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
+          "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
+          "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
+          "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
+          "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }
       }
     }
@@ -47,6 +64,21 @@
           "goe_power_entity": "Ladeleistung (optional)",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden"
+        },
+        "data_description": {
+          "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
+          "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
+          "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
+          "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
+          "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
+          "price_forecast_attr": "Name des Attributs am Preissensor mit den kommenden Stundenpreisen. Nur ändern, wenn dein Sensor einen anderen Namen verwendet.",
+          "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
+          "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
+          "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
+          "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
+          "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
+          "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
+          "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }
       }
     }

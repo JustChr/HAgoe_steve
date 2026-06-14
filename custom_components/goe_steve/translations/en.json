@@ -11,6 +11,14 @@
           "battery_power_entity": "Home battery power (optional)",
           "price_entity": "Electricity price (optional)",
           "price_forecast_attr": "Price forecast attribute (optional)"
+        },
+        "data_description": {
+          "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
+          "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
+          "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
+          "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
+          "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
+          "price_forecast_attr": "Name of the attribute on the price sensor that holds upcoming hourly prices. Leave as-is unless your sensor uses a different name."
         }
       },
       "charger": {
@@ -24,6 +32,15 @@
           "goe_power_entity": "Charging power (optional)",
           "voltage": "Grid voltage per phase",
           "phases": "Phases used for charging"
+        },
+        "data_description": {
+          "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",
+          "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
+          "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
+          "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
+          "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
+          "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
+          "phases": "How many phases charging uses by default when automatic phase switching is off."
         }
       }
     }
@@ -47,6 +64,21 @@
           "goe_power_entity": "Charging power (optional)",
           "voltage": "Grid voltage per phase",
           "phases": "Phases used for charging"
+        },
+        "data_description": {
+          "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
+          "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
+          "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
+          "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
+          "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
+          "price_forecast_attr": "Name of the attribute on the price sensor that holds upcoming hourly prices. Leave as-is unless your sensor uses a different name.",
+          "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",
+          "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
+          "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
+          "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
+          "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
+          "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
+          "phases": "How many phases charging uses by default when automatic phase switching is off."
         }
       }
     }
