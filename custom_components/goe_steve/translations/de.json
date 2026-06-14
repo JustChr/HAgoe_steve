@@ -18,7 +18,7 @@
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
-          "price_forecast_attr": "Name des Attributs am Preissensor mit den kommenden Stundenpreisen. Nur ändern, wenn dein Sensor einen anderen Namen verwendet."
+          "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen)."
         }
       },
       "charger": {
@@ -42,6 +42,24 @@
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }
+      },
+      "steve": {
+        "title": "SteVe (optional)",
+        "description": "Verbinde deinen SteVe-OCPP-Server, um Ladevorgänge und Energie pro RFID auszulesen sowie Tags freizugeben/zu sperren oder das Laden fernzustarten/-zu stoppen. URL leer lassen zum Überspringen — die Steuerung funktioniert auch ohne.",
+        "data": {
+          "steve_url": "SteVe-URL",
+          "steve_username": "API-Benutzer",
+          "steve_api_password": "API-Passwort",
+          "steve_charge_box_id": "Charge-Box-ID (optional)",
+          "steve_connector_id": "Connector-ID"
+        },
+        "data_description": {
+          "steve_url": "Basis-URL deines SteVe-Servers, z. B. http://192.168.1.10:8080",
+          "steve_username": "Ein SteVe-Webbenutzer. Der API-Zugriff nutzt dessen API-Passwort, nicht das Login-Passwort.",
+          "steve_api_password": "Das API-Passwort des Benutzers (in SteVe unter „Users“ gesetzt).",
+          "steve_charge_box_id": "Standard-Charge-Box für die Dienste Fernstart/-stopp. Leer lassen, um sie immer explizit anzugeben.",
+          "steve_connector_id": "Standard-Connector für den Fernstart (meist 1)."
+        }
       }
     }
   },
@@ -63,7 +81,12 @@
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
           "voltage": "Netzspannung pro Phase",
-          "phases": "Phasen für das Laden"
+          "phases": "Phasen für das Laden",
+          "steve_url": "SteVe-URL (optional)",
+          "steve_username": "SteVe-API-Benutzer",
+          "steve_api_password": "SteVe-API-Passwort",
+          "steve_charge_box_id": "Charge-Box-ID (optional)",
+          "steve_connector_id": "Connector-ID"
         },
         "data_description": {
           "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
@@ -71,7 +94,7 @@
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
-          "price_forecast_attr": "Name des Attributs am Preissensor mit den kommenden Stundenpreisen. Nur ändern, wenn dein Sensor einen anderen Namen verwendet.",
+          "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
           "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
@@ -133,11 +156,84 @@
     "sensor": {
       "status": { "name": "Status" },
       "surplus_for_car": { "name": "Überschuss fürs Auto" },
-      "target_current": { "name": "Soll-Strom" }
+      "target_current": { "name": "Soll-Strom" },
+      "active_transaction": { "name": "Aktiver Ladevorgang" },
+      "last_session_energy": { "name": "Energie letzter Ladevorgang" },
+      "tag_energy": { "name": "Energie {tag}" }
     },
     "binary_sensor": {
       "controlling": { "name": "Steuerung aktiv" },
       "charging_requested": { "name": "Laden angefordert" }
+    }
+  },
+  "services": {
+    "authorize_tag": {
+      "name": "RFID-Tag freigeben",
+      "description": "Erlaubt einem RFID-Tag, in SteVe einen Ladevorgang zu starten.",
+      "fields": {
+        "id_tag": {
+          "name": "ID-Tag",
+          "description": "Das freizugebende OCPP-ID-Tag (RFID-Karte)."
+        },
+        "entry_id": {
+          "name": "Integrations-Eintrag",
+          "description": "Nur nötig, wenn mehrere SteVe-Verbindungen konfiguriert sind."
+        }
+      }
+    },
+    "block_tag": {
+      "name": "RFID-Tag sperren",
+      "description": "Verhindert, dass ein RFID-Tag in SteVe einen Ladevorgang startet.",
+      "fields": {
+        "id_tag": {
+          "name": "ID-Tag",
+          "description": "Das zu sperrende OCPP-ID-Tag (RFID-Karte)."
+        },
+        "entry_id": {
+          "name": "Integrations-Eintrag",
+          "description": "Nur nötig, wenn mehrere SteVe-Verbindungen konfiguriert sind."
+        }
+      }
+    },
+    "remote_start": {
+      "name": "Laden fernstarten",
+      "description": "Fordert SteVe auf, an einem Ladepunkt einen Ladevorgang zu starten.",
+      "fields": {
+        "id_tag": {
+          "name": "ID-Tag",
+          "description": "Das OCPP-ID-Tag, unter dem geladen wird."
+        },
+        "charge_box_id": {
+          "name": "Charge-Box-ID",
+          "description": "Ziel-Ladepunkt. Standard ist die in den Optionen konfigurierte Box."
+        },
+        "connector_id": {
+          "name": "Connector-ID",
+          "description": "Zu startender Connector (meist 1)."
+        },
+        "entry_id": {
+          "name": "Integrations-Eintrag",
+          "description": "Nur nötig, wenn mehrere SteVe-Verbindungen konfiguriert sind."
+        }
+      }
+    },
+    "remote_stop": {
+      "name": "Laden fernstoppen",
+      "description": "Fordert SteVe auf, einen laufenden Ladevorgang zu stoppen.",
+      "fields": {
+        "transaction_id": {
+          "name": "Transaktions-ID",
+          "description": "Welcher Ladevorgang gestoppt wird. Ohne Angabe der einzige aktive Vorgang."
+        },
+        "charge_box_id": {
+          "name": "Charge-Box-ID",
+          "description": "Ziel-Ladepunkt. Standard ist die konfigurierte / aktive Box."
+        },
+        "entry_id": {
+          "name": "Integrations-Eintrag",
+          "description": "Nur nötig, wenn mehrere SteVe-Verbindungen konfiguriert sind."
+        }
+      }
     }
   }
 }

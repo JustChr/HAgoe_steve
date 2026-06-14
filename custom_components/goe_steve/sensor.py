@@ -7,12 +7,13 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfElectricCurrent, UnitOfPower
+from homeassistant.const import UnitOfElectricCurrent, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoeSteveConfigEntry
-from .entity import GoeSteveEntity
+from .coordinator import SteVeCoordinator
+from .entity import GoeSteveEntity, SteVeEntity
 
 
 async def async_setup_entry(
@@ -28,6 +29,40 @@ async def async_setup_entry(
             TargetCurrentSensor(coordinator),
         ]
     )
+
+    if coordinator.steve is not None:
+        _setup_steve_sensors(coordinator.steve, async_add_entities)
+
+
+@callback
+def _setup_steve_sensors(
+    steve: SteVeCoordinator, async_add_entities: AddConfigEntryEntitiesCallback
+) -> None:
+    """Add the fixed SteVe sensors, plus one energy sensor per discovered tag.
+
+    Tags are created lazily as SteVe reports them, so cards/users plugged in
+    after setup appear automatically without a reconfigure.
+    """
+    async_add_entities([ActiveTransactionSensor(steve), LastSessionEnergySensor(steve)])
+
+    known: set[str] = set()
+
+    @callback
+    def _discover_tags() -> None:
+        data = steve.data
+        if data is None:
+            return
+        new = [
+            TagEnergySensor(steve, tag.id_tag)
+            for tag in data.tags
+            if tag.id_tag not in known
+        ]
+        if new:
+            known.update(sensor.tag_id for sensor in new)
+            async_add_entities(new)
+
+    _discover_tags()
+    steve.async_add_listener(_discover_tags)
 
 
 class StatusSensor(GoeSteveEntity, SensorEntity):
@@ -94,3 +129,108 @@ class TargetCurrentSensor(GoeSteveEntity, SensorEntity):
         if decision is None:
             return None
         return decision.target_current_a if decision.should_charge else 0.0
+
+
+# --- SteVe sensors (Phase 3) -------------------------------------------------------
+
+
+class ActiveTransactionSensor(SteVeEntity, SensorEntity):
+    """The currently running charging session as reported by SteVe."""
+
+    _attr_icon = "mdi:card-account-details"
+
+    def __init__(self, coordinator: SteVeCoordinator) -> None:
+        super().__init__(coordinator, "active_transaction")
+
+    @property
+    def native_value(self) -> str | None:
+        data = self.coordinator.data
+        if data is None:
+            return None
+        if not data.active:
+            return "idle"
+        return data.active[0].id_tag or "active"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None or not data.active:
+            return {}
+        tx = data.active[0]
+        return {
+            "transaction_id": tx.id,
+            "charge_box_id": tx.charge_box_id,
+            "id_tag": tx.id_tag,
+            "started": tx.start.isoformat() if tx.start else None,
+            "active_sessions": len(data.active),
+        }
+
+
+class LastSessionEnergySensor(SteVeEntity, SensorEntity):
+    """Energy delivered in the most recently finished session."""
+
+    _attr_icon = "mdi:history"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: SteVeCoordinator) -> None:
+        super().__init__(coordinator, "last_session_energy")
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        if data is None or data.last_session is None:
+            return None
+        return data.last_session.energy_kwh
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None or data.last_session is None:
+            return {}
+        tx = data.last_session
+        return {
+            "id_tag": tx.id_tag,
+            "charge_box_id": tx.charge_box_id,
+            "started": tx.start.isoformat() if tx.start else None,
+            "stopped": tx.stop.isoformat() if tx.stop else None,
+        }
+
+
+class TagEnergySensor(SteVeEntity, SensorEntity):
+    """Cumulative energy charged on one RFID id-tag (user)."""
+
+    _attr_icon = "mdi:card-account-details-outline"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: SteVeCoordinator, tag_id: str) -> None:
+        super().__init__(coordinator, f"tag_energy_{tag_id}")
+        self.tag_id = tag_id
+        # Dynamic name: the translation supplies "{tag} energy".
+        self._attr_translation_key = "tag_energy"
+        self._attr_translation_placeholders = {"tag": tag_id}
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        if data is None:
+            return None
+        return round(data.energy_by_tag.get(self.tag_id, 0.0), 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None:
+            return {"id_tag": self.tag_id}
+        tag = next((t for t in data.tags if t.id_tag == self.tag_id), None)
+        return {
+            "id_tag": self.tag_id,
+            "blocked": tag.blocked if tag else None,
+            "in_transaction": tag.in_transaction if tag else None,
+            "expiry": tag.expiry.isoformat() if tag and tag.expiry else None,
+        }

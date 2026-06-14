@@ -24,6 +24,18 @@ CONF_GOE_CONNECTED: Final = "goe_connected_entity"
 CONF_GOE_CHARGING: Final = "goe_charging_entity"
 CONF_GOE_POWER: Final = "goe_power_entity"
 
+# --- Config entry keys: SteVe linkage (Phase 3, all optional) ----------------------
+CONF_STEVE_URL: Final = "steve_url"
+CONF_STEVE_USERNAME: Final = "steve_username"
+CONF_STEVE_PASSWORD: Final = "steve_api_password"
+CONF_STEVE_CHARGEBOX: Final = "steve_charge_box_id"
+CONF_STEVE_CONNECTOR: Final = "steve_connector_id"
+
+DEFAULT_STEVE_CONNECTOR: Final = 1
+# Metering/authorization data changes slowly; don't hammer SteVe at the 30 s
+# regulation cadence.
+STEVE_SCAN_INTERVAL: Final = timedelta(seconds=60)
+
 # Default attribute on the price sensor that holds the hourly forecast list.
 # Tolerant parsing covers Nordpool/EPEX/EnergyZero ("raw_today"/"raw_tomorrow"
 # with start/value items) and similar provider shapes.

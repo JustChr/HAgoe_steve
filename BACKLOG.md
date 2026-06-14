@@ -28,11 +28,20 @@ concept document; this file is the actionable to-do list.
   than tracking real battery discharge headroom); price planning does not yet subtract energy
   already delivered (no car-SoC signal); deadline planning assumes hourly-ish forecast slots.
 
-## Phase 3 — SteVe linkage (via SteVe API)
-- [ ] Read transactions/kWh → sensors (last session, active transaction, **per-RFID/user energy**).
-- [ ] Manage authorization: list RFID idTags + status; service to authorize/block; optional
-      remote start/stop.
-- [ ] Config: SteVe connection (URL + auth).
+## Phase 3 — SteVe linkage (via SteVe API) ✅ (done, on `main`)
+- [x] Read transactions/kWh → sensors (last session, active transaction, **per-RFID/user energy**).
+      Per-RFID surfaced as one energy sensor per discovered id-tag (created lazily as SteVe
+      reports tags), with blocked/in-transaction/expiry as attributes.
+- [x] Manage authorization: services `authorize_tag` / `block_tag` (read-modify-write on the tag's
+      `maxActiveTransactionCount`), plus `remote_start` / `remote_stop`.
+- [x] Config: SteVe connection (optional 3rd config step; URL + Basic-auth API user/password +
+      default charge box/connector). HA-free `steve_api.py` client; slow (60 s) `SteVeCoordinator`.
+
+  Follow-ups worth revisiting: the tag PUT sends a minimal body (idTag/parent/note/maxActive) —
+  if a SteVe build requires `expiryDate`, extend it. Per-tag energy recomputes from all returned
+  transactions each poll (fine for home use; revisit if SteVe history is large/pruned). Remote
+  start/stop endpoint/payload assumes a recent SteVe (PR #1291/#1949); verify against the
+  instance's OpenAPI (`/manager/v3/api-docs`).
 
 ## Phase 4 — Lovelace card
 - [ ] Modern custom card (TypeScript + Lit, HACS-distributed): live energy-flow visualization
@@ -46,7 +55,8 @@ concept document; this file is the actionable to-do list.
 ## Open items / decisions to make during build
 - [ ] go-e write path: existing integration's `number`/service vs. its API — confirm.
 - [ ] Pause behavior: set current 0 vs. a dedicated stop switch/force-state entity.
-- [ ] SteVe API surface/version + auth handling (Phase 3).
+- [x] SteVe API surface/version + auth handling — `/steve/api/v1`, HTTP Basic with the web user's
+      API password; tags `maxActiveTransactionCount`=0 → blocked. (Phase 3)
 - [ ] Price-optimization algorithm depth (greedy cheapest-hours vs. forecast-aware scheduling).
 - [ ] Model vehicle SoC when the car/charger exposes it.
 

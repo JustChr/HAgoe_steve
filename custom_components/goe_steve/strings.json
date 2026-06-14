@@ -18,7 +18,7 @@
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
-          "price_forecast_attr": "Name of the attribute on the price sensor that holds upcoming hourly prices. Leave as-is unless your sensor uses a different name."
+          "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices)."
         }
       },
       "charger": {
@@ -42,6 +42,24 @@
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
           "phases": "How many phases charging uses by default when automatic phase switching is off."
         }
+      },
+      "steve": {
+        "title": "SteVe (optional)",
+        "description": "Connect to your SteVe OCPP server to read charging sessions and per-RFID energy, and to authorize/block tags or start/stop charging remotely. Leave the URL empty to skip — the brain works without it.",
+        "data": {
+          "steve_url": "SteVe URL",
+          "steve_username": "API user",
+          "steve_api_password": "API password",
+          "steve_charge_box_id": "Charge box ID (optional)",
+          "steve_connector_id": "Connector ID"
+        },
+        "data_description": {
+          "steve_url": "Base URL of your SteVe server, e.g. http://192.168.1.10:8080",
+          "steve_username": "A SteVe web user. API access uses that user's API password, not the login password.",
+          "steve_api_password": "The user's API password (set under Users in SteVe).",
+          "steve_charge_box_id": "Default charge box used by the remote start/stop services. Leave empty to always pass it explicitly.",
+          "steve_connector_id": "Default connector for remote start (usually 1)."
+        }
       }
     }
   },
@@ -63,7 +81,12 @@
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
           "voltage": "Grid voltage per phase",
-          "phases": "Phases used for charging"
+          "phases": "Phases used for charging",
+          "steve_url": "SteVe URL (optional)",
+          "steve_username": "SteVe API user",
+          "steve_api_password": "SteVe API password",
+          "steve_charge_box_id": "Charge box ID (optional)",
+          "steve_connector_id": "Connector ID"
         },
         "data_description": {
           "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
@@ -71,7 +94,7 @@
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
-          "price_forecast_attr": "Name of the attribute on the price sensor that holds upcoming hourly prices. Leave as-is unless your sensor uses a different name.",
+          "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
           "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",
           "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
@@ -133,11 +156,84 @@
     "sensor": {
       "status": { "name": "Status" },
       "surplus_for_car": { "name": "Surplus for car" },
-      "target_current": { "name": "Target current" }
+      "target_current": { "name": "Target current" },
+      "active_transaction": { "name": "Active session" },
+      "last_session_energy": { "name": "Last session energy" },
+      "tag_energy": { "name": "{tag} energy" }
     },
     "binary_sensor": {
       "controlling": { "name": "Brain controlling" },
       "charging_requested": { "name": "Charging requested" }
+    }
+  },
+  "services": {
+    "authorize_tag": {
+      "name": "Authorize RFID tag",
+      "description": "Allow an RFID id-tag to start charging in SteVe.",
+      "fields": {
+        "id_tag": {
+          "name": "ID tag",
+          "description": "The OCPP id-tag (RFID card) to authorize."
+        },
+        "entry_id": {
+          "name": "Integration entry",
+          "description": "Only needed when more than one SteVe connection is configured."
+        }
+      }
+    },
+    "block_tag": {
+      "name": "Block RFID tag",
+      "description": "Prevent an RFID id-tag from starting charging in SteVe.",
+      "fields": {
+        "id_tag": {
+          "name": "ID tag",
+          "description": "The OCPP id-tag (RFID card) to block."
+        },
+        "entry_id": {
+          "name": "Integration entry",
+          "description": "Only needed when more than one SteVe connection is configured."
+        }
+      }
+    },
+    "remote_start": {
+      "name": "Remote start charging",
+      "description": "Ask SteVe to start a transaction on a charge point.",
+      "fields": {
+        "id_tag": {
+          "name": "ID tag",
+          "description": "The OCPP id-tag to charge under."
+        },
+        "charge_box_id": {
+          "name": "Charge box ID",
+          "description": "Target charge point. Defaults to the one configured in options."
+        },
+        "connector_id": {
+          "name": "Connector ID",
+          "description": "Connector to start (usually 1)."
+        },
+        "entry_id": {
+          "name": "Integration entry",
+          "description": "Only needed when more than one SteVe connection is configured."
+        }
+      }
+    },
+    "remote_stop": {
+      "name": "Remote stop charging",
+      "description": "Ask SteVe to stop a running transaction.",
+      "fields": {
+        "transaction_id": {
+          "name": "Transaction ID",
+          "description": "Which session to stop. Defaults to the single active session if omitted."
+        },
+        "charge_box_id": {
+          "name": "Charge box ID",
+          "description": "Target charge point. Defaults to the configured / active one."
+        },
+        "entry_id": {
+          "name": "Integration entry",
+          "description": "Only needed when more than one SteVe connection is configured."
+        }
+      }
     }
   }
 }

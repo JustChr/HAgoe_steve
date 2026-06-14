@@ -1,0 +1,63 @@
+authorize_tag:
+  fields:
+    id_tag:
+      required: true
+      example: "739E7EDF"
+      selector:
+        text:
+    entry_id:
+      example: "1a2b3c…"
+      selector:
+        text:
+
+block_tag:
+  fields:
+    id_tag:
+      required: true
+      example: "739E7EDF"
+      selector:
+        text:
+    entry_id:
+      example: "1a2b3c…"
+      selector:
+        text:
+
+remote_start:
+  fields:
+    id_tag:
+      required: true
+      example: "739E7EDF"
+      selector:
+        text:
+    charge_box_id:
+      example: "GOE070000"
+      selector:
+        text:
+    connector_id:
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 10
+          mode: box
+    entry_id:
+      example: "1a2b3c…"
+      selector:
+        text:
+
+remote_stop:
+  fields:
+    transaction_id:
+      example: 42
+      selector:
+        number:
+          min: 0
+          mode: box
+    charge_box_id:
+      example: "GOE070000"
+      selector:
+        text:
+    entry_id:
+      example: "1a2b3c…"
+      selector:
+        text:

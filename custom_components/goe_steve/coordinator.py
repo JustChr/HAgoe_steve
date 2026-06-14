@@ -10,7 +10,11 @@ from datetime import datetime
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import (
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -26,6 +30,9 @@ from .const import (
     CONF_PRICE_FORECAST_ATTR,
     CONF_PV_POWER,
     CONF_PHASES,
+    CONF_STEVE_PASSWORD,
+    CONF_STEVE_URL,
+    CONF_STEVE_USERNAME,
     CONF_VOLTAGE,
     DEFAULT_AUTO_PHASE,
     DEFAULT_BATTERY_FLOOR_SOC,
@@ -46,6 +53,7 @@ from .const import (
     MIN_WRITE_DELTA_A,
     PHASE_DWELL_S,
     SMOOTHING_SAMPLES,
+    STEVE_SCAN_INTERVAL,
 )
 from .engine import (
     BatteryPolicy,
@@ -57,6 +65,8 @@ from .engine import (
     PriceSlot,
     decide,
 )
+from .forecast import dedupe_slots, parse_forecast
+from .steve_api import SteVeApiClient, SteVeApiError, SteVeData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -102,6 +112,8 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         )
         self._cfg = dict(entry.data)
         self.settings = RuntimeSettings()
+        # Optional SteVe metering/authorization coordinator (None when unconfigured).
+        self.steve: "SteVeCoordinator | None" = None
         self._voltage = float(self._cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
         self._phases = int(self._cfg.get(CONF_PHASES, DEFAULT_PHASES))
         self._state = EngineState(phases=self._phases)
@@ -160,8 +172,13 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         forecast: list[PriceSlot] = []
         # Concatenate today + tomorrow when the provider splits them.
         for candidate in (attr, "raw_tomorrow", "forecast"):
-            forecast.extend(_parse_forecast(state.attributes.get(candidate)))
-        forecast = _dedupe_slots(forecast)
+            forecast.extend(
+                parse_forecast(
+                    state.attributes.get(candidate),
+                    default_tz=dt_util.DEFAULT_TIME_ZONE,
+                )
+            )
+        forecast = dedupe_slots(forecast)
         return price_now, (forecast or None)
 
     @staticmethod
@@ -299,52 +316,47 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self.hass.async_create_task(self.async_request_refresh())
 
 
-def _parse_forecast(raw: object) -> list[PriceSlot]:
-    """Tolerantly parse a provider forecast list into :class:`PriceSlot`.
+class SteVeCoordinator(DataUpdateCoordinator[SteVeData]):
+    """Polls the SteVe OCPP server for tags + transactions (metering/auth).
 
-    Accepts the common shapes: a list of dicts with ``start``/``value`` (Nordpool,
-    EnergyZero, EPEX) or ``start_time``/``price``/``total`` keys; ISO strings are
-    parsed and slots without a usable timestamp are skipped.
+    Separate from the regulation loop and far slower: metering and tag state
+    change on the order of minutes, and we don't want to hammer SteVe at the
+    30 s control cadence.
     """
-    if not isinstance(raw, (list, tuple)):
-        return []
-    slots: list[PriceSlot] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        start = (
-            item.get("start")
-            or item.get("start_time")
-            or item.get("from")
-            or item.get("hour")
+
+    config_entry: ConfigEntry
+
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, client: SteVeApiClient
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_steve",
+            update_interval=STEVE_SCAN_INTERVAL,
+            config_entry=entry,
         )
-        price = item.get("value")
-        if price is None:
-            price = item.get("price")
-        if price is None:
-            price = item.get("total")
-        if start is None or price is None:
-            continue
-        if isinstance(start, str):
-            start = dt_util.parse_datetime(start)
-        if not isinstance(start, datetime):
-            continue
-        if start.tzinfo is None:  # assume HA local time for naive timestamps
-            start = start.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        self.client = client
+
+    async def _async_update_data(self) -> SteVeData:
         try:
-            slots.append(PriceSlot(start=dt_util.as_utc(start), price=float(price)))
-        except (ValueError, TypeError):
-            continue
-    return slots
+            return await self.client.async_fetch_data()
+        except SteVeApiError as err:
+            raise UpdateFailed(str(err)) from err
 
-
-def _dedupe_slots(slots: list[PriceSlot]) -> list[PriceSlot]:
-    """Sort by start time and drop duplicate timestamps (today/tomorrow overlap)."""
-    seen: set[datetime] = set()
-    out: list[PriceSlot] = []
-    for slot in sorted(slots, key=lambda s: s.start):
-        if slot.start in seen:
-            continue
-        seen.add(slot.start)
-        out.append(slot)
-    return out
+    @staticmethod
+    def from_entry(
+        hass: HomeAssistant, entry: ConfigEntry
+    ) -> "SteVeCoordinator | None":
+        """Build a coordinator when SteVe is configured, else None."""
+        cfg = entry.data
+        url = cfg.get(CONF_STEVE_URL)
+        if not url:
+            return None
+        client = SteVeApiClient(
+            async_get_clientsession(hass),
+            url,
+            cfg.get(CONF_STEVE_USERNAME, ""),
+            cfg.get(CONF_STEVE_PASSWORD, ""),
+        )
+        return SteVeCoordinator(hass, entry, client)
