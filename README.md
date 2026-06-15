@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="branding/logo-banner.png" alt="go-e + SteVe Smart Charging" width="480">
+</p>
+
 # go-e + SteVe Smart Charging (Home Assistant)
 
 A HACS custom integration that turns Home Assistant into the **smart-charging brain**
@@ -19,8 +23,9 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 ## What it does today
 
 - Reads your existing HA entities (grid power, optional PV / home-battery SoC & power, price, go-e state).
-- Every ~30 s it computes a target charging current and writes it back to the go-e's
-  current-control `number` entity.
+- It reacts to grid/PV/battery power changes **within seconds** (event-driven, debounced), with a
+  30 s poll as a safety net, computing a target charging current and writing it back to the go-e's
+  current-control `number` entity (writes are throttled so it doesn't chase noise).
 - **Modes:** Off (manual), Solar surplus only, Solar + minimum, Solar + cheap grid,
   Price-optimized (cheapest hours to a departure deadline), Combined, and Fast.
 - **Battery policies:** Protect (home battery first, to a reserve SoC), Share (car may take what

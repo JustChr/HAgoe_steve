@@ -10,7 +10,8 @@ Logo / icon concepts for the integration. Source is SVG; PNGs are rendered from 
 | `icon-option-2` | Dark tile, three "phase" bars + accent bolt. Says *3-phase smart charging*. |
 | `icon-option-3` | **✅ Chosen.** Duotone gradient tile, deep-slate bolt. Minimal, confident. |
 | `icon-option-4` | Monoline bolt + phase ticks on transparent. Airy, lightest weight. |
-| `logo-lockup`   | Horizontal mark + "go-e + SteVe / SMART CHARGING" wordmark. |
+| `logo-lockup`   | Horizontal mark + "go-e + SteVe / SMART CHARGING" wordmark (transparent — for the brands `logo.png`). |
+| `logo-banner`   | The lockup on a deep-slate panel. Self-contained, reads on light **and** dark backgrounds — used at the top of `README.md` / `info.md`. |
 
 ## Rendering
 

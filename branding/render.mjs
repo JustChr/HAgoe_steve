@@ -48,6 +48,7 @@ for (const name of ["icon-option-1", "icon-option-2", "icon-option-3", "icon-opt
   render(`${name}.svg`, `${name}-128.png`, 128);
 }
 render("logo-lockup.svg", "logo-lockup.png", 840);
+render("logo-banner.svg", "logo-banner.png", 960);
 
 // HACS / home-assistant brands deliverables — Option 3, trimmed per brands CI rules.
 const dir = "hacs/custom_integrations/goe_steve";

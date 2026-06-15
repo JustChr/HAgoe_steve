@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/JustChr/HAgoe_steve/main/branding/logo-banner.png" alt="go-e + SteVe Smart Charging" width="480">
+</p>
+
 # go-e + SteVe Smart Charging
 
 Turn Home Assistant into the **smart-charging brain** for a [go-e](https://go-e.com) wallbox,
