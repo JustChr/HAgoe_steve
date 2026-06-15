@@ -75,6 +75,33 @@ _LOGGER = logging.getLogger(__name__)
 # expose "car connected" / "charging" (binary_sensor, sensor, enum, number).
 _TRUTHY = {STATE_ON, "true", "1", "connected", "charging", "car", "ready"}
 
+# go-e controls phases as a *mode* select ("Auto" / "Force single phase" /
+# "Force three phases"), not a 1/3 count. Map between the engine's phase count
+# and the select option by keyword, so we survive locale/firmware label changes
+# (English + German) instead of writing a literal "1"/"3" the select rejects.
+_ONE_PHASE_TOKENS = ("single", "1-phase", "1 phase", "1phase", "einphasig", "1")
+_THREE_PHASE_TOKENS = ("three", "3-phase", "3 phase", "3phase", "dreiphasig", "3")
+
+
+def _phases_from_option(option: str) -> int | None:
+    """Phase count implied by a phase-switch option, or None for auto/unknown."""
+    low = option.lower()
+    if "auto" in low:
+        return None
+    if any(token in low for token in _THREE_PHASE_TOKENS):
+        return 3
+    if any(token in low for token in _ONE_PHASE_TOKENS):
+        return 1
+    return None
+
+
+def _phase_option_for(target_phases: int, options: list[str]) -> str | None:
+    """The select option that forces ``target_phases``, matched against live options."""
+    for option in options:
+        if _phases_from_option(option) == target_phases:
+            return option
+    return None
+
 
 @dataclass(slots=True)
 class RuntimeSettings:
@@ -161,6 +188,28 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         except (ValueError, TypeError):
             return None
 
+    def _read_phases(self) -> int:
+        """Actual phase count the car is charging on, best-effort.
+
+        Prefer reading the go-e phase-switch select back — a forced single/three
+        mode tells us the real count, which keeps the engine's ``P = I·φ·V`` math
+        grounded in reality and catches a failed write or a manual/app override.
+        An ``Auto`` mode (count unknown) and an unmapped entity fall back to the
+        engine's intended phase, then the static configured count.
+        """
+        entity_id = self._cfg.get(CONF_GOE_PHASE)
+        if entity_id:
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.state not in (
+                STATE_UNAVAILABLE,
+                STATE_UNKNOWN,
+                "",
+            ):
+                phases = _phases_from_option(state.state)
+                if phases is not None:
+                    return phases
+        return self._state.phases or self._phases
+
     def _read_price(self) -> tuple[float | None, list[PriceSlot] | None]:
         """Read the current price and (best-effort) the forecast list."""
         entity_id = self._cfg.get(CONF_PRICE)
@@ -213,7 +262,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         inputs = ChargerInputs(
             car_connected=connected,
             car_actual_power_w=self._get_float(CONF_GOE_POWER) or 0.0,
-            phases=self._state.phases or self._phases,
+            phases=self._read_phases(),
             voltage_v=self._voltage,
             grid_power_w=grid if grid is not None else grid_raw,
             pv_power_w=pv,
@@ -305,12 +354,25 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             return
 
         domain = phase_entity.split(".", 1)[0]
-        value: object = decision.target_phases
-        service = "set_value"
-        data: dict[str, object] = {"entity_id": phase_entity, "value": value}
         if domain == "select":
+            # go-e exposes a mode select ("Force single/three phase…"), not a
+            # 1/3 count — map to the real option, matched against its live list.
+            state = self.hass.states.get(phase_entity)
+            options = list(state.attributes.get("options", [])) if state else []
+            option = _phase_option_for(decision.target_phases, options)
+            if option is None:
+                _LOGGER.warning(
+                    "No option on %s forces %d phase(s); available options: %s",
+                    phase_entity,
+                    decision.target_phases,
+                    options,
+                )
+                return
             service = "select_option"
-            data = {"entity_id": phase_entity, "option": str(decision.target_phases)}
+            data: dict[str, object] = {"entity_id": phase_entity, "option": option}
+        else:
+            service = "set_value"
+            data = {"entity_id": phase_entity, "value": decision.target_phases}
 
         try:
             await self.hass.services.async_call(domain, service, data, blocking=False)
