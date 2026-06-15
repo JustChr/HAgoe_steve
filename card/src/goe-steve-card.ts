@@ -5,6 +5,7 @@ import "./goe-steve-card-editor";
 import {
   resolveEntities,
   findDevices,
+  PLATFORM,
   type ResolvedEntities,
 } from "./entities";
 import { localize } from "./localize";
@@ -70,6 +71,32 @@ export class GoeSteveCard extends LitElement {
 
   public getCardSize(): number {
     return 8;
+  }
+
+  protected firstUpdated(): void {
+    // `ha-select` / `mwc-list-item` are lazy-loaded HA components. The card
+    // editor pulls them in via `ha-form`, but a plain dashboard view does not,
+    // so without this the dropdowns render as inert text you can't select.
+    // Force HA to load its card-helper bundle (which registers them), then
+    // re-render so the controls become live.
+    void this._ensureHaComponents();
+  }
+
+  private async _ensureHaComponents(): Promise<void> {
+    if (customElements.get("ha-select")) return;
+    try {
+      const helpers = await (window as any).loadCardHelpers?.();
+      const card = await helpers?.createCardElement?.({
+        type: "entities",
+        entities: [],
+      });
+      // getConfigElement loads the entities editor → ha-form → ha-select.
+      await (card?.constructor as any)?.getConfigElement?.();
+      await customElements.whenDefined("ha-select");
+    } catch {
+      /* best-effort: themed dropdowns just stay unavailable */
+    }
+    this.requestUpdate();
   }
 
   private get _entities(): ResolvedEntities | null {
@@ -303,6 +330,15 @@ export class GoeSteveCard extends LitElement {
    * translations. Falls back to the raw option value.
    */
   private _localizeOption(s: HassEntity, opt: string): string {
+    // Primary path: look up the integration's own state translation directly.
+    // This is the reliable route — it works regardless of HA version quirks in
+    // `formatEntityState` and matches what HA shows elsewhere in the UI.
+    const tk = this.hass.entities?.[s.entity_id]?.translation_key;
+    if (tk) {
+      const key = `component.${PLATFORM}.entity.select.${tk}.state.${opt}`;
+      const label = this.hass.localize?.(key);
+      if (label) return label;
+    }
     if (this.hass.formatEntityState) {
       const label = this.hass.formatEntityState({ ...s, state: opt }, opt);
       if (label) return label;
