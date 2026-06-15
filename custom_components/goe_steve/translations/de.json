@@ -9,6 +9,7 @@
           "pv_power_entity": "PV-Erzeugung (optional)",
           "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
           "battery_power_entity": "Leistung Hausbatterie (optional)",
+          "battery_hold_entity": "Schalter „Hausbatterie halten“ (optional)",
           "price_entity": "Strompreis (optional)",
           "price_forecast_attr": "Attribut der Preisprognose (optional)"
         },
@@ -17,6 +18,7 @@
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
+          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Ob er greift, richtet sich nach deiner Batterie-Strategie und ihren Ladezustands-Schwellen.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen)."
         }
@@ -75,6 +77,7 @@
           "pv_power_entity": "PV-Erzeugung (optional)",
           "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
           "battery_power_entity": "Leistung Hausbatterie (optional)",
+          "battery_hold_entity": "Schalter „Hausbatterie halten“ (optional)",
           "price_entity": "Strompreis (optional)",
           "price_forecast_attr": "Attribut der Preisprognose (optional)",
           "goe_current_number": "Ladestrom-Steuerung (Number)",
@@ -96,6 +99,7 @@
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
+          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Ob er greift, richtet sich nach deiner Batterie-Strategie und ihren Ladezustands-Schwellen.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",

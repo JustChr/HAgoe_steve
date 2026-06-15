@@ -24,8 +24,8 @@ const en: Dict = {
   "control.battery": "Battery",
   "control.smart_control": "Smart control",
   "control.auto_phase": "Auto phase (1↔3)",
-  "control.reserve_soc": "Home battery reserve",
-  "control.floor_soc": "Home battery floor",
+  "control.battery_fill_to": "Fill battery to",
+  "control.battery_use_to": "Use battery down to",
   "control.target_energy": "Car target energy",
   "control.tag": "Tag",
 
@@ -74,8 +74,8 @@ const de: Dict = {
   "control.battery": "Batterie",
   "control.smart_control": "Intelligente Steuerung",
   "control.auto_phase": "Auto-Phase (1↔3)",
-  "control.reserve_soc": "Hausspeicher-Reserve",
-  "control.floor_soc": "Hausspeicher-Minimum",
+  "control.battery_fill_to": "Batterie laden bis",
+  "control.battery_use_to": "Batterie nutzen bis",
   "control.target_energy": "Ziel-Energie Auto",
   "control.tag": "Tag",
 

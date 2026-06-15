@@ -182,7 +182,7 @@ export class GoeSteveCard extends LitElement {
     };
 
     return html`<div class="flow">
-      <svg viewBox="0 0 320 320" preserveAspectRatio="xMidYMid meet">
+      <svg viewBox="0 0 320 336" preserveAspectRatio="xMidYMid meet">
         ${edge("M160,66 L160,134", pv > TH, false, pv)}
         ${edge("M76,160 L134,160", Number.isNaN(grid) ? false : Math.abs(grid) > TH, grid < 0, Math.abs(grid))}
         ${battery !== null
@@ -207,9 +207,11 @@ export class GoeSteveCard extends LitElement {
     const policy = this._stateObj(ent.battery_policy);
     const smart = this._stateObj(ent.smart_control);
 
-    // Battery-level inputs are shown only where they affect the active mode:
-    // reserve under Protect, floor under Assist, target energy under the
-    // deadline-aware price modes. Keeps the card focused on what's in play.
+    // Battery-level inputs are shown only where they affect the active policy:
+    // reserve under Protect and Share, floor under Assist, target energy under
+    // the deadline-aware price modes. The reserve/floor each gate whether the
+    // battery-hold switch engages during grid charging (Share holds ≤ reserve,
+    // Assist holds ≤ floor), so each is surfaced wherever it's in play.
     const reserve = this._stateObj(ent.battery_reserve_soc);
     const floor = this._stateObj(ent.battery_floor_soc);
     const target = this._stateObj(ent.target_energy);
@@ -231,13 +233,19 @@ export class GoeSteveCard extends LitElement {
         : nothing}
       ${reserve && policyState === "protect"
         ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.reserve_soc")}</span>
+            <span class="ctl-label">${this._t("control.battery_fill_to")}</span>
+            ${this._renderNumber(reserve)}
+          </div>`
+        : nothing}
+      ${reserve && policyState === "share"
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.battery_use_to")}</span>
             ${this._renderNumber(reserve)}
           </div>`
         : nothing}
       ${floor && policyState === "assist"
         ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.floor_soc")}</span>
+            <span class="ctl-label">${this._t("control.battery_use_to")}</span>
             ${this._renderNumber(floor)}
           </div>`
         : nothing}
@@ -544,7 +552,7 @@ export class GoeSteveCard extends LitElement {
     .flow svg {
       width: 100%;
       height: auto;
-      max-height: 320px;
+      max-height: 336px;
     }
     .node circle {
       fill: var(--card-background-color);

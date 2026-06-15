@@ -16,6 +16,10 @@ CONF_GRID_POWER: Final = "grid_power_entity"
 CONF_PV_POWER: Final = "pv_power_entity"
 CONF_BATTERY_SOC: Final = "battery_soc_entity"
 CONF_BATTERY_POWER: Final = "battery_power_entity"
+# Switch/input_boolean that, when on, stops the home battery from discharging
+# (e.g. Victron "disable discharge"). The brain turns it on while grid-charging
+# so the car draws from the grid, not the battery. Battery-system agnostic.
+CONF_BATTERY_HOLD: Final = "battery_hold_entity"
 CONF_PRICE: Final = "price_entity"
 CONF_PRICE_FORECAST_ATTR: Final = "price_forecast_attr"
 CONF_GOE_CURRENT: Final = "goe_current_number"

@@ -21,6 +21,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_GOE_CHARGING,
@@ -54,6 +55,9 @@ _POWER_SENSOR = selector.EntitySelector(
 _OPTIONAL_POWER_SENSOR = _POWER_SENSOR
 _BATTERY_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="battery")
+)
+_BATTERY_HOLD_ENTITY = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
 )
 _NUMBER_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="number")
@@ -136,6 +140,10 @@ def _energy_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_BATTERY_POWER,
                 description={"suggested_value": defaults.get(CONF_BATTERY_POWER)},
             ): _OPTIONAL_POWER_SENSOR,
+            vol.Optional(
+                CONF_BATTERY_HOLD,
+                description={"suggested_value": defaults.get(CONF_BATTERY_HOLD)},
+            ): _BATTERY_HOLD_ENTITY,
             vol.Optional(
                 CONF_PRICE,
                 description={"suggested_value": defaults.get(CONF_PRICE)},

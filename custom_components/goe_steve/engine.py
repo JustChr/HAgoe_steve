@@ -147,6 +147,10 @@ class Decision:
     target_phases: int = 3
     surplus_w: float = 0.0
     reason: str = ""
+    # True while we are deliberately grid-charging and want the home battery
+    # blocked from discharging into the car (driven onto a user-mapped hold
+    # switch by the coordinator). See :func:`_hold_battery`.
+    hold_battery: bool = False
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
@@ -293,6 +297,41 @@ def _battery_guard_current(
     trim_a = _power_to_current(discharge_w, max(1, phases), inp.voltage_v)
     guarded_a = max(cfg.min_current_a, full_current_a - trim_a)
     return guarded_a, guarded_a < full_current_a
+
+
+def _hold_battery(inp: ChargerInputs, cfg: EngineConfig) -> bool:
+    """Whether to actively block the home battery from discharging into the car.
+
+    Set only on the grid-charging branches (Fast / cheap-grid / deadline), where
+    the car's load would otherwise be silently covered from the home battery —
+    paying a round-trip loss and a battery cycle for energy the grid is already
+    supplying. The coordinator drives the result onto a user-mapped hold switch
+    (Victron "disable discharge", an inverter input_boolean, …) so the draw comes
+    from the grid instead. Surplus still flows into the battery; this only fires
+    while we grid-charge.
+
+    The *same* battery policy that governs surplus sharing decides it, so users
+    learn a single concept — and it stays consistent with
+    :func:`_battery_guard_current`, the passive fallback that trims car current
+    when no hold switch is mapped:
+
+    * ``PROTECT`` — the battery never powers the car: always hold.
+    * ``SHARE``   — hold once the battery is at/below its reserve SoC; above the
+      reserve there is plenty to spare, so let it help the car.
+    * ``ASSIST``  — hold once the battery is at/below its floor SoC; above the
+      floor it is meant to assist the car.
+
+    With SoC unknown, PROTECT/SHARE still hold (the safe default — never silently
+    drain); ASSIST can't prove it is above its floor either, so it does not hold.
+    """
+    policy = cfg.battery_policy
+    if policy is BatteryPolicy.PROTECT:
+        return True
+    if inp.battery_soc is None:
+        return policy is BatteryPolicy.SHARE
+    if policy is BatteryPolicy.SHARE:
+        return inp.battery_soc <= cfg.battery_reserve_soc
+    return inp.battery_soc <= cfg.battery_floor_soc  # ASSIST
 
 
 def _battery_held(inp: ChargerInputs, cfg: EngineConfig) -> bool:
@@ -507,6 +546,7 @@ def decide(
             target_phases=_phases_for(
                 cfg.mode, 0.0, inp, cfg, state, grid_charging=True
             ),
+            hold_battery=_hold_battery(inp, cfg),
             reason=f"Fast charging at {cfg.max_current_a:.0f} A",
         )
 
@@ -542,6 +582,7 @@ def decide(
             should_charge=want,
             target_current_a=current if want else 0.0,
             target_phases=phases,
+            hold_battery=want and _hold_battery(inp, cfg),
             reason=reason if want else "Holding off (anti-flap dwell)",
         )
 
@@ -553,6 +594,7 @@ def decide(
             should_charge=want,
             target_current_a=cfg.max_current_a if want else 0.0,
             target_phases=inp.phases,
+            hold_battery=want and _hold_battery(inp, cfg),
             reason="Waiting for a cheaper price window" if not want else "Charging",
         )
 

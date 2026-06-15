@@ -9,6 +9,7 @@
           "pv_power_entity": "PV production (optional)",
           "battery_soc_entity": "Home battery charge level (optional)",
           "battery_power_entity": "Home battery power (optional)",
+          "battery_hold_entity": "Home battery hold switch (optional)",
           "price_entity": "Electricity price (optional)",
           "price_forecast_attr": "Price forecast attribute (optional)"
         },
@@ -17,6 +18,7 @@
           "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
+          "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on while charging from the grid (cheap price / Fast) so the car draws from the grid, not the battery. Solar surplus still charges the battery. Whether it engages follows your battery policy and its SoC thresholds.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices)."
         }
@@ -75,6 +77,7 @@
           "pv_power_entity": "PV production (optional)",
           "battery_soc_entity": "Home battery charge level (optional)",
           "battery_power_entity": "Home battery power (optional)",
+          "battery_hold_entity": "Home battery hold switch (optional)",
           "price_entity": "Electricity price (optional)",
           "price_forecast_attr": "Price forecast attribute (optional)",
           "goe_current_number": "Charging current control (number)",
@@ -96,6 +99,7 @@
           "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
+          "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on while charging from the grid (cheap price / Fast) so the car draws from the grid, not the battery. Solar surplus still charges the battery. Whether it engages follows your battery policy and its SoC thresholds.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
           "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",

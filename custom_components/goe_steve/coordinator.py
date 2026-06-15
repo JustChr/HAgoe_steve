@@ -20,6 +20,7 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_GOE_CHARGING,
@@ -197,6 +198,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # Last force-state we wrote: True=charge, False=don't charge, None=released
         # or never touched. Lets us skip redundant writes and release on handoff.
         self._last_written_force: bool | None = None
+        # Last battery-hold state we wrote: True=held (no discharge), False=off,
+        # None=never touched. Skips redundant writes and releases on handoff so a
+        # switch we never set is left alone.
+        self._last_written_hold: bool | None = None
         self._last_write_at: datetime | None = None
         # Rolling-average buffers for input smoothing.
         self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
@@ -381,9 +386,14 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         if not decision.control:
             self._last_written_a = None  # we relinquished control
             await self._release_force()  # hand the charger back to manual/app
+            await self._release_hold()  # let the home battery discharge again
             return
 
         now = dt_util.utcnow()
+
+        # Drive the battery-hold switch every controlling cycle, before the
+        # rate-limited current write below so it is never starved by the throttle.
+        await self._write_hold(decision.hold_battery)
 
         # Start/stop via the force-state entity when mapped: the amp number floors
         # at the 6 A hardware minimum, so writing 0 there can't actually pause
@@ -542,6 +552,39 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             _LOGGER.warning("Failed to release force-state via %s: %s", force_entity, err)
         finally:
             self._last_written_force = None
+
+    async def _write_hold(self, hold: bool) -> None:
+        """Drive the battery-hold switch so the car draws grid, not the battery.
+
+        ``hold=True`` turns the mapped switch/input_boolean on (block home-battery
+        discharge) while we deliberately grid-charge; False turns it off so the
+        battery flows normally again. A no-op when no entity is mapped, and
+        redundant writes are skipped via the remembered last state.
+        """
+        hold_entity = self._cfg.get(CONF_BATTERY_HOLD)
+        if not hold_entity:
+            return
+        if self._last_written_hold is hold:
+            return
+
+        domain = hold_entity.split(".", 1)[0]
+        service = "turn_on" if hold else "turn_off"
+        try:
+            await self.hass.services.async_call(
+                domain, service, {"entity_id": hold_entity}, blocking=False
+            )
+            self._last_written_hold = hold
+        except Exception as err:  # noqa: BLE001 - never let a write break the loop
+            _LOGGER.warning("Failed to set battery-hold via %s: %s", hold_entity, err)
+
+    async def _release_hold(self) -> None:
+        """Turn the battery-hold switch back off when we relinquish control.
+
+        Only acts when we previously held it on, so a switch the user manages
+        themselves (``_last_written_hold`` None/False) is never touched.
+        """
+        if self._last_written_hold:
+            await self._write_hold(False)
 
     def request_apply(self) -> None:
         """Ask for an immediate re-evaluation after a settings change."""

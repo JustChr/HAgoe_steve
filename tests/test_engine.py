@@ -272,6 +272,90 @@ def test_cheap_grid_guard_floors_at_min_current():
     assert d.target_current_a == 6.0
 
 
+# --- Battery-hold switch (block home-battery discharge during grid charge) -------
+
+def test_hold_off_when_not_grid_charging():
+    # PV-only surplus charging never holds — surplus should still fill the battery.
+    d = decide(
+        _inputs(grid_power_w=-5000.0),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.should_charge is True
+    assert d.hold_battery is False
+
+
+def test_hold_on_fast_protect():
+    d = decide(_inputs(), _cfg(mode=ChargingMode.FAST, battery_policy=BatteryPolicy.PROTECT))
+    assert d.hold_battery is True
+
+
+def test_hold_on_cheap_grid_protect():
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.should_charge is True
+    assert d.hold_battery is True
+
+
+def test_hold_protect_holds_even_with_unknown_soc():
+    d = decide(
+        _inputs(price_now=0.05, battery_soc=None),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.hold_battery is True
+
+
+def test_hold_share_only_at_or_below_reserve():
+    # SHARE: above reserve there's plenty to spare → let the battery help (no hold).
+    above = decide(
+        _inputs(price_now=0.05, battery_soc=90.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15,
+             battery_policy=BatteryPolicy.SHARE, battery_reserve_soc=80.0),
+    )
+    assert above.hold_battery is False
+    # At/below reserve → hold to refill from the grid instead of draining.
+    below = decide(
+        _inputs(price_now=0.05, battery_soc=70.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15,
+             battery_policy=BatteryPolicy.SHARE, battery_reserve_soc=80.0),
+    )
+    assert below.hold_battery is True
+
+
+def test_hold_share_holds_when_soc_unknown():
+    d = decide(
+        _inputs(price_now=0.05, battery_soc=None),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.SHARE),
+    )
+    assert d.hold_battery is True
+
+
+def test_hold_assist_only_at_or_below_floor():
+    # ASSIST: above floor it backs the car (no hold); at/below floor protect it.
+    above = decide(
+        _inputs(price_now=0.05, battery_soc=50.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15,
+             battery_policy=BatteryPolicy.ASSIST, battery_floor_soc=20.0),
+    )
+    assert above.hold_battery is False
+    below = decide(
+        _inputs(price_now=0.05, battery_soc=15.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15,
+             battery_policy=BatteryPolicy.ASSIST, battery_floor_soc=20.0),
+    )
+    assert below.hold_battery is True
+
+
+def test_hold_assist_unknown_soc_does_not_hold():
+    # Can't prove it's below floor → ASSIST stays opted out.
+    d = decide(
+        _inputs(price_now=0.05, battery_soc=None),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.ASSIST),
+    )
+    assert d.hold_battery is False
+
+
 def _forecast(now, prices):
     return [
         PriceSlot(start=now + timedelta(hours=i), price=p)
