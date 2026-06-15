@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -49,6 +50,7 @@ from .const import (
     DEFAULT_TARGET_ENERGY_KWH,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    INPUT_SETTLE_S,
     MIN_OFF_DWELL_S,
     MIN_ON_DWELL_S,
     MIN_UPDATE_INTERVAL_S,
@@ -514,9 +516,12 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         By also re-evaluating when the grid/PV/battery sensors push a new value,
         we react to a passing cloud or a switched-on appliance within seconds.
 
-        Safe against chatty sensors: ``async_request_refresh`` runs through the
-        coordinator's request-refresh debouncer (fires immediately, then coalesces
-        a burst), and charger writes stay throttled by ``MIN_UPDATE_INTERVAL_S``.
+        Grid and battery come off the same inverter but report a beat apart, so
+        acting on the first event of a burst means evaluating a half-updated world
+        (fresh grid, stale battery, or vice versa). A trailing-edge debounce
+        (``INPUT_SETTLE_S``) coalesces the burst into one evaluation once both have
+        landed — aligned and current. Charger writes stay throttled by
+        ``MIN_UPDATE_INTERVAL_S`` on top of that.
 
         Returns an unsubscribe callback for the caller to register on unload.
         """
@@ -528,11 +533,26 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         if not entity_ids:
             return lambda: None
 
+        debouncer = Debouncer(
+            self.hass,
+            _LOGGER,
+            cooldown=INPUT_SETTLE_S,
+            immediate=False,  # trailing edge: wait for the burst to settle first
+            function=self.async_request_refresh,
+        )
+
         @callback
         def _on_input_change(_event: Event[EventStateChangedData]) -> None:
-            self.async_request_refresh()
+            self.hass.async_create_task(debouncer.async_call())
 
-        return async_track_state_change_event(self.hass, entity_ids, _on_input_change)
+        unsub = async_track_state_change_event(self.hass, entity_ids, _on_input_change)
+
+        @callback
+        def _unsubscribe() -> None:
+            unsub()
+            debouncer.async_cancel()
+
+        return _unsubscribe
 
 
 class SteVeCoordinator(DataUpdateCoordinator[SteVeData]):

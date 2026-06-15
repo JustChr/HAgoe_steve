@@ -65,7 +65,19 @@ MIN_OFF_DWELL_S: Final = 120.0  # stay paused at least this long once stopped
 
 # --- Input smoothing --------------------------------------------------------------
 SMOOTHING_SAMPLES: Final = 3  # rolling-average window for PV/grid power
-MIN_UPDATE_INTERVAL_S: Final = 20.0  # don't rewrite the charger more often than this
+
+# Grid and battery come from the same inverter but report a beat apart, so a raw
+# state-change burst would briefly mix a fresh reading with a stale one. We
+# coalesce the burst with a trailing-edge debounce this long: just over the
+# inter-sensor gap, so evaluation runs once on the settled, aligned pair.
+INPUT_SETTLE_S: Final = 0.75
+
+# Minimum seconds between charger writes ≈ one sensor cycle. This is a post-write
+# settle, not a throttle: after we change the amps the inverter/battery take a
+# cycle to rebalance, so we wait that long before reacting to our own move. The
+# sensors only refresh every ~5 s, so there is no fresh information to act on
+# sooner anyway. Stops and phase changes bypass it (see _apply).
+MIN_UPDATE_INTERVAL_S: Final = 5.0
 
 # Don't rewrite the charger for sub-amp changes (protects relays, cleaner UX/logs).
 MIN_WRITE_DELTA_A: Final = 1.0
