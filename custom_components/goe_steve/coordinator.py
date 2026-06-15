@@ -120,7 +120,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self.last_inputs: ChargerInputs | None = None
         self._voltage = float(self._cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
         self._phases = int(self._cfg.get(CONF_PHASES, DEFAULT_PHASES))
-        self._state = EngineState(phases=self._phases)
+        # Leave phase memory unseeded: the engine seeds it per mode (surplus
+        # charging prefers 1φ, power/grid charging pins the full phase count).
+        self._state = EngineState()
         self._last_written_a: float | None = None
         self._last_written_phases: int | None = None
         self._last_write_at: datetime | None = None

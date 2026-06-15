@@ -206,6 +206,15 @@ export class GoeSteveCard extends LitElement {
     const policy = this._stateObj(ent.battery_policy);
     const smart = this._stateObj(ent.smart_control);
 
+    // Battery-level inputs are shown only where they affect the active mode:
+    // reserve under Protect, floor under Assist, target energy under the
+    // deadline-aware price modes. Keeps the card focused on what's in play.
+    const reserve = this._stateObj(ent.battery_reserve_soc);
+    const floor = this._stateObj(ent.battery_floor_soc);
+    const target = this._stateObj(ent.target_energy);
+    const policyState = policy?.state;
+    const modeState = mode?.state;
+
     return html`<div class="controls">
       ${mode
         ? html`<div class="control">
@@ -219,6 +228,24 @@ export class GoeSteveCard extends LitElement {
             ${this._renderSelect(policy)}
           </div>`
         : nothing}
+      ${reserve && policyState === "protect"
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.reserve_soc")}</span>
+            ${this._renderNumber(reserve)}
+          </div>`
+        : nothing}
+      ${floor && policyState === "assist"
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.floor_soc")}</span>
+            ${this._renderNumber(floor)}
+          </div>`
+        : nothing}
+      ${target && (modeState === "price" || modeState === "combined")
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.target_energy")}</span>
+            ${this._renderNumber(target)}
+          </div>`
+        : nothing}
       ${smart
         ? html`<div class="control">
             <span class="ctl-label">${this._t("control.smart_control")}</span>
@@ -228,7 +255,44 @@ export class GoeSteveCard extends LitElement {
             ></ha-switch>
           </div>`
         : nothing}
+      ${ent.auto_phase
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.auto_phase")}</span>
+            <ha-switch
+              .checked=${this._isOn(ent.auto_phase)}
+              @change=${(e: Event) => this._toggle(ent.auto_phase, e)}
+            ></ha-switch>
+          </div>`
+        : nothing}
     </div>`;
+  }
+
+  /** Native number input bound to a `number` entity (min/max/step from attrs). */
+  private _renderNumber(stateObj: HassEntity): TemplateResult {
+    const a = stateObj.attributes;
+    const unit = a.unit_of_measurement ?? "";
+    return html`<span class="ctl-number-wrap">
+      <input
+        class="ctl-number"
+        type="number"
+        .value=${stateObj.state}
+        min=${a.min ?? nothing}
+        max=${a.max ?? nothing}
+        step=${a.step ?? nothing}
+        @change=${(e: Event) =>
+          this._setNumber(stateObj, (e.target as HTMLInputElement).value)}
+      />
+      ${unit ? html`<span class="ctl-unit">${unit}</span>` : nothing}
+    </span>`;
+  }
+
+  private _setNumber(stateObj: HassEntity, value: string): void {
+    const num = Number(value);
+    if (Number.isNaN(num) || String(num) === stateObj.state) return;
+    this.hass.callService("number", "set_value", {
+      entity_id: stateObj.entity_id,
+      value: num,
+    });
   }
 
   private _renderSelect(stateObj: HassEntity): TemplateResult {
@@ -564,6 +628,34 @@ export class GoeSteveCard extends LitElement {
     .ctl-select:focus {
       outline: none;
       border-color: var(--primary-color);
+    }
+    .ctl-number-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      max-width: 60%;
+      justify-content: flex-end;
+    }
+    .ctl-number {
+      width: 90px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color, var(--ha-card-background));
+      color: var(--primary-text-color);
+      font-family: inherit;
+      font-size: 0.95rem;
+      text-align: right;
+    }
+    .ctl-number:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
+    .ctl-unit {
+      color: var(--secondary-text-color);
+      font-size: 0.85rem;
+      white-space: nowrap;
     }
 
     /* Sessions */

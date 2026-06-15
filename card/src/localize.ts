@@ -23,6 +23,10 @@ const en: Dict = {
   "control.mode": "Mode",
   "control.battery": "Battery",
   "control.smart_control": "Smart control",
+  "control.auto_phase": "Auto phase (1↔3)",
+  "control.reserve_soc": "Home battery reserve",
+  "control.floor_soc": "Home battery floor",
+  "control.target_energy": "Car target energy",
   "control.tag": "Tag",
 
   "action.authorize": "Authorize",
@@ -58,6 +62,10 @@ const de: Dict = {
   "control.mode": "Modus",
   "control.battery": "Batterie",
   "control.smart_control": "Intelligente Steuerung",
+  "control.auto_phase": "Auto-Phase (1↔3)",
+  "control.reserve_soc": "Hausspeicher-Reserve",
+  "control.floor_soc": "Hausspeicher-Minimum",
+  "control.target_energy": "Ziel-Energie Auto",
   "control.tag": "Tag",
 
   "action.authorize": "Freigeben",

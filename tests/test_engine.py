@@ -369,6 +369,63 @@ def test_auto_phase_switches_up_after_dwell():
     assert d.target_phases == 3
 
 
+# --- Mode-aware phase selection -------------------------------------------------
+
+def test_fast_uses_full_phases_when_auto_phase():
+    # Fast always wants maximum power → full phase count, regardless of surplus.
+    d = decide(
+        _inputs(phases=1),
+        _cfg(mode=ChargingMode.FAST, auto_phase=True, max_phases=3),
+    )
+    assert d.target_phases == 3
+
+
+def test_pv_surplus_prefers_single_phase_from_fresh_state():
+    # Fresh state (no remembered phase) + a small surplus a single phase can use
+    # but three phases can't (3000 W → 1φ ~13 A, 3φ ~4.3 A < 6 A floor).
+    d = decide(
+        _inputs(grid_power_w=-3000.0, phases=3),
+        _cfg(mode=ChargingMode.PV_ONLY, auto_phase=True, max_phases=3),
+    )
+    assert d.target_phases == 1
+    assert d.should_charge is True
+
+
+def test_cheap_grid_uses_full_phases():
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, phases=1),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, auto_phase=True, max_phases=3),
+    )
+    assert d.target_phases == 3
+
+
+def test_deadline_charging_uses_full_phases():
+    now = datetime(2026, 6, 14, 20, 0, tzinfo=timezone.utc)
+    fc = _forecast(now, [0.05, 0.30, 0.30, 0.30])
+    d = decide(
+        _inputs(now=now, price_forecast=fc, price_now=0.05, phases=1),
+        _cfg(
+            mode=ChargingMode.PRICE,
+            target_energy_kwh=5.0,
+            departure=now + timedelta(hours=4),
+            auto_phase=True,
+            max_phases=3,
+        ),
+    )
+    assert d.should_charge is True
+    assert d.target_phases == 3
+
+
+def test_auto_phase_off_leaves_phases_untouched():
+    # With the toggle off, no mode switches phases — the configured count stands.
+    for mode in (ChargingMode.FAST, ChargingMode.PV_ONLY):
+        d = decide(
+            _inputs(grid_power_w=-3000.0, phases=1),
+            _cfg(mode=mode, auto_phase=False),
+        )
+        assert d.target_phases == 1, mode
+
+
 # --- Phase 2: anti-flap dwell ---------------------------------------------------
 
 def test_min_off_dwell_holds_paused():

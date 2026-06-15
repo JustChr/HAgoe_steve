@@ -22,9 +22,15 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
   Price-optimized (cheapest hours to a departure deadline), Combined, and Fast.
 - **Battery policies:** Protect (home battery first, to a reserve SoC), Share (car may take what
   would charge the battery), Assist (battery may back the car down to a floor SoC).
-- **Automatic 1↔3 phase switching** with anti-flap hysteresis and dwell timers.
+- **Mode-aware 1↔3 phase switching** with anti-flap hysteresis and dwell timers: power modes
+  (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
+  prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch
+  *and* map a go-e phase-control entity during setup — without a mapped phase entity there is
+  nothing to switch.
 - **Lovelace card:** live PV → house / battery / car / grid energy flow, the brain's
-  plain-language reason, mode/battery-policy/smart-control controls, and per-RFID energy.
+  plain-language reason, inline controls (charging mode, battery policy, smart control,
+  auto-phase, and the relevant battery level for the active mode — home reserve/floor SoC or
+  car target energy), and per-RFID energy.
 - Safety: if the car isn't connected or required data is stale, the brain keeps its hands off;
   turning **Smart control** off returns full manual control.
 
@@ -80,11 +86,16 @@ The card source (TypeScript + Lit) lives in [`card/`](card/); the built bundle i
 
 | Entity | Purpose |
 |--------|---------|
-| `select` Charging mode | Off / Solar surplus / Solar+minimum / Fast |
+| `select` Charging mode | Off / Solar surplus / Solar+minimum / Solar+cheap-grid / Price-optimized / Combined / Fast |
+| `select` Battery policy | Protect / Share / Assist |
 | `switch` Smart control | Master enable — off = manual |
+| `switch` Auto phase | Enable mode-aware 1↔3 phase switching (needs a mapped go-e phase entity) |
 | `number` Min/Max current | Charge current bounds |
 | `number` Home battery reserve | Protect threshold (SoC %) |
+| `number` Home battery floor | Assist drain limit (SoC %) |
+| `number` Car target energy | kWh to deliver by departure (Price / Combined) |
 | `number` Minimum charge power | Floor for *Solar + minimum* |
+| `number` Cheap price | At/below this price/kWh, grid counts as cheap |
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the battery policy |
 | `sensor` Target current | What the brain is asking for |

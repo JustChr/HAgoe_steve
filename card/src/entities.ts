@@ -25,6 +25,9 @@ export interface ResolvedEntities {
   battery_policy?: string;
   smart_control?: string;
   auto_phase?: string;
+  battery_reserve_soc?: string;
+  battery_floor_soc?: string;
+  target_energy?: string;
   active_transaction?: string;
   last_session_energy?: string;
   selected_tag?: string;
@@ -83,6 +86,9 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.battery_policy = find("battery_policy");
   result.smart_control = find("smart_control");
   result.auto_phase = find("auto_phase");
+  result.battery_reserve_soc = find("battery_reserve_soc");
+  result.battery_floor_soc = find("battery_floor_soc");
+  result.target_energy = find("target_energy");
   result.active_transaction = find("active_transaction");
   result.last_session_energy = find("last_session_energy");
   result.selected_tag = find("selected_tag");

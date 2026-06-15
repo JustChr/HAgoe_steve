@@ -385,11 +385,16 @@ def _resolve_phases(
     once it drops below what a single phase can deliver at full current — the
     gap between the two thresholds is the hysteresis band. A dwell timer caps
     how often the contactor may toggle.
+
+    Surplus charging *prefers* a single phase: with no remembered phase yet we
+    start at 1φ (not the configured default, which is typically 3φ) so a small
+    surplus is used immediately, climbing to 3φ only once it sustains the
+    higher minimum.
     """
     if not cfg.auto_phase or cfg.max_phases < 3:
         return inp.phases
 
-    current = state.phases if state.phases in (1, 3) else inp.phases
+    current = state.phases if state.phases in (1, 3) else 1
     up_threshold = _current_to_power(cfg.min_current_a, 3, inp.voltage_v)
     down_threshold = _current_to_power(cfg.max_current_a, 1, inp.voltage_v)
 
@@ -414,6 +419,38 @@ def _resolve_phases(
     state.phases = desired
     state.phase_changed_at = inp.now
     return desired
+
+
+#: Modes that should always charge at full phase count (max power), never on a
+#: single phase: Fast, and the grid-charging branches (cheap-grid / deadline) of
+#: the price-aware modes. Surplus charging is handled separately by
+#: :func:`_resolve_phases`, which prefers a single phase.
+_FULL_PHASE_MODES: frozenset[ChargingMode] = frozenset(
+    {ChargingMode.FAST, ChargingMode.PRICE}
+)
+
+
+def _phases_for(
+    mode: ChargingMode,
+    surplus_w: float,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    *,
+    grid_charging: bool,
+) -> int:
+    """Per-mode phase count, honouring the ``auto_phase`` master toggle.
+
+    With auto-phase off (or no 3-phase headroom) phases are left untouched —
+    today's behaviour. With it on: power/grid charging runs at the full phase
+    count for maximum throughput, while solar-surplus charging adapts 1↔3
+    phases via :func:`_resolve_phases` (preferring a single phase).
+    """
+    if not cfg.auto_phase or cfg.max_phases < 3:
+        return inp.phases
+    if grid_charging or mode in _FULL_PHASE_MODES:
+        return cfg.max_phases
+    return _resolve_phases(surplus_w, inp, cfg, state)
 
 
 def _apply_charge_dwell(
@@ -467,7 +504,9 @@ def decide(
             control=True,
             should_charge=True,
             target_current_a=cfg.max_current_a,
-            target_phases=cfg.max_phases if cfg.auto_phase else inp.phases,
+            target_phases=_phases_for(
+                cfg.mode, 0.0, inp, cfg, state, grid_charging=True
+            ),
             reason=f"Fast charging at {cfg.max_current_a:.0f} A",
         )
 
@@ -484,7 +523,7 @@ def decide(
         deadline_now, deadline_reason = _is_cheap_window(inp, cfg)
 
     if cheap_now or deadline_now:
-        phases = cfg.max_phases if cfg.auto_phase else inp.phases
+        phases = _phases_for(cfg.mode, 0.0, inp, cfg, state, grid_charging=True)
         current, guarded = _battery_guard_current(
             cfg.max_current_a, phases, inp, cfg
         )
@@ -519,7 +558,7 @@ def decide(
 
     # --- PV-based modes (PV_ONLY / PV_MINIMUM / PV_PRICE surplus / COMBINED) -----
     surplus = compute_surplus(inp, cfg)
-    phases = _resolve_phases(surplus, inp, cfg, state)
+    phases = _phases_for(cfg.mode, surplus, inp, cfg, state, grid_charging=False)
     pv_current = _power_to_current(surplus, phases, inp.voltage_v)
     min_power = _current_to_power(cfg.min_current_a, phases, inp.voltage_v)
 
