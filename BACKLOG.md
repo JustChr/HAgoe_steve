@@ -59,8 +59,14 @@ concept document; this file is the actionable to-do list.
   localize select-option labels via the integration's translations).
 
 ## Phase 5 — Polish & forecasting
+- [x] Event-driven regulation: re-evaluate surplus the moment grid/PV/battery power changes,
+      not just on the 30 s poll (debounced refresh; writes still throttled; poll kept as a
+      safety net for time-based triggers). (v1.0.1)
 - [ ] PV/price forecast-aware planning.
 - [ ] Diagnostics: data-source health/staleness, last-decision timestamp, dashboards.
+
+  Follow-up worth revisiting: smoothing is sample-based (`SMOOTHING_SAMPLES=3`), so its time
+  window now varies with event cadence — consider time-based smoothing if noise becomes an issue.
 
 ## Open items / decisions to make during build
 - [ ] go-e write path: existing integration's `number`/service vs. its API — confirm.
@@ -75,4 +81,4 @@ concept document; this file is the actionable to-do list.
 - [x] Add `LICENSE` (MIT), `info.md` (HACS), and CI (`.github/workflows/validate.yml`:
       hassfest + HACS validation + engine tests + card build/stale-bundle check). (v1.0)
 - [ ] Submit to home-assistant/brands for the integration logo, then drop `ignore: brands` in CI.
-- [ ] Tag/release `v1.0.0` (manifest bumped to 1.0.0).
+- [x] Tag/release `v1.0.0`, then `v1.0.1` (event-driven surplus). Released as GitHub tags.
