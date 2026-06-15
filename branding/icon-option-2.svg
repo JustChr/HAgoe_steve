@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Option 2 — Dark tile, three phase bars + accent bolt. Reads "3-phase smart charging". -->
+  <defs>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#102A38"/>
+      <stop offset="1" stop-color="#0B2230"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#g2)"/>
+  <!-- three phase bars -->
+  <g fill="#1C4A5C">
+    <rect x="150" y="128" width="40" height="256" rx="20"/>
+    <rect x="236" y="128" width="40" height="256" rx="20"/>
+    <rect x="322" y="128" width="40" height="256" rx="20"/>
+  </g>
+  <path d="M304 56 L168 284 L248 284 L214 456 L360 232 L280 232 Z"
+        fill="#2EE6A6"/>
+</svg>

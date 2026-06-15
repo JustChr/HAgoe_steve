@@ -8,10 +8,13 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 *"may it charge / how much did it charge"*. They coexist because the go-e applies the
 **minimum of all active current limits**. See [`docs/concept`](#concept) for the full design.
 
-> **Status: v1.0 — first release.** All charging modes (solar, price-aware, combined),
-> automatic phase switching and the Protect/Share/Assist battery policies are in place, plus
-> SteVe metering (per-RFID kWh, sessions), authorization/remote-control services, and a bundled
-> **Lovelace card** with a live energy-flow visualization and inline controls.
+> **Status: v1.3 — early days, actively tested.** All charging modes (solar, price-aware,
+> combined), automatic phase switching and the Protect/Share/Assist battery policies are in
+> place, plus SteVe metering (per-RFID kWh, sessions), authorization/remote-control services, and
+> **two bundled Lovelace cards** (energy-flow + price-forecast). It works on the author's own
+> setup, but it's still young and not every wallbox/inverter/price-provider combination has been
+> exercised yet. **Try it, and please [open an issue](https://github.com/JustChr/HAgoe_steve/issues)**
+> with what worked, what broke, or what you'd like — feedback shapes where this goes next. 🙏
 
 ## What it does today
 
@@ -22,15 +25,19 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
   Price-optimized (cheapest hours to a departure deadline), Combined, and Fast.
 - **Battery policies:** Protect (home battery first, to a reserve SoC), Share (car may take what
   would charge the battery), Assist (battery may back the car down to a floor SoC).
+- **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
+  helper) and the brain flips it on while pulling cheap grid / Fast power, so the car draws from
+  the grid instead of draining your home battery. Solar surplus still charges the battery.
 - **Mode-aware 1↔3 phase switching** with anti-flap hysteresis and dwell timers: power modes
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
   prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch
   *and* map a go-e phase-control entity during setup — without a mapped phase entity there is
   nothing to switch.
-- **Lovelace card:** live PV → house / battery / car / grid energy flow, the brain's
-  plain-language reason, inline controls (charging mode, battery policy, smart control,
-  auto-phase, and the relevant battery level for the active mode — home reserve/floor SoC or
-  car target energy), and per-RFID energy.
+- **Two Lovelace cards:** a main card with the live PV → house / battery / car / grid energy
+  flow, the brain's plain-language reason, inline controls (charging mode, battery policy, smart
+  control, auto-phase, and the relevant battery level for the active mode — home reserve/floor
+  SoC or car target energy) and per-RFID energy; plus a price-forecast card that plots upcoming
+  electricity prices with a **draggable "cheap" threshold** you set right on the chart.
 - Safety: if the car isn't connected or required data is stale, the brain keeps its hands off;
   turning **Smart control** off returns full manual control.
 
@@ -50,7 +57,10 @@ writable current `number` entity.
 The config flow has three steps:
 
 1. **Energy sources** — grid power (required; + import / − export), optionally PV production,
-   home-battery charge level and battery power, and an electricity-price sensor.
+   home-battery charge level and battery power, an electricity-price sensor, and an optional
+   home-battery **hold switch** (turned on to stop the battery discharging while charging the car
+   from the grid). The price forecast is auto-detected from the sensor (Nordpool, EPEX Spot,
+   EnergyZero, Tibber, …) — leave the override blank unless detection fails.
 2. **go-e charger** — the current-control `number`, a "car connected" status entity, optionally
    charging status and charging power, plus grid voltage and phase count.
 3. **SteVe (optional)** — base URL, an API user + its **API password** (set under *Users* in
@@ -59,16 +69,17 @@ The config flow has three steps:
 
 Everything can be re-mapped later via the integration's *Configure* (options) dialog.
 
-## Dashboard card
+## Dashboard cards
 
-The integration ships a custom Lovelace card and **registers it automatically** — no manual
-dashboard *Resources* entry needed. After setup, edit a dashboard, *Add card*, and pick
-**go-e + SteVe Smart Charging** (it also appears in the card picker preview).
+The integration ships **two** custom Lovelace cards and **registers them automatically** — no
+manual dashboard *Resources* entry needed. After setup, edit a dashboard, *Add card*, and pick
+them from the card picker (both show a preview). With one Smart Charging device they auto-discover
+all entities; if you run more than one, pick the device in the card's visual editor.
 
-It shows a live energy-flow diagram (PV → house / battery / car / grid), the brain's current
-reason and mode/policy chips, inline controls (charging mode, battery policy, smart-control
-toggle), and per-RFID energy. With one Smart Charging device it auto-discovers all entities; if
-you run more than one, pick the device in the card's visual editor.
+**1. Smart Charging card** (`custom:goe-steve-card`) — the main card. A live energy-flow diagram
+(PV → house / battery / car / grid), the brain's current reason and mode/policy chips, inline
+controls (charging mode, battery policy, smart-control toggle, the active mode's battery level)
+and per-RFID energy.
 
 ```yaml
 type: custom:goe-steve-card
@@ -79,8 +90,20 @@ type: custom:goe-steve-card
 # show_sessions: true
 ```
 
-The card source (TypeScript + Lit) lives in [`card/`](card/); the built bundle is committed to
-`custom_components/goe_steve/www/` and rebuilt with `cd card && npm install && npm run build`.
+**2. Price card** (`custom:goe-steve-price-card`) — an electricity-price forecast chart with a
+**draggable "cheap" threshold**: grab the handle and drop it to set the price at/below which grid
+power counts as cheap (it writes straight to the *Cheap price* number, no YAML needed).
+
+```yaml
+type: custom:goe-steve-price-card
+# device: <optional — auto-detected when there's only one>
+# title: Electricity price
+# hours: 48   # how many hours of forecast to show
+```
+
+Both cards are built from one TypeScript + Lit source tree in [`card/`](card/); the bundle is
+committed to `custom_components/goe_steve/www/` and rebuilt with
+`cd card && npm install && npm run build`.
 
 ## Entities created
 
@@ -137,6 +160,13 @@ pytest tests/     # engine + SteVe parsing; no Home Assistant install required
 The full theoretical design (architecture, energy-flow model, battery policies, all charging
 modes, SteVe linkage, Lovelace card, roadmap) is documented in the project plan.
 
+## Feedback
+
+This is an early-stage project and feedback is hugely welcome — whether it works great or not.
+Please [open an issue](https://github.com/JustChr/HAgoe_steve/issues) with your setup (wallbox,
+inverter/battery, price provider), what you tried, and anything that surprised you. Bug reports,
+"this mode did X when I expected Y", and feature ideas all help steer the roadmap.
+
 ## Roadmap
 
 - **Phase 1 ✅** MVP brain — solar-surplus + manual, Protect policy, safety.
@@ -145,4 +175,6 @@ modes, SteVe linkage, Lovelace card, roadmap) is documented in the project plan.
 - **Phase 3 ✅** SteVe linkage — per-RFID kWh/transactions, authorization + remote start/stop
   services via the SteVe REST API.
 - **Phase 4 ✅** Modern Lovelace card — live energy-flow, reason, inline controls, per-RFID kWh.
-- **Phase 5** Forecast-aware planning & polish.
+- **Phase 5 🚧** Forecast-aware planning & polish — price-forecast card with a draggable cheap
+  threshold and a battery-hold switch for grid charging are in; smarter forecast-based planning
+  is next.

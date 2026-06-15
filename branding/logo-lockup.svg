@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="320" viewBox="0 0 840 320">
+  <!-- Horizontal logo lockup: Option 3 mark + wordmark. -->
+  <defs>
+    <linearGradient id="gl" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#14B8C4"/>
+    </linearGradient>
+  </defs>
+  <!-- mark (Option 3: gradient tile, deep-slate bolt) -->
+  <g transform="translate(16 16)">
+    <rect x="0" y="0" width="288" height="288" rx="68" fill="url(#gl)"/>
+    <path d="M171 27 L90 162 L138 162 L117 261 L207 126 L159 126 Z" fill="#0C2230"/>
+  </g>
+  <!-- wordmark -->
+  <g font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+    <text x="344" y="150" font-size="74" font-weight="700" fill="#0E2A38" letter-spacing="-1">go-e <tspan fill="#16C79A">+</tspan> SteVe</text>
+    <text x="346" y="214" font-size="40" font-weight="500" fill="#5A7682" letter-spacing="2">SMART CHARGING</text>
+  </g>
+</svg>

@@ -81,4 +81,7 @@ concept document; this file is the actionable to-do list.
 - [x] Add `LICENSE` (MIT), `info.md` (HACS), and CI (`.github/workflows/validate.yml`:
       hassfest + HACS validation + engine tests + card build/stale-bundle check). (v1.0)
 - [ ] Submit to home-assistant/brands for the integration logo, then drop `ignore: brands` in CI.
+      Assets ready (Option 3) in `branding/hacs/custom_integrations/goe_steve/` — copy that folder
+      into a fork of home-assistant/brands and open the PR. Sources: `branding/icon-brands.svg`,
+      `branding/logo-lockup.svg`; re-render via `branding/render.mjs`.
 - [x] Tag/release `v1.0.0`, then `v1.0.1` (event-driven surplus). Released as GitHub tags.

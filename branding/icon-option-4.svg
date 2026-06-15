@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Option 4 — Monoline. Transparent background, stroked bolt + phase ticks. Modern & airy. -->
+  <g fill="none" stroke="#16C79A" stroke-width="34" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M300 72 L176 280 L252 280 L212 440 L344 240 L268 240 Z"/>
+  </g>
+  <!-- phase ticks: three short bars under the bolt -->
+  <g stroke="#0E9F86" stroke-width="26" stroke-linecap="round">
+    <line x1="176" y1="470" x2="216" y2="470"/>
+    <line x1="246" y1="470" x2="286" y2="470"/>
+    <line x1="316" y1="470" x2="356" y2="470"/>
+  </g>
+</svg>

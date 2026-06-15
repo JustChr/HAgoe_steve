@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Brands icon: Option 3, full-bleed (trimmed — tile touches all four edges). -->
+  <defs>
+    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#14B8C4"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="116" fill="url(#g3)"/>
+  <path d="M304 40 L156 296 L244 296 L206 472 L372 216 L284 216 Z" fill="#0C2230"/>
+</svg>

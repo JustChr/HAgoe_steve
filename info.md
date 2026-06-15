@@ -18,9 +18,14 @@ limits**.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).
 - **SteVe metering & control:** per-RFID kWh, session sensors, and services to authorize/block
   tags and remote start/stop charging.
-- **Bundled Lovelace card** — live energy-flow visualization, the brain's plain-language reason,
-  inline mode/policy/smart-control controls and per-RFID energy. It is **auto-registered** on
-  install: just add the *go-e + SteVe Smart Charging* card to a dashboard.
+- **Two bundled Lovelace cards** — a *Smart Charging* card (live energy-flow, plain-language
+  reason, inline mode/policy/smart-control controls, per-RFID energy) and a *Price* card
+  (electricity-price forecast with a draggable "cheap" threshold). Both are **auto-registered**
+  on install: just add them from the dashboard card picker.
 
 After installing, restart Home Assistant and add the integration via
 *Settings → Devices & Services*.
+
+> **Early-stage and actively tested** — it works on the author's setup but hasn't seen every
+> wallbox/inverter/price-provider combo. Feedback is very welcome: please
+> [open an issue](https://github.com/JustChr/HAgoe_steve/issues) with what worked or broke. 🙏
