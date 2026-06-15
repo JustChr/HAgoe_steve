@@ -235,7 +235,6 @@ export class GoeStevePriceCard extends LitElement {
       <svg
         viewBox="0 0 ${W} ${H}"
         preserveAspectRatio="none"
-        @pointerdown=${this._onPointerDown}
         @pointermove=${this._onPointerMove}
         @pointerup=${this._onPointerUp}
         @pointercancel=${this._onPointerUp}
@@ -252,8 +251,10 @@ export class GoeStevePriceCard extends LitElement {
           : nothing}
         <!-- threshold line + draggable handle -->
         <line class="thresh" x1=${PAD.left} y1=${yThresh} x2=${W - PAD.right} y2=${yThresh}></line>
-        <g class="handle" data-handle>
-          <rect x=${W - PAD.right - 52} y=${yThresh - 9} width="52" height="18" rx="4"></rect>
+        <g class="handle" data-handle @pointerdown=${this._onPointerDown}>
+          <!-- generous, invisible touch target so fingers can grab the handle -->
+          <rect class="handle-hit" x=${W - PAD.right - 68} y=${yThresh - 20} width="72" height="40"></rect>
+          <rect class="handle-chip" x=${W - PAD.right - 52} y=${yThresh - 9} width="52" height="18" rx="4"></rect>
           <text x=${W - PAD.right - 26} y=${yThresh + 4}>${this._fmtNum(effective)}</text>
         </g>
       </svg>
@@ -462,7 +463,8 @@ export class GoeStevePriceCard extends LitElement {
     .chart svg {
       width: 100%;
       height: 200px;
-      touch-action: none; /* let us own the drag gesture on touch */
+      /* default touch-action: vertical swipes scroll the page normally;
+         only the handle (below) owns the drag gesture. */
     }
     .bar {
       fill: var(--divider-color);
@@ -475,9 +477,20 @@ export class GoeStevePriceCard extends LitElement {
       stroke-width: 1.5;
       stroke-dasharray: 4 3;
     }
+    .handle {
+      /* the handle is the only element that owns the touch gesture, so a
+         scroll swipe elsewhere on the chart pans the page as usual. */
+      touch-action: none;
+    }
     .handle rect {
-      fill: var(--primary-color);
       cursor: ns-resize;
+      touch-action: none;
+    }
+    .handle-chip {
+      fill: var(--primary-color);
+    }
+    .handle-hit {
+      fill: transparent;
     }
     .handle text {
       fill: var(--text-primary-color, #fff);
