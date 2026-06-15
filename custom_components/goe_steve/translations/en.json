@@ -54,9 +54,9 @@
           "steve_connector_id": "Connector ID"
         },
         "data_description": {
-          "steve_url": "Base URL of your SteVe server, e.g. http://192.168.1.10:8080",
-          "steve_username": "A SteVe web user. API access uses that user's API password, not the login password.",
-          "steve_api_password": "The user's API password (set under Users in SteVe).",
+          "steve_url": "Base URL of your SteVe server, e.g. http://192.168.1.10:8080. Enter only the host — the path is added automatically.",
+          "steve_username": "The SteVe web user (default 'admin' — your auth.user in main.properties), not the OCPP tag owner.",
+          "steve_api_password": "The web user's API password — i.e. your 'webapi.value' (web-api-secret) from SteVe's main.properties, not the login password.",
           "steve_charge_box_id": "Default charge box used by the remote start/stop services. Leave empty to always pass it explicitly.",
           "steve_connector_id": "Default connector for remote start (usually 1)."
         }

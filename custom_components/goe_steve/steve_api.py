@@ -10,12 +10,16 @@ It is deliberately free of any Home Assistant imports: the dataclasses and the
 ``tests/test_steve_api.py``); :class:`SteVeApiClient` only needs an
 ``aiohttp.ClientSession`` injected by the caller.
 
-API shape (SteVe v1, Basic auth with the web user's *api_password*):
+API shape (SteVe v1). Auth is HTTP Basic on the ``/api/**`` chain: the username
+is a SteVe *web user* (default ``admin``) and the password is that user's
+*API password* — seeded from ``webapi.value`` (web-api-secret) in SteVe's
+main.properties, distinct from the web-login password and unrelated to the
+``webapi.key`` / ``STEVE-API-KEY`` header (unused by this chain in SteVe 3.13.x):
     GET  {base}/steve/api/v1/ocppTags
     GET  {base}/steve/api/v1/transactions?ocppIdTag=&type=ACTIVE&from=&to=
     PUT  {base}/steve/api/v1/ocppTags/{ocppTagPk}        (authorize/block)
-    POST {base}/steve/api/v1/remote/start  {chargeBoxId, connectorId, idTag}
-    POST {base}/steve/api/v1/remote/stop   {chargeBoxId, transactionId}
+    POST {base}/steve/api/v1/operations/RemoteStartTransaction  {chargeBoxIdList:[id], connectorId?, idTag}
+    POST {base}/steve/api/v1/operations/RemoteStopTransaction   {chargeBoxIdList:[id], transactionId}
 """
 
 from __future__ import annotations
@@ -246,12 +250,12 @@ class SteVeApiClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
 
     async def _request(
-        self, method: str, path: str, *, json: dict | None = None
+        self, method: str, path: str, *, json_body: dict | None = None
     ) -> object:
         url = f"{self._base}/{path.lstrip('/')}"
         try:
             async with self._session.request(
-                method, url, json=json, auth=self._auth, timeout=self._timeout
+                method, url, json=json_body, auth=self._auth, timeout=self._timeout
             ) as resp:
                 if resp.status == 401:
                     raise SteVeApiError("SteVe rejected the credentials (401)")
@@ -310,7 +314,7 @@ class SteVeApiClient:
                 BLOCKED_MAX_ACTIVE if blocked else UNLIMITED_MAX_ACTIVE
             ),
         }
-        await self._request("PUT", f"ocppTags/{tag.pk}", json=body)
+        await self._request("PUT", f"ocppTags/{tag.pk}", json_body=body)
 
     async def _find_tag(self, id_tag: str) -> SteVeTag | None:
         for tag in await self.async_get_tags():
@@ -321,14 +325,13 @@ class SteVeApiClient:
     async def async_remote_start(
         self, charge_box_id: str, connector_id: int, id_tag: str
     ) -> None:
+        # SteVe models the target as a one-element ``chargeBoxIdList``; a zero/None
+        # connector means "no specific connector", so it is omitted entirely.
+        body: dict = {"chargeBoxIdList": [charge_box_id], "idTag": id_tag}
+        if connector_id:
+            body["connectorId"] = connector_id
         await self._request(
-            "POST",
-            "remote/start",
-            json={
-                "chargeBoxId": charge_box_id,
-                "connectorId": connector_id,
-                "idTag": id_tag,
-            },
+            "POST", "operations/RemoteStartTransaction", json_body=body
         )
 
     async def async_remote_stop(
@@ -336,6 +339,9 @@ class SteVeApiClient:
     ) -> None:
         await self._request(
             "POST",
-            "remote/stop",
-            json={"chargeBoxId": charge_box_id, "transactionId": transaction_id},
+            "operations/RemoteStopTransaction",
+            json_body={
+                "chargeBoxIdList": [charge_box_id],
+                "transactionId": transaction_id,
+            },
         )

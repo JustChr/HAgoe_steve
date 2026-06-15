@@ -152,7 +152,7 @@ def _steve_schema(defaults: dict[str, Any]) -> vol.Schema:
             ): _URL,
             vol.Optional(
                 CONF_STEVE_USERNAME,
-                description={"suggested_value": defaults.get(CONF_STEVE_USERNAME)},
+                description={"suggested_value": defaults.get(CONF_STEVE_USERNAME, "admin")},
             ): _TEXT,
             vol.Optional(
                 CONF_STEVE_PASSWORD,

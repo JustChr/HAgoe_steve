@@ -54,9 +54,9 @@
           "steve_connector_id": "Connector-ID"
         },
         "data_description": {
-          "steve_url": "Basis-URL deines SteVe-Servers, z. B. http://192.168.1.10:8080",
-          "steve_username": "Ein SteVe-Webbenutzer. Der API-Zugriff nutzt dessen API-Passwort, nicht das Login-Passwort.",
-          "steve_api_password": "Das API-Passwort des Benutzers (in SteVe unter „Users“ gesetzt).",
+          "steve_url": "Basis-URL deines SteVe-Servers, z. B. http://192.168.1.10:8080. Nur den Host angeben — der Pfad wird automatisch ergänzt.",
+          "steve_username": "Der SteVe-Webbenutzer (Standard „admin“ — dein auth.user in main.properties), nicht der OCPP-Tag-Besitzer.",
+          "steve_api_password": "Das API-Passwort des Webbenutzers — also dein „webapi.value“ (web-api-secret) aus SteVes main.properties, nicht das Login-Passwort.",
           "steve_charge_box_id": "Standard-Charge-Box für die Dienste Fernstart/-stopp. Leer lassen, um sie immer explizit anzugeben.",
           "steve_connector_id": "Standard-Connector für den Fernstart (meist 1)."
         }
