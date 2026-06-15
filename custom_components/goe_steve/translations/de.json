@@ -27,6 +27,7 @@
         "data": {
           "goe_current_number": "Ladestrom-Steuerung (Number)",
           "goe_phase_entity": "Phasenumschaltung (optional)",
+          "goe_force_entity": "Start/Stopp-Steuerung (empfohlen)",
           "goe_connected_entity": "Status: Fahrzeug verbunden",
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
@@ -36,6 +37,7 @@
         "data_description": {
           "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
           "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
+          "goe_force_entity": "Die go-e Force-State-Entität („Neutral / Nicht laden / Laden“, frc). Damit startet und stoppt die Steuerung das Laden tatsächlich — ohne sie kann die Wallbox ihre 6-A-Untergrenze nicht unterschreiten, ein Pausieren funktioniert also nicht.",
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
           "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
           "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
@@ -77,6 +79,7 @@
           "price_forecast_attr": "Attribut der Preisprognose (optional)",
           "goe_current_number": "Ladestrom-Steuerung (Number)",
           "goe_phase_entity": "Phasenumschaltung (optional)",
+          "goe_force_entity": "Start/Stopp-Steuerung (empfohlen)",
           "goe_connected_entity": "Status: Fahrzeug verbunden",
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
@@ -97,6 +100,7 @@
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
           "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
+          "goe_force_entity": "Die go-e Force-State-Entität („Neutral / Nicht laden / Laden“, frc). Damit startet und stoppt die Steuerung das Laden tatsächlich — ohne sie kann die Wallbox ihre 6-A-Untergrenze nicht unterschreiten, ein Pausieren funktioniert also nicht.",
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
           "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
           "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",

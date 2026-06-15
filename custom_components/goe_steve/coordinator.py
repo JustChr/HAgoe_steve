@@ -24,6 +24,7 @@ from .const import (
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
+    CONF_GOE_FORCE,
     CONF_GOE_PHASE,
     CONF_GOE_POWER,
     CONF_GRID_POWER,
@@ -103,6 +104,41 @@ def _phase_option_for(target_phases: int, options: list[str]) -> str | None:
     return None
 
 
+# go-e exposes its force-state (``frc``) as a select with three options
+# ("Neutral" / "Don't charge" / "Charge", German "Neutral" / "Nicht laden" /
+# "Laden") — or, on some integrations, as a number (0/1/2). The amp number floors
+# at the 6 A hardware minimum and cannot actually pause charging, so the brain
+# starts/stops via this entity instead. Match by keyword to survive locale and
+# firmware label changes. The "off" tokens are checked first because the German
+# and English "don't charge" labels also contain the "charge"/"laden" keyword.
+_FORCE_OFF_TOKENS = ("don", "nicht", "kein", "stop", "off")
+_FORCE_ON_TOKENS = ("charge", "laden", "force", "on")
+_FORCE_NEUTRAL_TOKENS = ("neutral", "default", "auto")
+
+
+def _force_option_for(want_charge: bool, options: list[str]) -> str | None:
+    """The select option that forces charging on/off, matched against live options."""
+    for option in options:
+        low = option.lower()
+        is_off = any(token in low for token in _FORCE_OFF_TOKENS)
+        if want_charge:
+            if is_off:
+                continue
+            if any(token in low for token in _FORCE_ON_TOKENS):
+                return option
+        elif is_off:
+            return option
+    return None
+
+
+def _neutral_force_option(options: list[str]) -> str | None:
+    """The select's neutral/default option, to release manual control."""
+    for option in options:
+        if any(token in option.lower() for token in _FORCE_NEUTRAL_TOKENS):
+            return option
+    return None
+
+
 @dataclass(slots=True)
 class RuntimeSettings:
     """User-adjustable settings, owned here and mutated by control entities.
@@ -152,6 +188,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self._state = EngineState()
         self._last_written_a: float | None = None
         self._last_written_phases: int | None = None
+        # Last force-state we wrote: True=charge, False=don't charge, None=released
+        # or never touched. Lets us skip redundant writes and release on handoff.
+        self._last_written_force: bool | None = None
         self._last_write_at: datetime | None = None
         # Rolling-average buffers for input smoothing.
         self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
@@ -300,9 +339,21 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """Write target current/phases to the go-e, avoiding redundant writes."""
         if not decision.control:
             self._last_written_a = None  # we relinquished control
+            await self._release_force()  # hand the charger back to manual/app
             return
 
         now = dt_util.utcnow()
+
+        # Start/stop via the force-state entity when mapped: the amp number floors
+        # at the 6 A hardware minimum, so writing 0 there can't actually pause
+        # charging. When pausing, the force-state holds the car off and we leave
+        # the amp where it is. Without a force entity we fall back to the legacy
+        # current=0 stop (best-effort) below.
+        if self._cfg.get(CONF_GOE_FORCE):
+            await self._write_force(decision.should_charge)
+            if not decision.should_charge:
+                return
+
         target = round(decision.target_current_a) if decision.should_charge else 0
 
         # Rate-limit writes, but always allow a stop and a phase change through.
@@ -379,6 +430,77 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             self._last_written_phases = decision.target_phases
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to set phases via %s: %s", phase_entity, err)
+
+    async def _write_force(self, want_charge: bool) -> None:
+        """Force the charger on/off via the go-e force-state entity, when mapped.
+
+        ``want_charge=True`` forces charging on (``frc=2`` / "Charge"); False forces
+        it off (``frc=1`` / "Don't charge"). Skips redundant writes by remembering
+        the last state we set.
+        """
+        force_entity = self._cfg.get(CONF_GOE_FORCE)
+        if not force_entity:
+            return
+        if self._last_written_force is want_charge:
+            return
+
+        domain = force_entity.split(".", 1)[0]
+        if domain == "select":
+            state = self.hass.states.get(force_entity)
+            options = list(state.attributes.get("options", [])) if state else []
+            option = _force_option_for(want_charge, options)
+            if option is None:
+                _LOGGER.warning(
+                    "No option on %s to %s charging; available options: %s",
+                    force_entity,
+                    "start" if want_charge else "stop",
+                    options,
+                )
+                return
+            service = "select_option"
+            data: dict[str, object] = {"entity_id": force_entity, "option": option}
+        else:
+            # Numeric force-state: 2 = force on (charge), 1 = force off.
+            service = "set_value"
+            data = {"entity_id": force_entity, "value": 2 if want_charge else 1}
+
+        try:
+            await self.hass.services.async_call(domain, service, data, blocking=False)
+            self._last_written_force = want_charge
+        except Exception as err:  # noqa: BLE001 - never let a write break the loop
+            _LOGGER.warning("Failed to set force-state via %s: %s", force_entity, err)
+
+    async def _release_force(self) -> None:
+        """Return the force-state to neutral so manual/app control resumes.
+
+        Only acts when the brain previously forced the state; an untouched entity
+        (``_last_written_force is None``) is left alone so we never override a value
+        the user set themselves.
+        """
+        force_entity = self._cfg.get(CONF_GOE_FORCE)
+        if not force_entity or self._last_written_force is None:
+            return
+
+        domain = force_entity.split(".", 1)[0]
+        if domain == "select":
+            state = self.hass.states.get(force_entity)
+            options = list(state.attributes.get("options", [])) if state else []
+            option = _neutral_force_option(options)
+            if option is None:
+                self._last_written_force = None
+                return
+            service = "select_option"
+            data: dict[str, object] = {"entity_id": force_entity, "option": option}
+        else:
+            service = "set_value"
+            data = {"entity_id": force_entity, "value": 0}
+
+        try:
+            await self.hass.services.async_call(domain, service, data, blocking=False)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to release force-state via %s: %s", force_entity, err)
+        finally:
+            self._last_written_force = None
 
     def request_apply(self) -> None:
         """Ask for an immediate re-evaluation after a settings change."""

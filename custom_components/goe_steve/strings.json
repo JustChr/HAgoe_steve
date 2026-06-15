@@ -27,6 +27,7 @@
         "data": {
           "goe_current_number": "Charging current control (number)",
           "goe_phase_entity": "Phase switch control (optional)",
+          "goe_force_entity": "Start/stop control (recommended)",
           "goe_connected_entity": "Car connected status",
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
@@ -36,6 +37,7 @@
         "data_description": {
           "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",
           "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
+          "goe_force_entity": "The go-e force-state entity ('Neutral / Don't charge / Charge', frc). The brain uses this to actually start and stop charging — without it the charger can't go below its 6 A minimum, so pausing won't work.",
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
           "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
           "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
@@ -77,6 +79,7 @@
           "price_forecast_attr": "Price forecast attribute (optional)",
           "goe_current_number": "Charging current control (number)",
           "goe_phase_entity": "Phase switch control (optional)",
+          "goe_force_entity": "Start/stop control (recommended)",
           "goe_connected_entity": "Car connected status",
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
@@ -97,6 +100,7 @@
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
           "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",
           "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
+          "goe_force_entity": "The go-e force-state entity ('Neutral / Don't charge / Charge', frc). The brain uses this to actually start and stop charging — without it the charger can't go below its 6 A minimum, so pausing won't work.",
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
           "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
           "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",

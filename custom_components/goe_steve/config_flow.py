@@ -26,6 +26,7 @@ from .const import (
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
+    CONF_GOE_FORCE,
     CONF_GOE_PHASE,
     CONF_GOE_POWER,
     CONF_GRID_POWER,
@@ -60,6 +61,9 @@ _NUMBER_ENTITY = selector.EntitySelector(
 _PHASE_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["number", "select"])
 )
+_FORCE_ENTITY = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=["select", "number"])
+)
 _PRICE_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["sensor", "input_number"])
 )
@@ -81,6 +85,10 @@ def _charger_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_GOE_PHASE,
                 description={"suggested_value": defaults.get(CONF_GOE_PHASE)},
             ): _PHASE_ENTITY,
+            vol.Optional(
+                CONF_GOE_FORCE,
+                description={"suggested_value": defaults.get(CONF_GOE_FORCE)},
+            ): _FORCE_ENTITY,
             vol.Required(
                 CONF_GOE_CONNECTED, default=defaults.get(CONF_GOE_CONNECTED)
             ): _STATUS_ENTITY,
