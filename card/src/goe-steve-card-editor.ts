@@ -2,9 +2,12 @@ import { LitElement, html, css, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 
 import { PLATFORM } from "./entities";
+import { localize } from "./localize";
 
 interface Hass {
   localize: (key: string) => string;
+  language?: string;
+  locale?: { language?: string };
 }
 
 interface GoeSteveCardConfig {
@@ -49,15 +52,15 @@ export class GoeSteveCardEditor extends LitElement {
   private _label = (schema: { name: string }): string => {
     switch (schema.name) {
       case "device":
-        return "Smart Charging device (optional — auto-detected)";
+        return localize(this.hass, "editor.device");
       case "title":
-        return "Title (optional)";
+        return localize(this.hass, "editor.title");
       case "show_flow":
-        return "Show energy flow";
+        return localize(this.hass, "editor.show_flow");
       case "show_controls":
-        return "Show controls";
+        return localize(this.hass, "editor.show_controls");
       case "show_sessions":
-        return "Show sessions & RFID";
+        return localize(this.hass, "editor.show_sessions");
       default:
         return schema.name;
     }

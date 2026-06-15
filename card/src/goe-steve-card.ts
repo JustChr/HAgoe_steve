@@ -3,11 +3,14 @@ import { customElement, property, state } from "lit/decorators.js";
 
 import "./goe-steve-card-editor";
 import {
-  PLATFORM,
   resolveEntities,
   findDevices,
   type ResolvedEntities,
 } from "./entities";
+import { localize } from "./localize";
+
+/** Display name of the integration, used in the empty-state message. */
+const INTEGRATION_NAME = "go-e + SteVe Smart Charging";
 
 /** Minimal shape of the bits of `hass` we touch — avoids pulling HA's types. */
 interface HassEntity {
@@ -20,8 +23,10 @@ interface Hass {
   entities: Record<string, { entity_id: string; device_id?: string; platform?: string; translation_key?: string }>;
   devices: Record<string, { name?: string; name_by_user?: string }>;
   localize: (key: string) => string;
+  language?: string;
+  locale?: { language?: string };
   callService: (domain: string, service: string, data: Record<string, any>) => Promise<unknown>;
-  formatEntityState?: (stateObj: HassEntity) => string;
+  formatEntityState?: (stateObj: HassEntity, state?: string) => string;
 }
 
 export interface GoeSteveCardConfig {
@@ -72,6 +77,11 @@ export class GoeSteveCard extends LitElement {
     return resolveEntities(this.hass, this._config?.device);
   }
 
+  /** Translate a card-chrome string in the user's language. */
+  private _t(key: string, params: Record<string, string> = {}): string {
+    return localize(this.hass, key, params);
+  }
+
   protected render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
 
@@ -80,13 +90,15 @@ export class GoeSteveCard extends LitElement {
       return html`<ha-card>
         <div class="empty">
           <ha-icon icon="mdi:ev-station"></ha-icon>
-          <p>No <b>go-e + SteVe Smart Charging</b> device found. Set one up first, then add this card.</p>
+          <p>${this._renderNoDevice()}</p>
         </div>
       </ha-card>`;
     }
 
     const title =
-      this._config.title ?? this._deviceName(ent.deviceId) ?? "Smart Charging";
+      this._config.title ??
+      this._deviceName(ent.deviceId) ??
+      this._t("card.default_title");
 
     return html`<ha-card>
       ${this._renderHeader(ent, title)}
@@ -96,6 +108,12 @@ export class GoeSteveCard extends LitElement {
         ${this._config.show_sessions ? this._renderSessions(ent) : nothing}
       </div>
     </ha-card>`;
+  }
+
+  /** Empty-state sentence with the integration name rendered in bold. */
+  private _renderNoDevice(): TemplateResult {
+    const [before, after] = this._t("card.no_device").split("{name}");
+    return html`${before}<b>${INTEGRATION_NAME}</b>${after ?? ""}`;
   }
 
   // --- Header: status reason + mode/policy chips --------------------------------
@@ -170,13 +188,13 @@ export class GoeSteveCard extends LitElement {
           : nothing}
         ${edge("M160,186 L160,244", car > TH, false, car)}
 
-        ${node(160, 40, "mdi:solar-power", "Solar", fmtPower(pv))}
-        ${node(40, 160, "mdi:transmission-tower", grid < 0 ? "Export" : "Grid", fmtPower(Math.abs(grid)))}
+        ${node(160, 40, "mdi:solar-power", this._t("flow.solar"), fmtPower(pv))}
+        ${node(40, 160, "mdi:transmission-tower", grid < 0 ? this._t("flow.export") : this._t("flow.grid"), fmtPower(Math.abs(grid)))}
         ${battery !== null
-          ? node(280, 160, "mdi:home-battery", "Battery", fmtPower(Math.abs(battery)), soc != null ? ` ${Math.round(Number(soc))}%` : "")
+          ? node(280, 160, "mdi:home-battery", this._t("flow.battery"), fmtPower(Math.abs(battery)), soc != null ? ` ${Math.round(Number(soc))}%` : "")
           : nothing}
-        ${node(160, 160, "mdi:home", "Home", fmtPower(house))}
-        ${node(160, 280, connected === false ? "mdi:car-off" : "mdi:car-electric", connected === false ? "No car" : "Car", fmtPower(car))}
+        ${node(160, 160, "mdi:home", this._t("flow.home"), fmtPower(house))}
+        ${node(160, 280, connected === false ? "mdi:car-off" : "mdi:car-electric", connected === false ? this._t("flow.no_car") : this._t("flow.car"), fmtPower(car))}
       </svg>
     </div>`;
   }
@@ -190,19 +208,19 @@ export class GoeSteveCard extends LitElement {
     return html`<div class="controls">
       ${mode
         ? html`<div class="control">
-            <span class="ctl-label">Mode</span>
+            <span class="ctl-label">${this._t("control.mode")}</span>
             ${this._renderSelect(mode)}
           </div>`
         : nothing}
       ${policy
         ? html`<div class="control">
-            <span class="ctl-label">Battery</span>
+            <span class="ctl-label">${this._t("control.battery")}</span>
             ${this._renderSelect(policy)}
           </div>`
         : nothing}
       ${smart
         ? html`<div class="control">
-            <span class="ctl-label">Smart control</span>
+            <span class="ctl-label">${this._t("control.smart_control")}</span>
             <ha-switch
               .checked=${this._isOn(ent.smart_control)}
               @change=${(e: Event) => this._toggle(ent.smart_control, e)}
@@ -241,22 +259,22 @@ export class GoeSteveCard extends LitElement {
       ${active
         ? html`<div class="session-row">
             <ha-icon icon="mdi:card-account-details"></ha-icon>
-            <span>${active.state === "idle" ? "No active session" : `Charging: ${active.state}`}</span>
+            <span>${active.state === "idle" ? this._t("session.none") : this._t("session.charging", { state: active.state })}</span>
           </div>`
         : nothing}
       ${last && last.state && last.state !== "unknown"
         ? html`<div class="session-row">
             <ha-icon icon="mdi:history"></ha-icon>
-            <span>Last session: ${this._fmtState(last)}</span>
+            <span>${this._t("session.last", { energy: this._fmtState(last) })}</span>
           </div>`
         : nothing}
       ${tags.length
         ? html`<div class="tags">
             ${tags.map(
               (t) => html`<div class="tag">
-                <span class="tag-id">${t.attributes.id_tag ?? "tag"}</span>
+                <span class="tag-id">${t.attributes.id_tag ?? this._t("session.tag")}</span>
                 <span class="tag-kwh ${t.attributes.blocked ? "blocked" : ""}">
-                  ${this._fmtState(t)}${t.attributes.blocked ? " · blocked" : ""}
+                  ${this._fmtState(t)}${t.attributes.blocked ? ` · ${this._t("session.blocked")}` : ""}
                 </span>
               </div>`,
             )}
@@ -279,14 +297,15 @@ export class GoeSteveCard extends LitElement {
   private _fmtState(s: HassEntity): string {
     return this.hass.formatEntityState ? this.hass.formatEntityState(s) : s.state;
   }
+  /**
+   * Localize a select option in the user's language via HA's own
+   * `formatEntityState`, which reads the integration's entity-state
+   * translations. Falls back to the raw option value.
+   */
   private _localizeOption(s: HassEntity, opt: string): string {
-    const reg = this.hass.entities[s.entity_id];
-    const key = reg?.translation_key;
-    if (key) {
-      const tk = this.hass.localize(
-        `component.${PLATFORM}.entity.select.${key}.state.${opt}`,
-      );
-      if (tk) return tk;
+    if (this.hass.formatEntityState) {
+      const label = this.hass.formatEntityState({ ...s, state: opt }, opt);
+      if (label) return label;
     }
     return opt;
   }
