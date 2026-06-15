@@ -135,6 +135,9 @@
           "share": "Share (car may take charge power)",
           "assist": "Assist (battery helps the car)"
         }
+      },
+      "selected_tag": {
+        "name": "Selected tag"
       }
     },
     "switch": {
@@ -174,7 +177,7 @@
       "fields": {
         "id_tag": {
           "name": "ID tag",
-          "description": "The OCPP id-tag (RFID card) to authorize."
+          "description": "The OCPP id-tag (RFID card) to authorize. Defaults to the tag chosen in the 'Selected tag' dropdown."
         },
         "entry_id": {
           "name": "Integration entry",
@@ -188,7 +191,7 @@
       "fields": {
         "id_tag": {
           "name": "ID tag",
-          "description": "The OCPP id-tag (RFID card) to block."
+          "description": "The OCPP id-tag (RFID card) to block. Defaults to the tag chosen in the 'Selected tag' dropdown."
         },
         "entry_id": {
           "name": "Integration entry",
@@ -220,7 +223,7 @@
       "fields": {
         "id_tag": {
           "name": "ID tag",
-          "description": "The OCPP id-tag to charge under."
+          "description": "The OCPP id-tag to charge under. Defaults to the tag chosen in the 'Selected tag' dropdown."
         },
         "charge_box_id": {
           "name": "Charge box ID",

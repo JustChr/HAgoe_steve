@@ -1,7 +1,6 @@
 authorize_tag:
   fields:
     id_tag:
-      required: true
       example: "739E7EDF"
       selector:
         text:
@@ -13,7 +12,6 @@ authorize_tag:
 block_tag:
   fields:
     id_tag:
-      required: true
       example: "739E7EDF"
       selector:
         text:
@@ -42,7 +40,6 @@ set_tag_name:
 remote_start:
   fields:
     id_tag:
-      required: true
       example: "739E7EDF"
       selector:
         text:

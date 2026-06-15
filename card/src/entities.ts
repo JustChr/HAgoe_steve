@@ -27,6 +27,7 @@ export interface ResolvedEntities {
   auto_phase?: string;
   active_transaction?: string;
   last_session_energy?: string;
+  selected_tag?: string;
   tag_energy: string[];
 }
 
@@ -84,6 +85,7 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.auto_phase = find("auto_phase");
   result.active_transaction = find("active_transaction");
   result.last_session_energy = find("last_session_energy");
+  result.selected_tag = find("selected_tag");
 
   result.tag_energy = entries
     .filter(

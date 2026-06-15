@@ -370,6 +370,10 @@ class SteVeCoordinator(DataUpdateCoordinator[SteVeData]):
             config_entry=entry,
         )
         self.client = client
+        # The currently picked authorized tag (its raw id-tag). Set by the
+        # "Selected tag" select entity / card dropdown; the authorize/block/
+        # remote_start services fall back to it when no id_tag is passed.
+        self.selected_tag: str | None = None
 
     async def _async_update_data(self) -> SteVeData:
         try:

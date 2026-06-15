@@ -135,6 +135,9 @@
           "share": "Teilen (Auto darf Ladeleistung nutzen)",
           "assist": "Unterstützen (Batterie hilft dem Auto)"
         }
+      },
+      "selected_tag": {
+        "name": "Ausgewählter Tag"
       }
     },
     "switch": {
@@ -174,7 +177,7 @@
       "fields": {
         "id_tag": {
           "name": "ID-Tag",
-          "description": "Das freizugebende OCPP-ID-Tag (RFID-Karte)."
+          "description": "Das freizugebende OCPP-ID-Tag (RFID-Karte). Ohne Angabe der im Auswahl-Dropdown 'Ausgewählter Tag' gewählte Tag."
         },
         "entry_id": {
           "name": "Integrations-Eintrag",
@@ -188,7 +191,7 @@
       "fields": {
         "id_tag": {
           "name": "ID-Tag",
-          "description": "Das zu sperrende OCPP-ID-Tag (RFID-Karte)."
+          "description": "Das zu sperrende OCPP-ID-Tag (RFID-Karte). Ohne Angabe der im Auswahl-Dropdown 'Ausgewählter Tag' gewählte Tag."
         },
         "entry_id": {
           "name": "Integrations-Eintrag",
@@ -220,7 +223,7 @@
       "fields": {
         "id_tag": {
           "name": "ID-Tag",
-          "description": "Das OCPP-ID-Tag, unter dem geladen wird."
+          "description": "Das OCPP-ID-Tag, unter dem geladen wird. Ohne Angabe der im Auswahl-Dropdown 'Ausgewählter Tag' gewählte Tag."
         },
         "charge_box_id": {
           "name": "Charge-Box-ID",

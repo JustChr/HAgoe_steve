@@ -9,7 +9,6 @@ as :class:`HomeAssistantError` rather than being swallowed.
 from __future__ import annotations
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
@@ -21,7 +20,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import SteVeCoordinator
-from .steve_api import SteVeApiClient, SteVeApiError
+from .steve_api import SteVeApiError
 
 ATTR_ID_TAG = "id_tag"
 ATTR_NAME = "name"
@@ -38,7 +37,7 @@ SERVICE_REMOTE_STOP = "remote_stop"
 
 _TAG_SCHEMA = vol.Schema(
     {
-        vol.Required(ATTR_ID_TAG): cv.string,
+        vol.Optional(ATTR_ID_TAG): cv.string,
         vol.Optional(ATTR_ENTRY_ID): cv.string,
     }
 )
@@ -51,7 +50,7 @@ _SET_TAG_NAME_SCHEMA = vol.Schema(
 )
 _REMOTE_START_SCHEMA = vol.Schema(
     {
-        vol.Required(ATTR_ID_TAG): cv.string,
+        vol.Optional(ATTR_ID_TAG): cv.string,
         vol.Optional(ATTR_CHARGE_BOX_ID): cv.string,
         vol.Optional(ATTR_CONNECTOR_ID): cv.positive_int,
         vol.Optional(ATTR_ENTRY_ID): cv.string,
@@ -88,25 +87,35 @@ def _steve_coordinator(hass: HomeAssistant, call: ServiceCall) -> SteVeCoordinat
     return matches[0]
 
 
-def _client(hass: HomeAssistant, call: ServiceCall) -> tuple[SteVeApiClient, ConfigEntry]:
-    coordinator = _steve_coordinator(hass, call)
-    return coordinator.client, coordinator.config_entry
+def _resolve_id_tag(coordinator: SteVeCoordinator, call: ServiceCall) -> str:
+    """The explicit ``id_tag``, else the tag picked in the 'Selected tag' select."""
+    id_tag = call.data.get(ATTR_ID_TAG) or coordinator.selected_tag
+    if not id_tag:
+        raise ServiceValidationError(
+            "No 'id_tag' given and no tag is selected. Pick a tag in the "
+            "'Selected tag' dropdown (or on the card) or pass 'id_tag'."
+        )
+    return id_tag
 
 
 async def _async_authorize(hass: HomeAssistant, call: ServiceCall) -> None:
-    client, _ = _client(hass, call)
+    coordinator = _steve_coordinator(hass, call)
+    id_tag = _resolve_id_tag(coordinator, call)
     try:
-        await client.async_set_tag_blocked(call.data[ATTR_ID_TAG], blocked=False)
+        await coordinator.client.async_set_tag_blocked(id_tag, blocked=False)
     except SteVeApiError as err:
         raise HomeAssistantError(str(err)) from err
+    await coordinator.async_request_refresh()
 
 
 async def _async_block(hass: HomeAssistant, call: ServiceCall) -> None:
-    client, _ = _client(hass, call)
+    coordinator = _steve_coordinator(hass, call)
+    id_tag = _resolve_id_tag(coordinator, call)
     try:
-        await client.async_set_tag_blocked(call.data[ATTR_ID_TAG], blocked=True)
+        await coordinator.client.async_set_tag_blocked(id_tag, blocked=True)
     except SteVeApiError as err:
         raise HomeAssistantError(str(err)) from err
+    await coordinator.async_request_refresh()
 
 
 async def _async_set_tag_name(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -132,9 +141,10 @@ async def _async_remote_start(hass: HomeAssistant, call: ServiceCall) -> None:
         ATTR_CONNECTOR_ID,
         cfg.get(CONF_STEVE_CONNECTOR, DEFAULT_STEVE_CONNECTOR),
     )
+    id_tag = _resolve_id_tag(coordinator, call)
     try:
         await coordinator.client.async_remote_start(
-            charge_box, int(connector), call.data[ATTR_ID_TAG]
+            charge_box, int(connector), id_tag
         )
     except SteVeApiError as err:
         raise HomeAssistantError(str(err)) from err

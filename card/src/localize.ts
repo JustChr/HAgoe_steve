@@ -23,6 +23,10 @@ const en: Dict = {
   "control.mode": "Mode",
   "control.battery": "Battery",
   "control.smart_control": "Smart control",
+  "control.tag": "Tag",
+
+  "action.authorize": "Authorize",
+  "action.start": "Start",
 
   "session.none": "No active session",
   "session.charging": "Charging: {state}",
@@ -53,6 +57,10 @@ const de: Dict = {
   "control.mode": "Modus",
   "control.battery": "Batterie",
   "control.smart_control": "Intelligente Steuerung",
+  "control.tag": "Tag",
+
+  "action.authorize": "Freigeben",
+  "action.start": "Starten",
 
   "session.none": "Kein aktiver Ladevorgang",
   "session.charging": "Lädt: {state}",

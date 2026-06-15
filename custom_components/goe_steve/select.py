@@ -1,16 +1,19 @@
-"""Select platform: charging mode and battery policy."""
+"""Select platform: charging mode, battery policy, and the SteVe tag picker."""
 
 from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import GoeSteveConfigEntry
+from .coordinator import SteVeCoordinator
 from .engine import SUPPORTED_MODES, BatteryPolicy, ChargingMode
-from .entity import GoeSteveEntity
+from .entity import GoeSteveEntity, SteVeEntity
+from .steve_api import SteVeTag
 
 
 async def async_setup_entry(
@@ -19,9 +22,13 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(
-        [ChargingModeSelect(coordinator), BatteryPolicySelect(coordinator)]
-    )
+    entities: list[SelectEntity] = [
+        ChargingModeSelect(coordinator),
+        BatteryPolicySelect(coordinator),
+    ]
+    if coordinator.steve is not None:
+        entities.append(SteVeTagSelect(coordinator.steve))
+    async_add_entities(entities)
 
 
 class ChargingModeSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
@@ -73,3 +80,59 @@ class BatteryPolicySelect(GoeSteveEntity, RestoreEntity, SelectEntity):
         self.coordinator.settings.battery_policy = BatteryPolicy(option)
         self.async_write_ha_state()
         self.coordinator.request_apply()
+
+
+class SteVeTagSelect(SteVeEntity, RestoreEntity, SelectEntity):
+    """Pick one of SteVe's authorized tags by its friendly name.
+
+    Options are the *notes* (friendly names) of the non-blocked tags SteVe
+    knows — so a user selects a name, never a raw RFID UID. The chosen tag's
+    id-tag is stored on the SteVe coordinator and used as the default by the
+    ``authorize_tag`` / ``block_tag`` / ``remote_start`` services (and the card's
+    authorize/start actions). Blocked tags are intentionally excluded: there's
+    nothing to authorize/start with a card that's already barred.
+    """
+
+    _attr_icon = "mdi:card-account-details-outline"
+
+    def __init__(self, coordinator: SteVeCoordinator) -> None:
+        super().__init__(coordinator, "selected_tag")
+
+    @property
+    def _tags(self) -> list[SteVeTag]:
+        data = self.coordinator.data
+        return [tag for tag in data.tags if not tag.blocked] if data else []
+
+    @property
+    def options(self) -> list[str]:
+        # De-duplicate names (two tags may share a note) while keeping order.
+        names: dict[str, None] = {}
+        for tag in self._tags:
+            names.setdefault(tag.name, None)
+        return list(names)
+
+    @property
+    def current_option(self) -> str | None:
+        selected = self.coordinator.selected_tag
+        if selected is None:
+            return None
+        tag = next((t for t in self._tags if t.id_tag == selected), None)
+        return tag.name if tag is not None else None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is None:
+            return
+        if last.state in (None, "", STATE_UNKNOWN, STATE_UNAVAILABLE):
+            return
+        # Restore by matching the saved friendly name to a current tag.
+        tag = next((t for t in self._tags if t.name == last.state), None)
+        if tag is not None:
+            self.coordinator.selected_tag = tag.id_tag
+
+    async def async_select_option(self, option: str) -> None:
+        tag = next((t for t in self._tags if t.name == option), None)
+        if tag is None:
+            return
+        self.coordinator.selected_tag = tag.id_tag
+        self.async_write_ha_state()

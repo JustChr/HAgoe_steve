@@ -256,13 +256,15 @@ export class GoeSteveCard extends LitElement {
   private _renderSessions(ent: ResolvedEntities): TemplateResult | typeof nothing {
     const active = this._stateObj(ent.active_transaction);
     const last = this._stateObj(ent.last_session_energy);
+    const picker = this._stateObj(ent.selected_tag);
     const tags = ent.tag_energy
       .map((id) => this._stateObj(id))
       .filter((s): s is HassEntity => !!s);
 
-    if (!active && !last && tags.length === 0) return nothing;
+    if (!active && !last && !picker && tags.length === 0) return nothing;
 
     return html`<div class="sessions">
+      ${this._renderTagPicker(picker)}
       ${active
         ? html`<div class="session-row">
             <ha-icon icon="mdi:card-account-details"></ha-icon>
@@ -288,6 +290,43 @@ export class GoeSteveCard extends LitElement {
           </div>`
         : nothing}
     </div>`;
+  }
+
+  /** Tag picker (authorized SteVe tags) + authorize / start actions. */
+  private _renderTagPicker(picker?: HassEntity): TemplateResult | typeof nothing {
+    if (!picker) return nothing;
+    const options: string[] = picker.attributes.options ?? [];
+    if (options.length === 0) return nothing;
+    // Buttons act on the picked tag — the services default id_tag to the
+    // "Selected tag" select, so no UID is ever typed.
+    const hasSelection = options.includes(picker.state);
+    return html`<div class="tag-picker">
+      <div class="control">
+        <span class="ctl-label">${this._t("control.tag")}</span>
+        ${this._renderSelect(picker)}
+      </div>
+      <div class="tag-actions">
+        <button
+          class="tag-btn"
+          ?disabled=${!hasSelection}
+          @click=${() => this._callTagService("authorize_tag")}
+        >
+          <ha-icon icon="mdi:check-decagram"></ha-icon>${this._t("action.authorize")}
+        </button>
+        <button
+          class="tag-btn"
+          ?disabled=${!hasSelection}
+          @click=${() => this._callTagService("remote_start")}
+        >
+          <ha-icon icon="mdi:play"></ha-icon>${this._t("action.start")}
+        </button>
+      </div>
+    </div>`;
+  }
+
+  /** Call a SteVe tag service with no id_tag — it falls back to the selection. */
+  private _callTagService(service: string): void {
+    this.hass.callService(PLATFORM, service, {});
   }
 
   // --- hass helpers ------------------------------------------------------------
@@ -535,6 +574,42 @@ export class GoeSteveCard extends LitElement {
       justify-content: space-between;
       font-size: 0.85rem;
       padding: 2px 0;
+    }
+    .tag-picker {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-bottom: 4px;
+    }
+    .tag-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .tag-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 1;
+      justify-content: center;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color, var(--ha-card-background));
+      color: var(--primary-text-color);
+      font-family: inherit;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .tag-btn ha-icon {
+      --mdc-icon-size: 18px;
+      color: var(--primary-color);
+    }
+    .tag-btn:hover:not([disabled]) {
+      border-color: var(--primary-color);
+    }
+    .tag-btn[disabled] {
+      opacity: 0.5;
+      cursor: default;
     }
     .tag-id {
       color: var(--secondary-text-color);
