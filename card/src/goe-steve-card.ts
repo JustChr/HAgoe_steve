@@ -263,8 +263,15 @@ export class GoeSteveCard extends LitElement {
 
     if (!active && !last && !picker && tags.length === 0) return nothing;
 
+    // A session is "authorized/running" when SteVe reports an active transaction.
+    // The picker's action zone keys off this: authorize/start when idle, stop when
+    // charging — the two are mutually exclusive so the same buttons morph.
+    const hasActive =
+      !!active &&
+      !["idle", "unknown", "unavailable", ""].includes(active.state);
+
     return html`<div class="sessions">
-      ${this._renderTagPicker(picker)}
+      ${this._renderTagPicker(picker, hasActive)}
       ${active
         ? html`<div class="session-row">
             <ha-icon icon="mdi:card-account-details"></ha-icon>
@@ -292,13 +299,22 @@ export class GoeSteveCard extends LitElement {
     </div>`;
   }
 
-  /** Tag picker (authorized SteVe tags) + authorize / start actions. */
-  private _renderTagPicker(picker?: HassEntity): TemplateResult | typeof nothing {
+  /**
+   * Tag picker (authorized SteVe tags) + a state-driven action zone.
+   *
+   * While a session is running there is nothing to authorize/start, so the zone
+   * collapses to a single Stop button that ends the active transaction; back to
+   * idle it offers Authorize / Start on the picked tag. The buttons act on the
+   * "Selected tag" select (services default id_tag to it), so no UID is typed,
+   * and Stop targets the lone active transaction (remote_stop's default).
+   */
+  private _renderTagPicker(
+    picker: HassEntity | undefined,
+    hasActive: boolean,
+  ): TemplateResult | typeof nothing {
     if (!picker) return nothing;
     const options: string[] = picker.attributes.options ?? [];
     if (options.length === 0) return nothing;
-    // Buttons act on the picked tag — the services default id_tag to the
-    // "Selected tag" select, so no UID is ever typed.
     const hasSelection = options.includes(picker.state);
     return html`<div class="tag-picker">
       <div class="control">
@@ -306,20 +322,27 @@ export class GoeSteveCard extends LitElement {
         ${this._renderSelect(picker)}
       </div>
       <div class="tag-actions">
-        <button
-          class="tag-btn"
-          ?disabled=${!hasSelection}
-          @click=${() => this._callTagService("authorize_tag")}
-        >
-          <ha-icon icon="mdi:check-decagram"></ha-icon>${this._t("action.authorize")}
-        </button>
-        <button
-          class="tag-btn"
-          ?disabled=${!hasSelection}
-          @click=${() => this._callTagService("remote_start")}
-        >
-          <ha-icon icon="mdi:play"></ha-icon>${this._t("action.start")}
-        </button>
+        ${hasActive
+          ? html`<button
+              class="tag-btn stop"
+              @click=${() => this._callTagService("remote_stop")}
+            >
+              <ha-icon icon="mdi:stop"></ha-icon>${this._t("action.stop")}
+            </button>`
+          : html`<button
+                class="tag-btn"
+                ?disabled=${!hasSelection}
+                @click=${() => this._callTagService("authorize_tag")}
+              >
+                <ha-icon icon="mdi:check-decagram"></ha-icon>${this._t("action.authorize")}
+              </button>
+              <button
+                class="tag-btn"
+                ?disabled=${!hasSelection}
+                @click=${() => this._callTagService("remote_start")}
+              >
+                <ha-icon icon="mdi:play"></ha-icon>${this._t("action.start")}
+              </button>`}
       </div>
     </div>`;
   }
@@ -610,6 +633,15 @@ export class GoeSteveCard extends LitElement {
     .tag-btn[disabled] {
       opacity: 0.5;
       cursor: default;
+    }
+    .tag-btn.stop {
+      color: var(--error-color, #db4437);
+    }
+    .tag-btn.stop ha-icon {
+      color: var(--error-color, #db4437);
+    }
+    .tag-btn.stop:hover:not([disabled]) {
+      border-color: var(--error-color, #db4437);
     }
     .tag-id {
       color: var(--secondary-text-color);

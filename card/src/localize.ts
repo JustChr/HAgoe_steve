@@ -27,6 +27,7 @@ const en: Dict = {
 
   "action.authorize": "Authorize",
   "action.start": "Start",
+  "action.stop": "Stop",
 
   "session.none": "No active session",
   "session.charging": "Charging: {state}",
@@ -61,6 +62,7 @@ const de: Dict = {
 
   "action.authorize": "Freigeben",
   "action.start": "Starten",
+  "action.stop": "Stoppen",
 
   "session.none": "Kein aktiver Ladevorgang",
   "session.charging": "Lädt: {state}",
