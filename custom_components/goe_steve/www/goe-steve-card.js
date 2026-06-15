@@ -133,10 +133,10 @@ var Mt=Object.defineProperty;var Pt=Object.getOwnPropertyDescriptor;var y=(r,t,e
               </div>`)}
           </div>`:l}
     </div>`}_renderTagPicker(t,e){if(!t)return l;let s=t.attributes.options??[];if(s.length===0)return l;let i=s.includes(t.state);return d`<div class="tag-picker">
-      <div class="control">
-        <span class="ctl-label">${this._t("control.tag")}</span>
-        ${this._renderSelect(t)}
-      </div>
+      ${e?l:d`<div class="control">
+            <span class="ctl-label">${this._t("control.tag")}</span>
+            ${this._renderSelect(t)}
+          </div>`}
       <div class="tag-actions">
         ${e?d`<button
               class="tag-btn stop"

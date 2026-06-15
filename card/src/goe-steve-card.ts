@@ -366,11 +366,13 @@ export class GoeSteveCard extends LitElement {
   /**
    * Tag picker (authorized SteVe tags) + a state-driven action zone.
    *
-   * While a session is running there is nothing to authorize/start, so the zone
-   * collapses to a single Stop button that ends the active transaction; back to
-   * idle it offers Authorize / Start on the picked tag. The buttons act on the
-   * "Selected tag" select (services default id_tag to it), so no UID is typed,
-   * and Stop targets the lone active transaction (remote_stop's default).
+   * While a session is running there is nothing to authorize/start: the tag
+   * dropdown is hidden (Stop ignores it anyway) and the zone collapses to a
+   * single Stop button that ends the active transaction. Back to idle the
+   * dropdown returns and offers Authorize / Start on the picked tag. The
+   * authorize/start buttons act on the "Selected tag" select (services default
+   * id_tag to it), so no UID is typed, and Stop targets the lone active
+   * transaction (remote_stop's default).
    */
   private _renderTagPicker(
     picker: HassEntity | undefined,
@@ -381,10 +383,12 @@ export class GoeSteveCard extends LitElement {
     if (options.length === 0) return nothing;
     const hasSelection = options.includes(picker.state);
     return html`<div class="tag-picker">
-      <div class="control">
-        <span class="ctl-label">${this._t("control.tag")}</span>
-        ${this._renderSelect(picker)}
-      </div>
+      ${hasActive
+        ? nothing
+        : html`<div class="control">
+            <span class="ctl-label">${this._t("control.tag")}</span>
+            ${this._renderSelect(picker)}
+          </div>`}
       <div class="tag-actions">
         ${hasActive
           ? html`<button
