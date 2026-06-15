@@ -73,32 +73,6 @@ export class GoeSteveCard extends LitElement {
     return 8;
   }
 
-  protected firstUpdated(): void {
-    // `ha-select` / `mwc-list-item` are lazy-loaded HA components. The card
-    // editor pulls them in via `ha-form`, but a plain dashboard view does not,
-    // so without this the dropdowns render as inert text you can't select.
-    // Force HA to load its card-helper bundle (which registers them), then
-    // re-render so the controls become live.
-    void this._ensureHaComponents();
-  }
-
-  private async _ensureHaComponents(): Promise<void> {
-    if (customElements.get("ha-select")) return;
-    try {
-      const helpers = await (window as any).loadCardHelpers?.();
-      const card = await helpers?.createCardElement?.({
-        type: "entities",
-        entities: [],
-      });
-      // getConfigElement loads the entities editor → ha-form → ha-select.
-      await (card?.constructor as any)?.getConfigElement?.();
-      await customElements.whenDefined("ha-select");
-    } catch {
-      /* best-effort: themed dropdowns just stay unavailable */
-    }
-    this.requestUpdate();
-  }
-
   private get _entities(): ResolvedEntities | null {
     if (!this.hass) return null;
     return resolveEntities(this.hass, this._config?.device);
@@ -259,17 +233,23 @@ export class GoeSteveCard extends LitElement {
 
   private _renderSelect(stateObj: HassEntity): TemplateResult {
     const options: string[] = stateObj.attributes.options ?? [];
-    return html`<ha-select
-      naturalMenuWidth
-      .value=${stateObj.state}
-      @selected=${(e: any) => this._selectOption(stateObj, e.target.value)}
-      @closed=${(e: Event) => e.stopPropagation()}
+    // A native <select> rather than HA's ha-select (mwc-select): the latter is
+    // lazy-loaded, its popup menu is clipped by ha-card's `overflow: hidden`,
+    // and its selected-text sync is unreliable inside a card — all of which made
+    // the dropdown effectively unusable. The native control always opens (in the
+    // browser's own layer, so it can't be clipped) and its change always fires.
+    return html`<select
+      class="ctl-select"
+      @change=${(e: Event) =>
+        this._selectOption(stateObj, (e.target as HTMLSelectElement).value)}
     >
       ${options.map(
         (opt) =>
-          html`<mwc-list-item .value=${opt}>${this._localizeOption(stateObj, opt)}</mwc-list-item>`,
+          html`<option .value=${opt} ?selected=${opt === stateObj.state}>
+            ${this._localizeOption(stateObj, opt)}
+          </option>`,
       )}
-    </ha-select>`;
+    </select>`;
   }
 
   // --- Charging sessions / per-RFID energy -------------------------------------
@@ -506,8 +486,22 @@ export class GoeSteveCard extends LitElement {
       font-size: 0.9rem;
       white-space: nowrap;
     }
-    ha-select {
+    .ctl-select {
       min-width: 180px;
+      flex: 1;
+      max-width: 60%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color, var(--ha-card-background));
+      color: var(--primary-text-color);
+      font-family: inherit;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    .ctl-select:focus {
+      outline: none;
+      border-color: var(--primary-color);
     }
 
     /* Sessions */

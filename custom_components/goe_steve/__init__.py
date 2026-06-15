@@ -97,12 +97,48 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
             [StaticPathConfig(f"/{DOMAIN}", str(card_dir), cache_headers=False)]
         )
 
-        from homeassistant.components.frontend import add_extra_js_url
-
         # Cache-bust on file mtime so a HACS update reloads the card.
         version = int(card_path.stat().st_mtime)
-        add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+
+        # Prefer a real Lovelace resource: the dashboard *awaits* its resources
+        # before rendering custom cards, so the element is defined in time. The
+        # older `add_extra_js_url` route loads in parallel and Lovelace does not
+        # wait for it, which races and yields "Custom element doesn't exist". Fall
+        # back to it only for YAML-mode dashboards (no writable resource store).
+        if not await _async_register_card_resource(hass, version):
+            from homeassistant.components.frontend import add_extra_js_url
+
+            add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+
         hass.data[_FRONTEND_REGISTERED] = True
         _LOGGER.debug("Registered Lovelace card at %s", CARD_URL)
     except Exception as err:  # noqa: BLE001 - never block setup on a card hiccup
         _LOGGER.warning("Could not auto-register the Lovelace card: %s", err)
+
+
+async def _async_register_card_resource(hass: HomeAssistant, version: int) -> bool:
+    """Register the card as a storage-mode Lovelace resource (deduped/updated).
+
+    Returns True when handled, False when there is no writable resource store
+    (e.g. YAML-mode Lovelace), so the caller can fall back to add_extra_js_url.
+    """
+    lovelace = hass.data.get("lovelace")
+    resources = getattr(lovelace, "resources", None)
+    # Only the storage-backed collection is writable; YAML mode is read-only.
+    if resources is None or type(resources).__name__ != "ResourceStorageCollection":
+        return False
+
+    if not resources.loaded:
+        await resources.async_load()
+
+    target = f"{CARD_URL}?v={version}"
+    for item in resources.async_items():
+        if item.get("url", "").split("?")[0] == CARD_URL:
+            if item.get("url") != target:  # bump the cache-bust after an update
+                await resources.async_update_item(
+                    item["id"], {"res_type": "module", "url": target}
+                )
+            return True
+
+    await resources.async_create_item({"res_type": "module", "url": target})
+    return True
