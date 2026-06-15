@@ -44,6 +44,17 @@ const en: Dict = {
   "editor.show_flow": "Show energy flow",
   "editor.show_controls": "Show controls",
   "editor.show_sessions": "Show sessions & RFID",
+  "editor.hours": "Hours to show (optional)",
+
+  "price.title": "Electricity price",
+  "price.no_price":
+    "No price forecast available. Configure a price sensor for {name} first.",
+  "price.cheap_threshold": "Cheap below",
+  "price.cheap_hours": "{hours} cheap upcoming",
+  "price.next_window": "next {start}–{end}",
+  "price.no_cheap": "No cheap hours coming up at this threshold",
+  "price.now": "now",
+  "price.tomorrow": "Tomorrow",
 };
 
 const de: Dict = {
@@ -83,6 +94,17 @@ const de: Dict = {
   "editor.show_flow": "Energiefluss anzeigen",
   "editor.show_controls": "Steuerung anzeigen",
   "editor.show_sessions": "Ladevorgänge & RFID anzeigen",
+  "editor.hours": "Anzuzeigende Stunden (optional)",
+
+  "price.title": "Strompreis",
+  "price.no_price":
+    "Keine Preisprognose verfügbar. Richte zuerst einen Preissensor für {name} ein.",
+  "price.cheap_threshold": "Günstig unter",
+  "price.cheap_hours": "{hours} günstig in Kürze",
+  "price.next_window": "nächste {start}–{end}",
+  "price.no_cheap": "Bei dieser Schwelle keine günstigen Stunden in Sicht",
+  "price.now": "jetzt",
+  "price.tomorrow": "Morgen",
 };
 
 const LANGUAGES: Record<string, Dict> = { en, de };

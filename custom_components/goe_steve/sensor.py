@@ -29,6 +29,7 @@ async def async_setup_entry(
             SurplusSensor(coordinator),
             TargetCurrentSensor(coordinator),
             PowerFlowSensor(coordinator),
+            PriceForecastSensor(coordinator),
         ]
     )
 
@@ -172,6 +173,43 @@ class PowerFlowSensor(GoeSteveEntity, SensorEntity):
             "house_w": round(flow.house_w),
             "car_connected": inputs.car_connected,
             "phases": inputs.phases,
+        }
+
+
+class PriceForecastSensor(GoeSteveEntity, SensorEntity):
+    """The electricity-price forecast, surfaced for the price card.
+
+    State is the current spot price; the upcoming price slots ride along as
+    attributes (with the active cheap threshold) so the card can draw the curve
+    and let the user drag the threshold onto it — mirroring how PowerFlowSensor
+    feeds the flow diagram from a single entity.
+    """
+
+    _attr_icon = "mdi:cash-clock"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 3
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "price_forecast")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.last_price_now
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        return self.coordinator.price_unit
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        forecast = self.coordinator.last_forecast or []
+        return {
+            "slots": [
+                {"start": slot.start.isoformat(), "price": round(slot.price, 5)}
+                for slot in forecast
+            ],
+            "cheap_price": self.coordinator.settings.cheap_price,
+            "unit": self.coordinator.price_unit,
         }
 
 

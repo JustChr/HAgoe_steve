@@ -165,6 +165,7 @@
       "surplus_for_car": { "name": "Überschuss fürs Auto" },
       "target_current": { "name": "Soll-Strom" },
       "power_flow": { "name": "Energiefluss" },
+      "price_forecast": { "name": "Strompreis" },
       "active_transaction": { "name": "Aktiver Ladevorgang" },
       "last_session_energy": { "name": "Energie letzter Ladevorgang" },
       "tag_energy": { "name": "Energie {tag}" }

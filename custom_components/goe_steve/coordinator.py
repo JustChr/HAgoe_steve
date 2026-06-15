@@ -183,6 +183,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # Latest world snapshot, retained so the power-flow sensor (and card) can
         # surface live PV/grid/battery/car values without re-reading every entity.
         self.last_inputs: ChargerInputs | None = None
+        # Latest price snapshot, cached so the price-forecast sensor (and card) can
+        # render the curve even on cycles where regulation bails early (no car/grid).
+        self._last_price_now: float | None = None
+        self._last_forecast: list[PriceSlot] | None = None
         self._voltage = float(self._cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
         self._phases = int(self._cfg.get(CONF_PHASES, DEFAULT_PHASES))
         # Leave phase memory unseeded: the engine seeds it per mode (surplus
@@ -252,7 +256,18 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         return self._state.phases or self._phases
 
     def _read_price(self) -> tuple[float | None, list[PriceSlot] | None]:
-        """Read the current price and (best-effort) the forecast list."""
+        """Read the current price and (best-effort) the forecast list.
+
+        The result is cached on the coordinator (``last_price_now`` /
+        ``last_forecast``) so the price sensor and card keep a usable curve even
+        on cycles where regulation bails out before building inputs.
+        """
+        price_now, forecast = self._read_price_uncached()
+        self._last_price_now = price_now
+        self._last_forecast = forecast
+        return price_now, forecast
+
+    def _read_price_uncached(self) -> tuple[float | None, list[PriceSlot] | None]:
         entity_id = self._cfg.get(CONF_PRICE)
         if not entity_id:
             return None, None
@@ -277,6 +292,28 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         forecast = dedupe_slots(forecast)
         return price_now, (forecast or None)
 
+    @property
+    def last_price_now(self) -> float | None:
+        """Most recently read spot price (currency/kWh), or None."""
+        return self._last_price_now
+
+    @property
+    def last_forecast(self) -> list[PriceSlot] | None:
+        """Most recently parsed price forecast, or None."""
+        return self._last_forecast
+
+    @property
+    def price_unit(self) -> str | None:
+        """Unit of the configured price sensor, best-effort (for card labels)."""
+        entity_id = self._cfg.get(CONF_PRICE)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return None
+        unit = state.attributes.get("unit_of_measurement")
+        return str(unit) if unit is not None else None
+
     @staticmethod
     def _smooth(buffer: deque[float], value: float | None) -> float | None:
         if value is None:
@@ -291,6 +328,8 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         # Required signals missing/stale → keep hands off rather than guess.
         if connected is None or grid_raw is None:
+            # Still refresh the price cache so the price card renders without a car.
+            self._read_price()
             return Decision(
                 control=False,
                 reason="Waiting for charger / grid data",

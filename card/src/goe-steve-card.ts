@@ -2,6 +2,7 @@ import { LitElement, html, css, svg, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 
 import "./goe-steve-card-editor";
+import "./goe-steve-price-card";
 import {
   resolveEntities,
   findDevices,
