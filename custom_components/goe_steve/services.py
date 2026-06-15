@@ -24,6 +24,7 @@ from .coordinator import SteVeCoordinator
 from .steve_api import SteVeApiClient, SteVeApiError
 
 ATTR_ID_TAG = "id_tag"
+ATTR_NAME = "name"
 ATTR_TRANSACTION_ID = "transaction_id"
 ATTR_CHARGE_BOX_ID = "charge_box_id"
 ATTR_CONNECTOR_ID = "connector_id"
@@ -31,12 +32,20 @@ ATTR_ENTRY_ID = "entry_id"
 
 SERVICE_AUTHORIZE_TAG = "authorize_tag"
 SERVICE_BLOCK_TAG = "block_tag"
+SERVICE_SET_TAG_NAME = "set_tag_name"
 SERVICE_REMOTE_START = "remote_start"
 SERVICE_REMOTE_STOP = "remote_stop"
 
 _TAG_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_ID_TAG): cv.string,
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+    }
+)
+_SET_TAG_NAME_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ID_TAG): cv.string,
+        vol.Required(ATTR_NAME): cv.string,
         vol.Optional(ATTR_ENTRY_ID): cv.string,
     }
 )
@@ -100,6 +109,17 @@ async def _async_block(hass: HomeAssistant, call: ServiceCall) -> None:
         raise HomeAssistantError(str(err)) from err
 
 
+async def _async_set_tag_name(hass: HomeAssistant, call: ServiceCall) -> None:
+    coordinator = _steve_coordinator(hass, call)
+    try:
+        await coordinator.client.async_set_tag_note(
+            call.data[ATTR_ID_TAG], call.data[ATTR_NAME]
+        )
+    except SteVeApiError as err:
+        raise HomeAssistantError(str(err)) from err
+    await coordinator.async_request_refresh()
+
+
 async def _async_remote_start(hass: HomeAssistant, call: ServiceCall) -> None:
     coordinator = _steve_coordinator(hass, call)
     cfg = coordinator.config_entry.data
@@ -158,6 +178,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def block(call: ServiceCall) -> None:
         await _async_block(hass, call)
 
+    async def set_tag_name(call: ServiceCall) -> None:
+        await _async_set_tag_name(hass, call)
+
     async def remote_start(call: ServiceCall) -> None:
         await _async_remote_start(hass, call)
 
@@ -166,6 +189,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(DOMAIN, SERVICE_AUTHORIZE_TAG, authorize, _TAG_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_BLOCK_TAG, block, _TAG_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_TAG_NAME, set_tag_name, _SET_TAG_NAME_SCHEMA
+    )
     hass.services.async_register(
         DOMAIN, SERVICE_REMOTE_START, remote_start, _REMOTE_START_SCHEMA
     )
@@ -184,6 +210,7 @@ def async_unload_services(hass: HomeAssistant) -> None:
     for service in (
         SERVICE_AUTHORIZE_TAG,
         SERVICE_BLOCK_TAG,
+        SERVICE_SET_TAG_NAME,
         SERVICE_REMOTE_START,
         SERVICE_REMOTE_STOP,
     ):

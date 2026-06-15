@@ -78,6 +78,24 @@ def test_parse_tag_requires_id():
     assert steve.parse_tag("nope") is None
 
 
+def test_tag_name_prefers_note_then_falls_back_to_id():
+    named = steve.parse_tag({"idTag": "CARD1", "note": "Chris's Model 3"})
+    assert named.name == "Chris's Model 3"
+    # Blank/whitespace notes fall back to the raw id-tag.
+    assert steve.parse_tag({"idTag": "CARD2"}).name == "CARD2"
+    assert steve.parse_tag({"idTag": "CARD3", "note": "   "}).name == "CARD3"
+
+
+def test_name_for_tag_resolves_via_tags_list():
+    data = steve.SteVeData(
+        tags=[steve.SteVeTag(pk=1, id_tag="CARD1", note="Garage key")]
+    )
+    assert data.name_for_tag("CARD1") == "Garage key"
+    # Unknown tag → raw id-tag; None id → None.
+    assert data.name_for_tag("CARD9") == "CARD9"
+    assert data.name_for_tag(None) is None
+
+
 # --- transactions + energy ---------------------------------------------------------
 
 def test_transaction_energy_kwh_from_meter_values():

@@ -55,7 +55,7 @@ def _setup_steve_sensors(
         if data is None:
             return
         new = [
-            TagEnergySensor(steve, tag.id_tag)
+            TagEnergySensor(steve, tag.id_tag, tag.name)
             for tag in data.tags
             if tag.id_tag not in known
         ]
@@ -205,6 +205,7 @@ class ActiveTransactionSensor(SteVeEntity, SensorEntity):
             "transaction_id": tx.id,
             "charge_box_id": tx.charge_box_id,
             "id_tag": tx.id_tag,
+            "name": data.name_for_tag(tx.id_tag),
             "started": tx.start.isoformat() if tx.start else None,
             "active_sessions": len(data.active),
         }
@@ -237,6 +238,7 @@ class LastSessionEnergySensor(SteVeEntity, SensorEntity):
         tx = data.last_session
         return {
             "id_tag": tx.id_tag,
+            "name": data.name_for_tag(tx.id_tag),
             "charge_box_id": tx.charge_box_id,
             "started": tx.start.isoformat() if tx.start else None,
             "stopped": tx.stop.isoformat() if tx.stop else None,
@@ -252,12 +254,16 @@ class TagEnergySensor(SteVeEntity, SensorEntity):
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coordinator: SteVeCoordinator, tag_id: str) -> None:
+    def __init__(
+        self, coordinator: SteVeCoordinator, tag_id: str, name: str | None = None
+    ) -> None:
         super().__init__(coordinator, f"tag_energy_{tag_id}")
         self.tag_id = tag_id
-        # Dynamic name: the translation supplies "{tag} energy".
+        # Dynamic name: the translation supplies "{tag} energy". Seed it with the
+        # tag's SteVe note (its friendly name) so the entity isn't a raw RFID UID;
+        # the live `name` attribute below tracks later note edits.
         self._attr_translation_key = "tag_energy"
-        self._attr_translation_placeholders = {"tag": tag_id}
+        self._attr_translation_placeholders = {"tag": name or tag_id}
 
     @property
     def native_value(self) -> float | None:
@@ -274,6 +280,7 @@ class TagEnergySensor(SteVeEntity, SensorEntity):
         tag = next((t for t in data.tags if t.id_tag == self.tag_id), None)
         return {
             "id_tag": self.tag_id,
+            "name": tag.name if tag else self.tag_id,
             "blocked": tag.blocked if tag else None,
             "in_transaction": tag.in_transaction if tag else None,
             "expiry": tag.expiry.isoformat() if tag and tag.expiry else None,

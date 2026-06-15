@@ -65,6 +65,17 @@ class SteVeTag:
     note: str | None = None
     max_active_count: int | None = None
 
+    @property
+    def name(self) -> str:
+        """Friendly name to show instead of the raw RFID UID.
+
+        SteVe's per-tag ``note`` is the single source of truth (edit it in the
+        SteVe web UI or via the ``set_tag_name`` service). Falls back to the raw
+        id-tag when no note is set, so a tag is never anonymous in the UI.
+        """
+        note = (self.note or "").strip()
+        return note or self.id_tag
+
 
 @dataclass(slots=True)
 class SteVeTransaction:
@@ -98,6 +109,13 @@ class SteVeData:
     active: list[SteVeTransaction] = field(default_factory=list)
     energy_by_tag: dict[str, float] = field(default_factory=dict)
     last_session: SteVeTransaction | None = None
+
+    def name_for_tag(self, id_tag: str | None) -> str | None:
+        """Friendly name for an id-tag, or the raw id-tag if it has no note."""
+        if not id_tag:
+            return None
+        tag = next((t for t in self.tags if t.id_tag == id_tag), None)
+        return tag.name if tag is not None else id_tag
 
 
 def _parse_dt(value: object) -> datetime | None:
@@ -312,6 +330,28 @@ class SteVeApiClient:
             "note": tag.note,
             "maxActiveTransactionCount": (
                 BLOCKED_MAX_ACTIVE if blocked else UNLIMITED_MAX_ACTIVE
+            ),
+        }
+        await self._request("PUT", f"ocppTags/{tag.pk}", json_body=body)
+
+    async def async_set_tag_note(self, id_tag: str, note: str) -> None:
+        """Name a tag by writing SteVe's ``note`` field.
+
+        Read-modify-write like :meth:`async_set_tag_blocked` so the tag's
+        authorization (``maxActiveTransactionCount``) is preserved. An empty
+        ``note`` clears the name, reverting the UI to the raw id-tag.
+        """
+        tag = await self._find_tag(id_tag)
+        if tag is None or tag.pk is None:
+            raise SteVeApiError(f"Unknown SteVe id-tag '{id_tag}'")
+        body = {
+            "idTag": tag.id_tag,
+            "parentIdTag": tag.parent_id_tag,
+            "note": note.strip() or None,
+            "maxActiveTransactionCount": (
+                tag.max_active_count
+                if tag.max_active_count is not None
+                else (BLOCKED_MAX_ACTIVE if tag.blocked else UNLIMITED_MAX_ACTIVE)
             ),
         }
         await self._request("PUT", f"ocppTags/{tag.pk}", json_body=body)

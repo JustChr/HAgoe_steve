@@ -196,6 +196,24 @@
         }
       }
     },
+    "set_tag_name": {
+      "name": "Name RFID tag",
+      "description": "Give an RFID id-tag a friendly name (stored as its SteVe note) so it's recognizable everywhere instead of a raw UID.",
+      "fields": {
+        "id_tag": {
+          "name": "ID tag",
+          "description": "The OCPP id-tag (RFID card) to name."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Friendly name, e.g. the user or car. Leave empty to clear the name and revert to the raw id-tag."
+        },
+        "entry_id": {
+          "name": "Integration entry",
+          "description": "Only needed when more than one SteVe connection is configured."
+        }
+      }
+    },
     "remote_start": {
       "name": "Remote start charging",
       "description": "Ask SteVe to start a transaction on a charge point.",

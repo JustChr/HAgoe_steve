@@ -196,6 +196,24 @@
         }
       }
     },
+    "set_tag_name": {
+      "name": "RFID-Tag benennen",
+      "description": "Gibt einem RFID-ID-Tag einen sprechenden Namen (als SteVe-Notiz gespeichert), damit es überall erkennbar ist statt einer rohen UID.",
+      "fields": {
+        "id_tag": {
+          "name": "ID-Tag",
+          "description": "Das zu benennende OCPP-ID-Tag (RFID-Karte)."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Sprechender Name, z. B. Nutzer oder Auto. Leer lassen, um den Namen zu löschen und das rohe ID-Tag zu zeigen."
+        },
+        "entry_id": {
+          "name": "Integrations-Eintrag",
+          "description": "Nur nötig, wenn mehrere SteVe-Verbindungen konfiguriert sind."
+        }
+      }
+    },
     "remote_start": {
       "name": "Laden fernstarten",
       "description": "Fordert SteVe auf, an einem Ladepunkt einen Ladevorgang zu starten.",

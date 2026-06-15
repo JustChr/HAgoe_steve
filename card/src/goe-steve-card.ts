@@ -266,7 +266,7 @@ export class GoeSteveCard extends LitElement {
       ${active
         ? html`<div class="session-row">
             <ha-icon icon="mdi:card-account-details"></ha-icon>
-            <span>${active.state === "idle" ? this._t("session.none") : this._t("session.charging", { state: active.state })}</span>
+            <span>${active.state === "idle" ? this._t("session.none") : this._t("session.charging", { state: (active.attributes.name as string) ?? active.state })}</span>
           </div>`
         : nothing}
       ${last && last.state && last.state !== "unknown"
@@ -279,7 +279,7 @@ export class GoeSteveCard extends LitElement {
         ? html`<div class="tags">
             ${tags.map(
               (t) => html`<div class="tag">
-                <span class="tag-id">${t.attributes.id_tag ?? this._t("session.tag")}</span>
+                <span class="tag-id">${t.attributes.name ?? t.attributes.id_tag ?? this._t("session.tag")}</span>
                 <span class="tag-kwh ${t.attributes.blocked ? "blocked" : ""}">
                   ${this._fmtState(t)}${t.attributes.blocked ? ` · ${this._t("session.blocked")}` : ""}
                 </span>

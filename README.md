@@ -98,6 +98,7 @@ The card source (TypeScript + Lit) lives in [`card/`](card/); the built bundle i
 | Service | What it does |
 |---------|--------------|
 | `goe_steve.authorize_tag` / `block_tag` | Allow / block an RFID id-tag in SteVe |
+| `goe_steve.set_tag_name` | Name an RFID id-tag (`id_tag`, `name`) — stored as its SteVe note and shown everywhere |
 | `goe_steve.remote_start` | Start a transaction (`id_tag`, optional `charge_box_id` / `connector_id`) |
 | `goe_steve.remote_stop` | Stop a transaction (defaults to the single active session) |
 

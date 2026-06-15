@@ -87,7 +87,7 @@ var Pt=Object.defineProperty;var Tt=Object.getOwnPropertyDescriptor;var v=(r,t,e
     </select>`}_renderSessions(t){let e=this._stateObj(t.active_transaction),s=this._stateObj(t.last_session_energy),i=t.tag_energy.map(n=>this._stateObj(n)).filter(n=>!!n);return!e&&!s&&i.length===0?c:p`<div class="sessions">
       ${e?p`<div class="session-row">
             <ha-icon icon="mdi:card-account-details"></ha-icon>
-            <span>${e.state==="idle"?this._t("session.none"):this._t("session.charging",{state:e.state})}</span>
+            <span>${e.state==="idle"?this._t("session.none"):this._t("session.charging",{state:e.attributes.name??e.state})}</span>
           </div>`:c}
       ${s&&s.state&&s.state!=="unknown"?p`<div class="session-row">
             <ha-icon icon="mdi:history"></ha-icon>
@@ -95,7 +95,7 @@ var Pt=Object.defineProperty;var Tt=Object.getOwnPropertyDescriptor;var v=(r,t,e
           </div>`:c}
       ${i.length?p`<div class="tags">
             ${i.map(n=>p`<div class="tag">
-                <span class="tag-id">${n.attributes.id_tag??this._t("session.tag")}</span>
+                <span class="tag-id">${n.attributes.name??n.attributes.id_tag??this._t("session.tag")}</span>
                 <span class="tag-kwh ${n.attributes.blocked?"blocked":""}">
                   ${this._fmtState(n)}${n.attributes.blocked?` \xB7 ${this._t("session.blocked")}`:""}
                 </span>
