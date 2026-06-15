@@ -121,7 +121,7 @@ export class GoeSteveCard extends LitElement {
   // --- Header: status reason + mode/policy chips --------------------------------
   private _renderHeader(ent: ResolvedEntities, title: string): TemplateResult {
     const status = this._stateObj(ent.status);
-    const reason = status?.state && status.state !== "unknown" ? status.state : "—";
+    const reason = this._statusReason(status);
     const controlling = this._isOn(ent.controlling);
     const mode = this._displayState(ent.charging_mode);
     const policy = this._displayState(ent.battery_policy);
@@ -137,6 +137,55 @@ export class GoeSteveCard extends LitElement {
         ${policy ? html`<span class="chip"><ha-icon icon="mdi:home-battery"></ha-icon>${policy}</span>` : nothing}
       </div>
     </div>`;
+  }
+
+  /**
+   * Localize the status line from the sensor's structured `reason_key` +
+   * `reason_params` attributes (the engine emits English in the state itself).
+   * Falls back to the raw English state when the key is missing or untranslated
+   * — e.g. an older integration build, or a key the card doesn't know yet.
+   */
+  private _statusReason(status: HassEntity | undefined): string {
+    const raw =
+      status?.state && status.state !== "unknown" ? status.state : "—";
+    const key = status?.attributes?.reason_key as string | undefined;
+    if (!key) return raw;
+    const fullKey = `reason.${key}`;
+    const params = (status?.attributes?.reason_params ?? {}) as Record<
+      string,
+      string
+    >;
+    const localized = this._t(fullKey, this._localizeNumbers(params));
+    return localized === fullKey ? raw : localized;
+  }
+
+  /**
+   * Re-render the reason params in the viewer's locale. The engine emits them as
+   * machine-formatted strings (`.` decimal, no separators); we parse those back
+   * and reformat with `Intl.NumberFormat` so a German user sees `0,250` and
+   * `1.500`, keeping the engine's decimal precision (incl. trailing zeros).
+   * Non-numeric values pass through untouched.
+   */
+  private _localizeNumbers(
+    params: Record<string, string>,
+  ): Record<string, string> {
+    const lang = (this.hass?.locale?.language || this.hass?.language || "en")
+      .toLowerCase()
+      .split("-")[0];
+    const out: Record<string, string> = {};
+    for (const [name, value] of Object.entries(params)) {
+      const m = /^-?\d+(?:\.(\d+))?$/.exec(value);
+      if (m) {
+        const decimals = m[1]?.length ?? 0;
+        out[name] = new Intl.NumberFormat(lang, {
+          minimumFractionDigits: decimals,
+          maximumFractionDigits: decimals,
+        }).format(Number(value));
+      } else {
+        out[name] = value;
+      }
+    }
+    return out;
   }
 
   // --- Live energy-flow diagram ------------------------------------------------
@@ -375,13 +424,16 @@ export class GoeSteveCard extends LitElement {
   /**
    * Tag picker (authorized SteVe tags) + a state-driven action zone.
    *
-   * While a session is running there is nothing to authorize/start: the tag
-   * dropdown is hidden (Stop ignores it anyway) and the zone collapses to a
-   * single Stop button that ends the active transaction. Back to idle the
-   * dropdown returns and offers Authorize / Start on the picked tag. The
-   * authorize/start buttons act on the "Selected tag" select (services default
-   * id_tag to it), so no UID is typed, and Stop targets the lone active
-   * transaction (remote_stop's default).
+   * While a session is running there is nothing to start: the tag dropdown is
+   * hidden (Stop ignores it anyway) and the zone collapses to a single Stop
+   * button that ends the active transaction. Back to idle the dropdown returns
+   * and offers Start on the picked tag. The Start button acts on the "Selected
+   * tag" select (the service defaults id_tag to it), so no UID is typed, and
+   * Stop targets the lone active transaction (remote_stop's default).
+   *
+   * There is deliberately no Authorize button: the picker only ever lists
+   * already-authorized (non-blocked) tags, so authorizing the selection would
+   * always be a no-op.
    */
   private _renderTagPicker(
     picker: HassEntity | undefined,
@@ -407,13 +459,6 @@ export class GoeSteveCard extends LitElement {
               <ha-icon icon="mdi:stop"></ha-icon>${this._t("action.stop")}
             </button>`
           : html`<button
-                class="tag-btn"
-                ?disabled=${!hasSelection}
-                @click=${() => this._callTagService("authorize_tag")}
-              >
-                <ha-icon icon="mdi:check-decagram"></ha-icon>${this._t("action.authorize")}
-              </button>
-              <button
                 class="tag-btn"
                 ?disabled=${!hasSelection}
                 @click=${() => this._callTagService("remote_start")}

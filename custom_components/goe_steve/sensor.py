@@ -94,6 +94,10 @@ class StatusSensor(GoeSteveEntity, SensorEntity):
             "charging": decision.should_charge,
             "target_current_a": round(decision.target_current_a, 1),
             "target_phases": decision.target_phases,
+            # Structured reason so the card can localize the status line; the
+            # sensor state itself stays the English ``reason`` text.
+            "reason_key": decision.reason_key,
+            "reason_params": decision.reason_params,
         }
 
 

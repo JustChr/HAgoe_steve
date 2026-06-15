@@ -18,7 +18,7 @@ stays deterministic and testable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 
@@ -147,6 +147,11 @@ class Decision:
     target_phases: int = 3
     surplus_w: float = 0.0
     reason: str = ""
+    # Structured form of ``reason`` so the Lovelace card can localize it: a stable
+    # catalog key plus its pre-formatted string params. ``reason`` itself stays the
+    # English rendering (logs, tests, non-card consumers). See ``_reason``.
+    reason_key: str = ""
+    reason_params: dict[str, str] = field(default_factory=dict)
     # True while we are deliberately grid-charging and want the home battery
     # blocked from discharging into the car (driven onto a user-mapped hold
     # switch by the coordinator). See :func:`_hold_battery`.
@@ -355,13 +360,18 @@ def _slot_minutes(forecast: list[PriceSlot], index: int) -> float:
     return 60.0
 
 
-def _is_cheap_window(inp: ChargerInputs, cfg: EngineConfig) -> tuple[bool, str]:
+def _is_cheap_window(
+    inp: ChargerInputs, cfg: EngineConfig
+) -> tuple[bool, dict[str, str]]:
     """Should we grid-charge *now* to hit the target energy by departure?
 
     Greedy cheapest-hours plan, recomputed every cycle so it self-corrects:
     take the upcoming slots before the deadline, sort by price, and keep the
     cheapest ones until their charging capacity covers ``target_energy_kwh``.
     Charge if the current slot is in that cheapest set.
+
+    On a match returns the ``deadline_plan`` reason params (``price``/``target``);
+    otherwise an empty dict.
     """
     if (
         not cfg.target_energy_kwh
@@ -369,10 +379,10 @@ def _is_cheap_window(inp: ChargerInputs, cfg: EngineConfig) -> tuple[bool, str]:
         or inp.now is None
         or not inp.price_forecast
     ):
-        return False, ""
+        return False, {}
 
     if inp.now >= cfg.departure:
-        return False, ""
+        return False, {}
 
     upcoming = [
         (i, s)
@@ -381,13 +391,13 @@ def _is_cheap_window(inp: ChargerInputs, cfg: EngineConfig) -> tuple[bool, str]:
         and s.start + timedelta(minutes=_slot_minutes(inp.price_forecast, i)) > inp.now
     ]
     if not upcoming:
-        return False, ""
+        return False, {}
 
     max_power_kw = (
         _current_to_power(cfg.max_current_a, cfg.max_phases, inp.voltage_v) / 1000.0
     )
     if max_power_kw <= 0:
-        return False, ""
+        return False, {}
 
     chosen: set[int] = set()
     energy = 0.0
@@ -404,11 +414,11 @@ def _is_cheap_window(inp: ChargerInputs, cfg: EngineConfig) -> tuple[bool, str]:
     )
     if current_index in chosen:
         price = inp.price_forecast[current_index].price
-        return True, (
-            f"Cheap-hours plan: charging now at {price:.3f}/kWh "
-            f"to reach {cfg.target_energy_kwh:.0f} kWh by departure"
-        )
-    return False, ""
+        return True, {
+            "price": f"{price:.3f}",
+            "target": f"{cfg.target_energy_kwh:.0f}",
+        }
+    return False, {}
 
 
 # --- Phase + dwell helpers ------------------------------------------------------
@@ -513,6 +523,54 @@ def _apply_charge_dwell(
 
 # --- The decision ---------------------------------------------------------------
 
+# Reason catalog: a stable key → English template. The engine emits the key plus
+# pre-formatted string params; the card localizes the same key (see the card's
+# ``reason.*`` strings), while ``reason`` keeps the English rendering for logs and
+# tests. Keys are explicit per variant (e.g. ``_guarded``/``_phase`` suffixes)
+# rather than composed at runtime, so both sides do plain placeholder substitution.
+_REASON_TEMPLATES: dict[str, str] = {
+    "smart_disabled": "Smart control disabled",
+    "mode_off": "Mode: Off — manual control",
+    "no_car": "No car connected",
+    "fast": "Fast charging at {amps} A",
+    "cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
+    "cheap_grid_guarded": (
+        "Cheap grid {price}/kWh ≤ {threshold} → full power "
+        "(protecting home battery → {amps} A)"
+    ),
+    "deadline_plan": (
+        "Cheap-hours plan: charging now at {price}/kWh "
+        "to reach {target} kWh by departure"
+    ),
+    "deadline_plan_guarded": (
+        "Cheap-hours plan: charging now at {price}/kWh "
+        "to reach {target} kWh by departure (protecting home battery → {amps} A)"
+    ),
+    "holding_off_dwell": "Holding off (anti-flap dwell)",
+    "price_waiting": "Waiting for a cheaper price window",
+    "charging": "Charging",
+    "waiting_battery_reserve": (
+        "Waiting — home battery {soc}% < reserve {reserve}%"
+    ),
+    "waiting_surplus": "Waiting for surplus — {surplus} W < {needed} W needed",
+    "solar_surplus": "Solar surplus {surplus} W → {amps} A",
+    "solar_surplus_phase": "Solar surplus {surplus} W → {amps} A ({phases}-phase)",
+    "solar_min_topup": (
+        "Minimum {amps} A (surplus only {surplus} W, topping up from grid)"
+    ),
+    "holding_charge_dwell": "Holding charge (anti-flap dwell)",
+}
+
+
+def _reason(key: str, **params: str) -> tuple[str, str, dict[str, str]]:
+    """Build a decision reason three ways at once.
+
+    Returns ``(english_text, key, params)``: the English rendering for
+    ``Decision.reason`` plus the stable key and params the card localizes from.
+    """
+    return _REASON_TEMPLATES[key].format(**params), key, params
+
+
 def decide(
     inp: ChargerInputs, cfg: EngineConfig, state: EngineState | None = None
 ) -> Decision:
@@ -526,19 +584,29 @@ def decide(
 
     # --- Master gates ------------------------------------------------------------
     if not cfg.smart_enabled:
-        return Decision(control=False, reason="Smart control disabled")
+        reason, rkey, rparams = _reason("smart_disabled")
+        return Decision(
+            control=False, reason=reason, reason_key=rkey, reason_params=rparams
+        )
     if cfg.mode is ChargingMode.OFF:
-        return Decision(control=False, reason="Mode: Off — manual control")
+        reason, rkey, rparams = _reason("mode_off")
+        return Decision(
+            control=False, reason=reason, reason_key=rkey, reason_params=rparams
+        )
     if not inp.car_connected:
+        reason, rkey, rparams = _reason("no_car")
         return Decision(
             control=True,
             should_charge=False,
             target_phases=inp.phases,
-            reason="No car connected",
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
         )
 
     # --- Fast: just go ----------------------------------------------------------
     if cfg.mode is ChargingMode.FAST:
+        reason, rkey, rparams = _reason("fast", amps=f"{cfg.max_current_a:.0f}")
         return Decision(
             control=True,
             should_charge=True,
@@ -547,7 +615,9 @@ def decide(
                 cfg.mode, 0.0, inp, cfg, state, grid_charging=True
             ),
             hold_battery=_hold_battery(inp, cfg),
-            reason=f"Fast charging at {cfg.max_current_a:.0f} A",
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
         )
 
     # --- Cheap-grid charging (price-aware modes) --------------------------------
@@ -558,9 +628,9 @@ def decide(
         and inp.price_now <= cfg.cheap_price
         and cfg.mode in (ChargingMode.PV_PRICE, ChargingMode.COMBINED)
     )
-    deadline_now, deadline_reason = (False, "")
+    deadline_now, deadline_params = (False, {})
     if cfg.mode in (ChargingMode.PRICE, ChargingMode.COMBINED):
-        deadline_now, deadline_reason = _is_cheap_window(inp, cfg)
+        deadline_now, deadline_params = _is_cheap_window(inp, cfg)
 
     if cheap_now or deadline_now:
         phases = _phases_for(cfg.mode, 0.0, inp, cfg, state, grid_charging=True)
@@ -568,34 +638,43 @@ def decide(
             cfg.max_current_a, phases, inp, cfg
         )
         if cheap_now:
-            reason = (
-                f"Cheap grid {inp.price_now:.3f}/kWh ≤ "
-                f"{cfg.cheap_price:.3f} → full power"
-            )
+            base, params = "cheap_grid", {
+                "price": f"{inp.price_now:.3f}",
+                "threshold": f"{cfg.cheap_price:.3f}",
+            }
         else:
-            reason = deadline_reason
+            base, params = "deadline_plan", dict(deadline_params)
         if guarded:
-            reason += f" (protecting home battery → {current:.1f} A)"
+            base += "_guarded"
+            params["amps"] = f"{current:.1f}"
         want = _apply_charge_dwell(True, inp, cfg, state)
+        reason, rkey, rparams = (
+            _reason(base, **params) if want else _reason("holding_off_dwell")
+        )
         return Decision(
             control=True,
             should_charge=want,
             target_current_a=current if want else 0.0,
             target_phases=phases,
             hold_battery=want and _hold_battery(inp, cfg),
-            reason=reason if want else "Holding off (anti-flap dwell)",
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
         )
 
     # --- Pure Price mode with nothing to do -------------------------------------
     if cfg.mode is ChargingMode.PRICE:
         want = _apply_charge_dwell(False, inp, cfg, state)
+        reason, rkey, rparams = _reason("charging" if want else "price_waiting")
         return Decision(
             control=True,
             should_charge=want,
             target_current_a=cfg.max_current_a if want else 0.0,
             target_phases=inp.phases,
             hold_battery=want and _hold_battery(inp, cfg),
-            reason="Waiting for a cheaper price window" if not want else "Charging",
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
         )
 
     # --- PV-based modes (PV_ONLY / PV_MINIMUM / PV_PRICE surplus / COMBINED) -----
@@ -608,13 +687,16 @@ def decide(
 
     if not guarantees_floor and pv_current < cfg.min_current_a:
         if _battery_held(inp, cfg):
-            reason = (
-                f"Waiting — home battery {inp.battery_soc:.0f}% "
-                f"< reserve {cfg.battery_reserve_soc:.0f}%"
+            reason, rkey, rparams = _reason(
+                "waiting_battery_reserve",
+                soc=f"{inp.battery_soc:.0f}",
+                reserve=f"{cfg.battery_reserve_soc:.0f}",
             )
         else:
-            reason = (
-                f"Waiting for surplus — {surplus:.0f} W < {min_power:.0f} W needed"
+            reason, rkey, rparams = _reason(
+                "waiting_surplus",
+                surplus=f"{surplus:.0f}",
+                needed=f"{min_power:.0f}",
             )
         want = _apply_charge_dwell(False, inp, cfg, state)
         return Decision(
@@ -624,6 +706,8 @@ def decide(
             target_phases=phases,
             surplus_w=surplus,
             reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
         )
 
     if guarantees_floor:
@@ -635,24 +719,35 @@ def decide(
             max(pv_current, floor_current), cfg.min_current_a, cfg.max_current_a
         )
         if pv_current >= floor_current:
-            reason = f"Solar surplus {surplus:.0f} W → {current:.1f} A"
+            base, params = "solar_surplus", {
+                "surplus": f"{surplus:.0f}",
+                "amps": f"{current:.1f}",
+            }
         else:
-            reason = (
-                f"Minimum {current:.1f} A (surplus only {surplus:.0f} W, "
-                "topping up from grid)"
-            )
+            base, params = "solar_min_topup", {
+                "amps": f"{current:.1f}",
+                "surplus": f"{surplus:.0f}",
+            }
     else:
         current = _clamp(pv_current, cfg.min_current_a, cfg.max_current_a)
-        reason = f"Solar surplus {surplus:.0f} W → {current:.1f} A"
+        params = {"surplus": f"{surplus:.0f}", "amps": f"{current:.1f}"}
         if phases != inp.phases:
-            reason += f" ({phases}-phase)"
+            base = "solar_surplus_phase"
+            params["phases"] = str(phases)
+        else:
+            base = "solar_surplus"
 
     want = _apply_charge_dwell(True, inp, cfg, state)
+    reason, rkey, rparams = (
+        _reason(base, **params) if want else _reason("holding_charge_dwell")
+    )
     return Decision(
         control=True,
         should_charge=want,
         target_current_a=current if want else 0.0,
         target_phases=phases,
         surplus_w=surplus,
-        reason=reason if want else "Holding charge (anti-flap dwell)",
+        reason=reason,
+        reason_key=rkey,
+        reason_params=rparams,
     )
