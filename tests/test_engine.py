@@ -127,6 +127,25 @@ def test_protect_releases_above_reserve():
     assert d.should_charge is True
 
 
+def test_protect_does_not_run_car_on_battery_discharge():
+    # Solar has dropped to ~0 but the inverter is discharging the home battery
+    # (3400 W) to cover the car (2600 W) while a little still exports (240 W).
+    # PROTECT must not count the car's draw as solar surplus here — subtracting
+    # the discharge leaves no real surplus, so the car holds. (Regression for the
+    # "charging the car from the house battery in pv_only/protect" report.)
+    d = decide(
+        _inputs(
+            grid_power_w=-240.0,
+            car_actual_power_w=2600.0,
+            battery_power_w=-3400.0,
+            battery_soc=84.0,
+        ),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=80.0),
+    )
+    assert d.surplus_w == pytest.approx(0.0, abs=1.0)
+    assert d.should_charge is False
+
+
 def test_pv_minimum_tops_up_from_grid():
     # Only 500 W surplus, but PV+minimum guarantees at least the floor current
     d = decide(

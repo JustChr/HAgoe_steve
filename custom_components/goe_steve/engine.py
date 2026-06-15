@@ -217,9 +217,13 @@ def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
     suppresses export, so it must be added back).
 
     * ``PROTECT`` — while the home battery is below its reserve SoC the car gets
-      nothing, so the battery fills first.
+      nothing, so the battery fills first. Above the reserve the car may take
+      genuine solar surplus, but any battery *discharge* is subtracted so the car
+      never runs on the battery (e.g. solar has dropped but the inverter is
+      covering the car from the battery).
     * ``SHARE`` — power that is currently charging the home battery is reclaimed
-      for the car; the battery yields but is never actively drained.
+      for the car; the battery yields but is never actively drained, so discharge
+      is likewise subtracted.
     * ``ASSIST`` — Share behaviour, and while the battery is above its floor SoC
       it may actively back the car: availability is lifted to the configured
       maximum so charging never stalls on solar alone (the battery and the grid
@@ -229,10 +233,14 @@ def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
     surplus = export_w + max(0.0, inp.car_actual_power_w)
 
     policy = cfg.battery_policy
-    if inp.battery_soc is not None and policy is BatteryPolicy.PROTECT:
-        if inp.battery_soc < cfg.battery_reserve_soc:
-            return 0.0
-        return surplus
+
+    # PROTECT below reserve: hold the car entirely so the battery fills first.
+    if (
+        inp.battery_soc is not None
+        and policy is BatteryPolicy.PROTECT
+        and inp.battery_soc < cfg.battery_reserve_soc
+    ):
+        return 0.0
 
     if inp.battery_power_w is not None and policy in (
         BatteryPolicy.SHARE,
@@ -241,6 +249,16 @@ def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
         # Reclaim whatever is currently flowing *into* the home battery.
         surplus += max(0.0, inp.battery_power_w)
 
+    if inp.battery_power_w is not None and policy in (
+        BatteryPolicy.PROTECT,
+        BatteryPolicy.SHARE,
+    ):
+        # Never let the car run on the battery: discount any discharge so the
+        # surplus reflects real PV excess only. Without this, the car's own draw
+        # (added back above) masks the fact that the battery — not the sun — is
+        # supplying it, and PROTECT/SHARE would silently drain the battery.
+        surplus -= max(0.0, -inp.battery_power_w)
+
     if policy is BatteryPolicy.ASSIST and inp.battery_soc is not None:
         if inp.battery_soc > cfg.battery_floor_soc:
             assist_ceiling = _current_to_power(
@@ -248,7 +266,7 @@ def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
             )
             surplus = max(surplus, assist_ceiling)
 
-    return surplus
+    return max(0.0, surplus)
 
 
 def _battery_guard_current(
