@@ -9,8 +9,9 @@ from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -318,6 +319,34 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
     def request_apply(self) -> None:
         """Ask for an immediate re-evaluation after a settings change."""
         self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def async_setup_input_triggers(self) -> CALLBACK_TYPE:
+        """Re-run the regulation loop whenever a live power input changes.
+
+        The periodic 30 s poll only catches surplus changes up to 30 s late.
+        By also re-evaluating when the grid/PV/battery sensors push a new value,
+        we react to a passing cloud or a switched-on appliance within seconds.
+
+        Safe against chatty sensors: ``async_request_refresh`` runs through the
+        coordinator's request-refresh debouncer (fires immediately, then coalesces
+        a burst), and charger writes stay throttled by ``MIN_UPDATE_INTERVAL_S``.
+
+        Returns an unsubscribe callback for the caller to register on unload.
+        """
+        entity_ids = [
+            entity_id
+            for key in (CONF_GRID_POWER, CONF_PV_POWER, CONF_BATTERY_POWER)
+            if (entity_id := self._cfg.get(key))
+        ]
+        if not entity_ids:
+            return lambda: None
+
+        @callback
+        def _on_input_change(_event: Event[EventStateChangedData]) -> None:
+            self.async_request_refresh()
+
+        return async_track_state_change_event(self.hass, entity_ids, _on_input_change)
 
 
 class SteVeCoordinator(DataUpdateCoordinator[SteVeData]):

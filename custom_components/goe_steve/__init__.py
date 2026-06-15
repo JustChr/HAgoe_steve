@@ -52,6 +52,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> 
     # in their platform setup and push values into coordinator.settings.
     await coordinator.async_config_entry_first_refresh()
 
+    # Re-evaluate the moment a power input changes, not just on the 30 s poll,
+    # so surplus tracking reacts to clouds/appliances within seconds.
+    entry.async_on_unload(coordinator.async_setup_input_triggers())
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
