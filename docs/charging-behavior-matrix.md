@@ -154,7 +154,46 @@ battery is discharging (shown as "protecting home battery → {A}").
 
 ---
 
-## 6. Phase selection (`auto_phase`)
+## 6. Charging *from* the home battery (Assist) — and what happens at the floor
+
+Only the **Assist** policy ever lets the car run on the home battery. This is the one
+case where energy flows **out of** the home battery **into** the car on purpose.
+
+**While `battery SoC > floor` (default 20 %):** the surplus the car sees is lifted to the
+**Max** current, so charging never stalls on solar alone — the difference comes from the
+home battery (and the grid floor). The battery actively discharges into the car.
+
+**When the SoC falls to/through the floor:** the lift stops on the very next cycle. What
+happens then depends on the mode — and the short answer is **it does *not* keep draining
+the battery, and it does *not* automatically jump to full grid charging**:
+
+| Mode at the moment the battery hits the floor | What happens |
+|---|---|
+| **Solar surplus only** / **Solar + cheap grid** (price above threshold) / **Combined** (no cheap price, no plan) | Reverts to **genuine solar surplus**. If real surplus ≥ min current → keeps charging on the sun only. If not → **stops and waits** (*Waiting for surplus*). The battery is left alone. |
+| **Solar + minimum** | Drops to the **grid floor** (Minimum charge power), topped up from the grid. (Note: the floor top-up branch does not set the hold switch, so the battery may still cover a little of it.) |
+| **Solar + cheap grid** *while price ≤ cheap* / **Combined** *while cheap or in the plan* / **Price-optimized** *in a planned hour* / **Fast** | Already on a **grid-charging** branch → keeps charging from the **grid at max**, and now the **battery is held** (blocked from discharge), since Assist holds at/below the floor. |
+
+So "charge from battery, then battery hits the floor" resolves to: **stop assisting → fall
+back to whatever the mode would otherwise do** — solar if there's sun, grid only if the
+mode is a grid-charging one, otherwise pause. The floor is a hard drain limit, not a
+trigger to start grid-charging.
+
+> Hysteresis note: there is no SoC hysteresis band on the floor itself. If the battery
+> recovers above the floor (e.g. a burst of sun), the next cycle resumes assisting. The
+> on/off **anti-flap dwell (§4)** still bounds how fast the *charging* state can toggle.
+
+### Protect / Share never discharge into the car
+- **Protect** subtracts any battery discharge from the surplus and, below the *reserve*,
+  gives the car nothing at all (battery fills first). The car never runs on the battery.
+- **Share** reclaims power that *would have charged* the battery, but also subtracts any
+  discharge — it yields charging headroom but is never actively drained.
+
+In both, during grid charging the battery is **held** per §5 so it can't quietly cover the
+car's grid load.
+
+---
+
+## 7. Phase selection (`auto_phase`)
 
 | Auto phase | Charging type | Phases used |
 |---|---|---|
@@ -168,7 +207,85 @@ the contactor may toggle.
 
 ---
 
-## 7. Safety fall-throughs
+## 8. When does the brain re-evaluate? (events & timings)
+
+The regulation loop is **event-driven with a periodic safety net**. A new decision can be
+produced by any of these triggers:
+
+| Trigger | When it fires | Latency |
+|---|---|---|
+| **Power input changed** | Any mapped grid / PV / battery-power sensor pushes a new value | ~**0.75 s** trailing-edge debounce (`INPUT_SETTLE_S`) then evaluate |
+| **Periodic poll** | Always, as a backstop | every **30 s** (`DEFAULT_SCAN_INTERVAL`) |
+| **Setting changed** | You change mode, battery policy, smart-control, auto-phase, or any number (current, reserve, floor, cheap price, target, departure) | **immediate** (`request_apply`) |
+| **SteVe metering** | Separate, slower loop — tags & transactions only, never drives charging | every **60 s** (`STEVE_SCAN_INTERVAL`) |
+
+Why the 0.75 s debounce: grid and battery power usually come off the **same inverter** but
+report a beat apart. Acting on the first event of a burst would mean deciding on a
+half-updated world (fresh grid, stale battery). The debounce coalesces the burst into one
+evaluation once both have landed.
+
+Once a decision is made, **writing** it to the charger is further shaped so the relay/inverter
+aren't chased:
+
+| Guard | Value | Effect |
+|---|---|---|
+| **Input smoothing** | 3-sample rolling average | PV & grid power are averaged before the engine sees them |
+| **Write throttle** | **5 s** (`MIN_UPDATE_INTERVAL_S`) | minimum gap between current writes — a post-write settle, *not* a poll throttle. **Stops and phase changes bypass it.** |
+| **Sub-amp deadband** | **1 A** (`MIN_WRITE_DELTA_A`) | a target within 1 A of the last write isn't re-sent |
+| **Anti-flap dwell** | **120 s** on / **120 s** off | once charging starts/stops it holds that state this long (§4) |
+| **Phase dwell** | **300 s** | minimum gap between 1↔3 phase switches (§7) |
+
+Order of operations each controlling cycle (`_apply`): drive the **battery-hold switch**
+first (never starved by the throttle) → set **force on/off** (start/stop) → then the
+throttled/deadbanded **current** and **phase** writes. When the engine returns
+`control = false`, the brain instead **releases** everything it touched — force-state back
+to neutral and the hold switch back off — handing the charger cleanly back to manual/app
+control.
+
+---
+
+## 9. Worked examples
+
+Defaults assumed (6 A min / 16 A max, 230 V, cheap ≤ 0.15, reserve 80 %, floor 20 %,
+PV+min floor 1400 W). "≈ A" uses `P = I × phases × V`.
+
+**A. Solar surplus only, a cloud passes.**
+PV export 3.5 kW, 1φ. Surplus ≈ 3500 W → 3500 / (1 × 230) ≈ 15 A → charges at 15 A.
+A cloud drops export to 1.0 kW; within ~0.75 s the brain re-evaluates → ≈ 4 A < 6 A min →
+*Waiting for surplus*. It won't actually toggle off until the 120 s on-dwell has elapsed.
+
+**B. Protect, home battery still filling.**
+PV is producing but battery SoC 65 % < reserve 80 %. Surplus is forced to **0** → car
+*Waiting — home battery 65 % < reserve 80 %*. The battery fills first; once it reaches 80 %,
+genuine solar surplus starts flowing to the car.
+
+**C. Assist, evening, battery draining to the floor.**
+Mode Solar surplus only, Assist, SoC 35 % (> floor 20 %), little sun. Surplus is lifted to
+**16 A**; the home battery discharges to back the car. SoC falls over time; once it reaches
+20 %, the next cycle stops the lift → surplus reverts to the ~0.3 kW of real sun → < 6 A →
+**charging pauses** (battery is left at 20 %). It does *not* start pulling grid.
+
+Same scene but mode **Combined** and price now 0.12 ≤ 0.15: the cheap-grid branch wins
+*before* surplus is even computed → charges at **16 A from the grid**, and because Assist
+holds at/below the floor, the battery-hold switch goes **on** so the car draws grid, not
+the battery.
+
+**D. Price-optimized overnight.**
+Target 30 kWh, departure 07:00, forecast loaded. The plan picks the cheapest slots until
+their capacity ≥ 30 kWh. At 02:00 (a chosen slot) → charges at **16 A**, *Cheap-hours plan:
+charging now at 0.09/kWh to reach 30 kWh by departure*. At 05:00 (a pricey slot not in the
+plan) → **0 A**, *Waiting for a cheaper price window*. Solar, if any, is ignored in this
+mode.
+
+**E. Solar + cheap grid, price crosses the threshold.**
+Daytime, modest sun (≈ 8 A of surplus), price 0.18 > 0.15 → charges on **solar at 8 A**.
+At a cheap window price drops to 0.13 → the cheap-grid branch takes over → **16 A from grid**
+(trimmed by the battery guard / hold per policy). When price rises back above 0.15 → falls
+back to solar surplus.
+
+---
+
+## 10. Safety fall-throughs
 
 - Car disconnected or **Smart control off** → brain stops driving the charger (§1).
 - Stale / missing required data → the coordinator keeps the brain's hands off (control
