@@ -153,6 +153,10 @@ current settings, it returns one decision (target current + phases + a human-rea
 The coordinator just reads HA states, calls the engine, and writes the result back — so the
 strategy is fully unit-testable.
 
+For a complete, situation-by-situation breakdown of **exactly what the brain does in each mode**
+given the price, the home-battery state and the solar surplus, see the
+[**Charging behavior matrix**](docs/charging-behavior-matrix.md).
+
 ## Development
 
 ```bash
