@@ -105,10 +105,16 @@ battery by default**, because the battery automatically covers any load above so
 *only* thing that makes the car pull from the **grid** instead is the **"stop discharge"
 switch** (it raises the grid setpoint / blocks battery discharge).
 
-> So for the grid-charging modes (Fast, cheap grid, planned hours) to actually use cheap
-> grid power and **spare your battery, you must map that hold switch** during setup. Without
-> it, the brain can only *throttle the car down to your solar surplus* to avoid draining the
-> battery — which means it can't really charge from cheap grid at all (see §5).
+Your **battery policy** decides *whether the brain should spare the battery* during a grid
+charge — and using the battery there is perfectly OK when the policy allows it:
+
+> **If the policy is protecting the battery** (always under Protect; below the reserve under
+> Share; below the floor under Assist) the brain flips the hold switch so the grid feeds the
+> car. **Map that hold switch during setup** if you want this — without it the brain can only
+> *throttle the car down to your solar surplus* to avoid draining the battery, so a protecting
+> policy effectively falls back to solar-only during grid windows (see §5). **If the policy is
+> letting the battery help** (Share above reserve, Assist above floor), the car charges at
+> full power and the battery supplies its share — exactly as intended.
 
 That's the gist. Everything below is the exact, precise version of these same rules.
 
@@ -256,33 +262,37 @@ battery.
 | **Share** | reclaims the solar that *would have charged* the battery (so the car gets it instead); discharge subtracted | same |
 | **Assist** | reclaims battery-charge solar | above the *floor* SoC, the ceiling is lifted to **Max** so charging never stalls — here the battery (and grid floor) **are meant to** make up the difference |
 
-### Grid charging — sparing the battery (`hold_battery` + the `_battery_guard_current` fallback)
+### Grid charging — the battery policy decides (`hold_battery` + the `_battery_guard_current` fallback)
 On the grid-charging branches (Fast, cheap grid, deadline) the car wants **full power from
-the grid**. Two mechanisms try to keep that off your battery:
+the grid**. Whether the home battery is *allowed to help* there is decided **by your battery
+policy** — using your home battery during a grid charge is perfectly fine if that's what the
+policy says. **One policy decision drives both mechanisms**, so they never fight:
 
-1. **Hold switch (`hold_battery`)** — the real fix. When set, it blocks battery discharge /
-   raises the grid setpoint, so the grid supplies the car at full power and solar still tops
-   the battery up. **This is the only way to truly charge from the grid without draining the
-   battery, and it requires a mapped hold entity.**
-2. **Current-trim fallback (`_battery_guard_current`)** — used when no hold switch helps
-   (none mapped, or the policy isn't holding). It watches the battery discharge and **lowers
-   the car's current** until the discharge stops. ⚠️ With the grid pinned at 0 this does
-   **not** shift load to the grid — it just **throttles the car down to your solar surplus**
-   (and can't go below the 6 A minimum, so a residual still drains). In other words, without
-   a hold switch the "cheap grid" modes quietly collapse into solar-only charging.
+1. **Hold switch (`hold_battery`)** — when the policy says *protect the battery*, this blocks
+   battery discharge / raises the grid setpoint, so the grid supplies the car at full power
+   and solar still tops the battery up. **This is the only way to charge at full power from
+   the grid while sparing the battery, so map a hold entity if you want that.**
+2. **Current-trim fallback (`_battery_guard_current`)** — used when the policy is protecting
+   the battery **but no hold switch is mapped/effective**. It lowers the car's current until
+   the battery stops discharging. ⚠️ With the grid pinned at 0 this does **not** shift load
+   to the grid — it just **throttles the car down to your solar surplus** (never below the
+   6 A minimum). So without a hold switch, a *protecting* policy effectively falls back to
+   solar-only during would-be grid charging.
 
-When does each policy engage the **hold switch**?
+When the policy says *let the battery help* (Share above reserve, Assist above floor),
+**neither** mechanism fires — the car charges at full power and the battery supplies its
+share, exactly as intended.
 
-| Policy | Hold the battery during grid charging? | If not held → result |
+| Policy | Hold (protect) the battery during grid charging? | When it does NOT hold |
 |---|---|---|
-| **Protect** | **Always** | — (always held) |
-| **Share** | Only when SoC ≤ **reserve** | **Above the reserve it does NOT hold** → the battery discharges into the car (or the trim-fallback throttles it back to solar). This is deliberate: above the reserve Share treats the spare battery as fair game. |
-| **Assist** | Only when SoC ≤ **floor** | Above the floor it intentionally *doesn't* hold — Assist *wants* the battery to help (§6). |
+| **Protect** | **Always** | never — Protect always protects |
+| **Share** | When SoC ≤ **reserve** | Above the reserve, by design the battery may help the car at full power (no trim). |
+| **Assist** | When SoC ≤ **floor** | Above the floor, by design the battery backs the car at full power (no trim). |
 | any, **SoC unknown** | Protect/Share hold (safe default); Assist does not | — |
 
-So the honest summary for **Share**: solar charging never drains it, but during **grid**
-charging **above the reserve it will drain the battery** (down toward the reserve), because
-the hold switch is intentionally left off there.
+So for **Share**: solar charging never drains it; during **grid** charging it protects the
+battery at/below the reserve and **deliberately lets it help above the reserve** — that's the
+point of the policy, not a leak.
 
 ---
 
@@ -302,7 +312,7 @@ the battery, and it does *not* automatically jump to full grid charging**:
 | Mode at the moment the battery hits the floor | What happens |
 |---|---|
 | **Solar surplus only** / **Solar + cheap grid** (price above threshold) / **Combined** (no cheap price, no plan) | Reverts to **genuine solar surplus**. If real surplus ≥ min current → keeps charging on the sun only. If not → **stops and waits** (*Waiting for surplus*). The battery is left alone. |
-| **Solar + minimum** | Drops to the **grid floor** (Minimum charge power). ⚠️ The floor top-up branch never sets the hold switch, so with the grid pinned at 0 the **home battery — not the grid — actually supplies the gap** between solar and the floor, and will keep draining (the floor is a *charge-power* floor, not a battery-drain limit in this mode). |
+| **Solar + minimum** | Drops to the **grid floor** (Minimum charge power), topped up from the grid. The top-up holds the battery **per policy** (Protect always; Share ≤ reserve; Assist ≤ floor), so once Assist is at/below its floor it **does** hold here — the grid, not the battery, supplies the floor. |
 | **Solar + cheap grid** *while price ≤ cheap* / **Combined** *while cheap or in the plan* / **Price-optimized** *in a planned hour* / **Fast** | Already on a **grid-charging** branch → keeps charging from the **grid at max**, and now the **battery is held** (blocked from discharge), since Assist holds at/below the floor. |
 
 So "charge from battery, then battery hits the floor" resolves to: **stop assisting → fall
@@ -316,17 +326,17 @@ trigger to start grid-charging.
 
 ### Protect / Share and the home battery
 Keep the grid-at-0 reality in mind: the battery drains by default, so "sparing" it means
-**either** holding it (grid setpoint up) **or** sizing the car down to solar.
+**either** holding it (grid setpoint up) **or** sizing the car down to solar. Which one
+applies is the **battery policy's** call, and the hold switch + current-trim fallback are
+driven by that single decision (they never disagree).
 
 - **Protect** — during **solar** charging the car is sized to real surplus only (battery
-  never used). During **grid** charging it **always** holds the battery, so the car runs on
-  the grid and the battery is spared. The car never runs on the battery.
+  never used). During **grid** charging it **always** holds, so the car runs on the grid and
+  the battery is spared. The car never runs on the battery.
 - **Share** — during **solar** charging it gives the car the solar that would have charged
-  the battery, so it doesn't drain. During **grid** charging it only holds the battery
-  **at/below the reserve**. **Above the reserve it deliberately does *not* hold, so the
-  battery discharges into the car** (down toward the reserve) — or, if no hold switch is
-  mapped at all, the current-trim fallback throttles the car back to solar instead. So Share
-  is *not* "never drained"; above the reserve it intentionally lets the battery help.
+  the battery, so it doesn't drain. During **grid** charging it holds the battery **at/below
+  the reserve**, and **above the reserve it deliberately lets the battery help the car at
+  full power** (no hold, no trim). That's intended: above the reserve there's spare to share.
 
 ---
 
@@ -412,16 +422,20 @@ Target 30 kWh, departure 07:00, forecast loaded. The plan picks the cheapest slo
 their capacity ≥ 30 kWh. At 02:00 (a chosen slot) → charges at **16 A**, *Cheap-hours plan:
 charging now at 0.09/kWh to reach 30 kWh by departure*. At 05:00 (a pricey slot not in the
 plan) → **0 A**, *Waiting for a cheaper price window*. Solar, if any, is ignored in this
-mode. *Overnight there's no sun, so without a mapped hold switch the whole 16 A would come
-**from the home battery** (grid stays at 0) and the trim-fallback would throttle the car to
-near-zero — defeating the point. With the hold switch, the 16 A comes from the cheap grid.*
+mode. *With a **protecting** policy (e.g. Protect) and no mapped hold switch, overnight the
+16 A would have to come **from the home battery** (grid stays at 0), so the trim-fallback
+throttles the car down toward the 6 A minimum to avoid draining it — defeating the point.
+With the hold switch, the 16 A comes from the cheap grid. Under a policy that lets the battery
+help, it simply charges at 16 A and the battery supplies its share.*
 
 **E. Solar + cheap grid, price crosses the threshold.**
 Daytime, modest sun (≈ 8 A of surplus), price 0.18 > 0.15 → charges on **solar at 8 A**.
 At a cheap window price drops to 0.13 → the cheap-grid branch takes over and asks for
-**16 A**. With a **hold switch** that 16 A comes from the grid and the battery is spared;
-**without** one (Protect/Share), the trim-fallback drops the car back toward the ~8 A solar
-surplus to avoid draining the battery. When price rises back above 0.15 → back to solar.
+**16 A**. Under a **protecting** policy with a **hold switch**, that 16 A comes from the grid
+and the battery is spared; **without** a hold switch, the trim-fallback drops the car back
+toward the ~8 A solar surplus to avoid draining the battery. Under a policy that lets the
+battery help, it charges at 16 A with the battery chipping in. When price rises back above
+0.15 → back to solar.
 
 ---
 

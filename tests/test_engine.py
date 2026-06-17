@@ -246,12 +246,27 @@ def test_cheap_grid_share_also_protects_battery():
 
 
 def test_cheap_grid_assist_allows_full_power():
-    # ASSIST opts out of the guard — it may back the car from the battery.
+    # ASSIST above its floor isn't holding, so the guard leaves the current alone
+    # and the battery may back the car at full power.
     d = decide(
-        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.ASSIST),
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0, battery_soc=50.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.ASSIST,
+             battery_floor_soc=20.0),
     )
     assert d.target_current_a == 16.0
+    assert d.hold_battery is False
+
+
+def test_cheap_grid_share_above_reserve_lets_battery_help():
+    # SHARE above the reserve deliberately does NOT hold, so the guard must also
+    # leave the current alone — the battery is allowed to help at full power.
+    d = decide(
+        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0, battery_soc=90.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.SHARE,
+             battery_reserve_soc=80.0),
+    )
+    assert d.target_current_a == 16.0
+    assert d.hold_battery is False
 
 
 def test_cheap_grid_ignores_small_battery_noise():
@@ -353,6 +368,65 @@ def test_hold_assist_unknown_soc_does_not_hold():
         _inputs(price_now=0.05, battery_soc=None),
         _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.ASSIST),
     )
+    assert d.hold_battery is False
+
+
+def test_hold_off_when_waiting_not_charging():
+    # Not charging (no surplus) → never hold, so the battery system runs normally.
+    d = decide(
+        _inputs(grid_power_w=200.0),  # importing, no surplus
+        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.should_charge is False
+    assert d.hold_battery is False
+
+
+def test_hold_off_when_cheap_window_paused_by_dwell():
+    # Cheap grid wants to charge, but the off-dwell keeps it paused this cycle →
+    # we are not charging, so the hold switch must be off.
+    state = EngineState(charging=False, charge_changed_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    d = decide(
+        _inputs(price_now=0.05, now=datetime(2025, 1, 1, 0, 0, 30, tzinfo=timezone.utc)),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT,
+             min_off_dwell_s=120.0),
+        state,
+    )
+    assert d.should_charge is False
+    assert d.hold_battery is False
+
+
+def test_pv_minimum_grid_topup_holds_per_policy():
+    # PV+minimum tops up from the grid when solar is short. With the grid at 0 the
+    # battery would supply the floor, so PROTECT must hold it.
+    d = decide(
+        _inputs(grid_power_w=0.0, pv_power_w=0.0, battery_soc=50.0),
+        _cfg(mode=ChargingMode.PV_MINIMUM, battery_policy=BatteryPolicy.PROTECT,
+             min_grid_floor_w=1400.0),
+    )
+    assert d.should_charge is True
+    assert "Minimum" in d.reason  # top-up branch
+    assert d.hold_battery is True
+
+
+def test_pv_minimum_grid_topup_assist_above_floor_does_not_hold():
+    # ASSIST above its floor lets the battery supply the floor → no hold.
+    d = decide(
+        _inputs(grid_power_w=0.0, pv_power_w=0.0, battery_soc=50.0),
+        _cfg(mode=ChargingMode.PV_MINIMUM, battery_policy=BatteryPolicy.ASSIST,
+             battery_floor_soc=20.0, min_grid_floor_w=1400.0),
+    )
+    assert d.should_charge is True
+    assert d.hold_battery is False
+
+
+def test_pv_minimum_real_surplus_does_not_hold():
+    # Genuine solar surplus above the floor is not grid charging → never hold.
+    d = decide(
+        _inputs(grid_power_w=-5000.0),
+        _cfg(mode=ChargingMode.PV_MINIMUM, battery_policy=BatteryPolicy.PROTECT),
+    )
+    assert d.should_charge is True
+    assert "surplus" in d.reason.lower()  # solar-surplus branch, not the grid top-up
     assert d.hold_battery is False
 
 

@@ -278,56 +278,29 @@ def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
     return max(0.0, surplus)
 
 
-def _battery_guard_current(
-    full_current_a: float, phases: int, inp: ChargerInputs, cfg: EngineConfig
-) -> tuple[float, bool]:
-    """Trim grid-charge current so the home battery isn't drained into the car.
-
-    Cheap-grid (and deadline) charging draws from the grid, but on many inverters
-    the home battery will happily discharge to cover part of the car's load —
-    paying a round-trip loss and a battery cycle for energy the cheap grid could
-    supply directly. Under ``PROTECT``/``SHARE`` we therefore subtract whatever the
-    battery is currently discharging from the car's target current, so the grid
-    carries that load and the battery holds its charge. ``ASSIST`` opts out: it
-    exists precisely to back the car from the battery. Re-evaluated every cycle, so
-    it converges as the inverter responds.
-
-    Returns ``(current, guarded)`` where ``guarded`` flags that we trimmed.
-    """
-    if cfg.battery_policy is BatteryPolicy.ASSIST or inp.battery_power_w is None:
-        return full_current_a, False
-    discharge_w = max(0.0, -inp.battery_power_w)
-    if discharge_w <= _BATTERY_DRAIN_TOLERANCE_W:
-        return full_current_a, False
-    trim_a = _power_to_current(discharge_w, max(1, phases), inp.voltage_v)
-    guarded_a = max(cfg.min_current_a, full_current_a - trim_a)
-    return guarded_a, guarded_a < full_current_a
-
-
 def _hold_battery(inp: ChargerInputs, cfg: EngineConfig) -> bool:
-    """Whether to actively block the home battery from discharging into the car.
+    """Whether to protect the home battery from powering the car right now.
 
-    Set only on the grid-charging branches (Fast / cheap-grid / deadline), where
-    the car's load would otherwise be silently covered from the home battery —
-    paying a round-trip loss and a battery cycle for energy the grid is already
-    supplying. The coordinator drives the result onto a user-mapped hold switch
-    (Victron "disable discharge", an inverter input_boolean, …) so the draw comes
-    from the grid instead. Surplus still flows into the battery; this only fires
-    while we grid-charge.
+    The home battery system regulates the grid to ~0, so during a grid charge it
+    will discharge into the car *by default* unless we stop it. When this returns
+    True the coordinator turns on a user-mapped hold switch (block discharge / raise
+    the grid setpoint) so the grid supplies the car instead; and as a fallback when
+    no hold switch is mapped, :func:`_battery_guard_current` trims the car's current.
+    When it returns False the battery is *deliberately* allowed to help the car
+    (and the guard leaves the current alone) — this is fine, and exactly what the
+    Share/Assist policies are for.
 
-    The *same* battery policy that governs surplus sharing decides it, so users
-    learn a single concept — and it stays consistent with
-    :func:`_battery_guard_current`, the passive fallback that trims car current
-    when no hold switch is mapped:
+    The same battery policy that governs solar-surplus sharing decides it, so users
+    learn one concept:
 
     * ``PROTECT`` — the battery never powers the car: always hold.
-    * ``SHARE``   — hold once the battery is at/below its reserve SoC; above the
-      reserve there is plenty to spare, so let it help the car.
-    * ``ASSIST``  — hold once the battery is at/below its floor SoC; above the
-      floor it is meant to assist the car.
+    * ``SHARE``   — hold once at/below the reserve SoC; above it there is plenty to
+      spare, so let the battery help.
+    * ``ASSIST``  — hold once at/below the floor SoC; above it the battery is meant
+      to assist the car.
 
     With SoC unknown, PROTECT/SHARE still hold (the safe default — never silently
-    drain); ASSIST can't prove it is above its floor either, so it does not hold.
+    drain); ASSIST can't prove it is above its floor, so it does not hold.
     """
     policy = cfg.battery_policy
     if policy is BatteryPolicy.PROTECT:
@@ -337,6 +310,44 @@ def _hold_battery(inp: ChargerInputs, cfg: EngineConfig) -> bool:
     if policy is BatteryPolicy.SHARE:
         return inp.battery_soc <= cfg.battery_reserve_soc
     return inp.battery_soc <= cfg.battery_floor_soc  # ASSIST
+
+
+def _battery_guard_current(
+    full_current_a: float,
+    phases: int,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    *,
+    hold: bool,
+) -> tuple[float, bool]:
+    """Trim grid-charge current so the home battery isn't drained into the car.
+
+    The home battery system regulates the grid to ~0, so it automatically covers
+    any load above solar — which means a grid charge will *drain the home battery*
+    unless something stops it. The real fix is the hold switch (see
+    :func:`_hold_battery`), which blocks discharge so the grid supplies the car.
+    This is the *fallback* for when no hold switch is mapped (or it has no effect):
+    we lower the car's current by whatever the battery is discharging. With the grid
+    pinned at 0 this does **not** shift the load onto the grid — it simply throttles
+    the car back down to the genuine solar surplus (never below the EV's minimum
+    current), which is the best we can do without a hold switch.
+
+    Driven by the *same* policy decision as the hold switch (``hold``): we trim only
+    when the policy wants the battery protected. When the policy is deliberately
+    letting the battery help the car (Share above reserve, Assist above floor), we
+    leave the current alone so it can. Re-evaluated each cycle, so it converges as
+    the inverter responds.
+
+    Returns ``(current, guarded)`` where ``guarded`` flags that we trimmed.
+    """
+    if not hold or inp.battery_power_w is None:
+        return full_current_a, False
+    discharge_w = max(0.0, -inp.battery_power_w)
+    if discharge_w <= _BATTERY_DRAIN_TOLERANCE_W:
+        return full_current_a, False
+    trim_a = _power_to_current(discharge_w, max(1, phases), inp.voltage_v)
+    guarded_a = max(cfg.min_current_a, full_current_a - trim_a)
+    return guarded_a, guarded_a < full_current_a
 
 
 def _battery_held(inp: ChargerInputs, cfg: EngineConfig) -> bool:
@@ -634,8 +645,12 @@ def decide(
 
     if cheap_now or deadline_now:
         phases = _phases_for(cfg.mode, 0.0, inp, cfg, state, grid_charging=True)
+        # One policy decision drives both the hold switch and the current-trim
+        # fallback, so they stay consistent (we never trim a battery we're letting
+        # help, nor leave one unprotected that we mean to hold).
+        hold = _hold_battery(inp, cfg)
         current, guarded = _battery_guard_current(
-            cfg.max_current_a, phases, inp, cfg
+            cfg.max_current_a, phases, inp, cfg, hold=hold
         )
         if cheap_now:
             base, params = "cheap_grid", {
@@ -656,7 +671,7 @@ def decide(
             should_charge=want,
             target_current_a=current if want else 0.0,
             target_phases=phases,
-            hold_battery=want and _hold_battery(inp, cfg),
+            hold_battery=want and hold,
             reason=reason,
             reason_key=rkey,
             reason_params=rparams,
@@ -710,6 +725,11 @@ def decide(
             reason_params=rparams,
         )
 
+    # Pure solar charging rides on real surplus, so it never holds the battery
+    # (and Assist may back the car here). The exception is the PV+minimum grid
+    # top-up below: that draws above solar, so — with the grid pinned at 0 — the
+    # battery would supply the floor unless we hold it per policy.
+    hold = False
     if guarantees_floor:
         floor_current = max(
             cfg.min_current_a,
@@ -728,6 +748,7 @@ def decide(
                 "amps": f"{current:.1f}",
                 "surplus": f"{surplus:.0f}",
             }
+            hold = _hold_battery(inp, cfg)
     else:
         current = _clamp(pv_current, cfg.min_current_a, cfg.max_current_a)
         params = {"surplus": f"{surplus:.0f}", "amps": f"{current:.1f}"}
@@ -747,6 +768,7 @@ def decide(
         target_current_a=current if want else 0.0,
         target_phases=phases,
         surplus_w=surplus,
+        hold_battery=want and hold,
         reason=reason,
         reason_key=rkey,
         reason_params=rparams,
