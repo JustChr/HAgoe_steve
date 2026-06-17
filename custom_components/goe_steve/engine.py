@@ -645,10 +645,13 @@ def decide(
 
     if cheap_now or deadline_now:
         phases = _phases_for(cfg.mode, 0.0, inp, cfg, state, grid_charging=True)
-        # One policy decision drives both the hold switch and the current-trim
-        # fallback, so they stay consistent (we never trim a battery we're letting
-        # help, nor leave one unprotected that we mean to hold).
-        hold = _hold_battery(inp, cfg)
+        # Cheap grid → use the grid, never the home battery: the stored energy is
+        # worth more than the cheap grid we'd otherwise pass up, so always hold,
+        # regardless of battery policy. The deadline plan can charge at
+        # not-actually-cheap hours to hit departure, so it stays policy-based (the
+        # battery may help there). One decision drives both the hold switch and the
+        # current-trim fallback, so they stay consistent.
+        hold = True if cheap_now else _hold_battery(inp, cfg)
         current, guarded = _battery_guard_current(
             cfg.max_current_a, phases, inp, cfg, hold=hold
         )

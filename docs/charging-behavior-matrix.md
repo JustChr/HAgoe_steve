@@ -57,7 +57,7 @@ flowchart TD
     D -- Yes --> E{Mode = Fast?}
     E -- Yes --> MAX[Charge at MAX]
     E -- No --> G{Grid cheap now, or a planned cheap hour?}
-    G -- Yes --> GRID[Charge at MAX from grid<br/>hold per policy]
+    G -- Yes --> GRID[Charge at MAX from grid<br/>cheap: always hold · deadline: per policy]
     G -- No --> J{Enough solar surplus?}
     J -- Yes --> SUN[Charge on solar]
     J -- No --> K{Solar + minimum?}
@@ -105,9 +105,17 @@ Surplus = **solar minus all other loads**, then adjusted per policy:
 
 ## The hold switch — when it kicks in
 
-The hold switch is driven **only while the brain is grid-charging** (Fast, cheap grid,
-deadline plan, and the PV+minimum grid top-up). The same policy decision drives both the hold
-switch **and** the current-trim fallback, so they never disagree.
+The hold switch (block battery discharge / raise the grid setpoint) is driven **only while the
+brain is grid-charging**. There are two cases:
+
+**1. Cheap grid → always hold (grid only, never the battery).** Whenever the price is at/below
+your cheap threshold (Solar + cheap grid, or the cheap branch of Combined), the hold is **ON
+regardless of policy or SoC** — the stored battery energy is worth more than the cheap grid
+you'd otherwise skip, so the car runs purely on the grid. Solar still tops the battery up.
+
+**2. Fast / deadline plan / PV+minimum grid top-up → hold per battery policy.** These charge
+from the grid for reasons other than a cheap price (charge now / hit a departure / guarantee a
+floor), so the battery *may* help if the policy allows it:
 
 | Policy | Hold turns **ON** when… | Hold stays **OFF** when… |
 |---|---|---|
@@ -118,7 +126,8 @@ switch **and** the current-trim fallback, so they never disagree.
 
 **Always OFF** when: not charging, or doing pure **solar-surplus** charging (so solar still
 fills the battery, and Assist can back the car). This keeps the battery system within its own
-boundaries whenever the brain isn't grid-charging.
+boundaries whenever the brain isn't grid-charging. The same decision (cheap-grid or policy)
+drives both the hold switch **and** the current-trim fallback, so they never disagree.
 
 **No hold switch mapped?** When the policy *would* hold, the brain instead **trims the car's
 current down to your solar surplus** (never below MIN) so it doesn't drain the battery — i.e.
