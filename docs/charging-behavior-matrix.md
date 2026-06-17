@@ -77,7 +77,8 @@ The home battery has two reference levels you set — a **reserve** (Protect) an
  reserve│   never powers the car.
        │
        │   SHARE — the car may grab power that would have gone into
-       │   the home battery. Battery is never actively drained.
+       │   the home battery. It doesn't deliberately run the battery
+       │   down (see the note below on the reserve).
        │
  20% ──┤◄─ ASSIST — the battery may actively power the car... but only
  floor │   down to this floor. Hit the floor → it stops helping.
@@ -86,7 +87,9 @@ The home battery has two reference levels you set — a **reserve** (Protect) an
 ```
 
 - **Protect** = home battery first (safest for your house). *Below the reserve, the car waits.*
-- **Share** = sun is shared between car and battery.
+- **Share** = sun is shared between car and battery. The car never *deliberately* runs the
+  battery down — but above the reserve it's protected by gently trimming the car's current
+  rather than a hard block, so it isn't bulletproof at the margins (see §5).
 - **Assist** = battery actively helps the car, down to the floor — then backs off (see §6).
 
 > When the brain charges from the **grid** (Fast, cheap grid, planned hours), it also flips
@@ -227,7 +230,7 @@ the home battery is blocked** (grid charging).
 | Policy | Home battery below its threshold | Home battery above its threshold |
 |---|---|---|
 | **Protect** | surplus = **0** (car waits, battery fills first to *reserve*) | real PV export only; battery discharge subtracted (car never runs on the battery) |
-| **Share** | reclaims power that would charge the battery; battery discharge subtracted (never actively drained) | same |
+| **Share** | reclaims power that would charge the battery; battery discharge subtracted, so solar charging never runs it down | same (grid charging is gated by the reserve — see below) |
 | **Assist** | reclaims battery-charge power | above *floor* SoC, availability is lifted to **Max** so charging never stalls — the battery and grid floor make up the difference |
 
 ### Battery-hold during grid charging (`hold_battery` / `_battery_guard_current`)
@@ -273,14 +276,18 @@ trigger to start grid-charging.
 > recovers above the floor (e.g. a burst of sun), the next cycle resumes assisting. The
 > on/off **anti-flap dwell (§4)** still bounds how fast the *charging* state can toggle.
 
-### Protect / Share never discharge into the car
+### Protect / Share don't *deliberately* discharge into the car
 - **Protect** subtracts any battery discharge from the surplus and, below the *reserve*,
-  gives the car nothing at all (battery fills first). The car never runs on the battery.
-- **Share** reclaims power that *would have charged* the battery, but also subtracts any
-  discharge — it yields charging headroom but is never actively drained.
-
-In both, during grid charging the battery is **held** per §5 so it can't quietly cover the
-car's grid load.
+  gives the car nothing at all (battery fills first). During grid charging it **always**
+  holds the battery. The car never runs on the battery.
+- **Share** reclaims power that *would have charged* the battery and subtracts any discharge
+  from the surplus, so it never *deliberately* runs the car off the battery. **But its hard
+  protection is gated by the reserve:** during grid charging Share only flips the hold
+  switch at/below the reserve SoC. **Above** the reserve it relies on *current-trimming*
+  alone (`_battery_guard_current`), which is reactive and **cannot trim below the minimum
+  charge current** — so a small or transient battery draw is possible at the margins
+  (notably when the car is already pinned at the 6 A minimum). It is "not deliberately
+  drained", not "provably never drained".
 
 ---
 
