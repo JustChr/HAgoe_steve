@@ -7,5 +7,6 @@ venv/
 .DS_Store
 
 # Card build tooling — the bundled output in custom_components/.../www is committed.
+# package-lock.json is committed so CI (npm ci) installs the exact same esbuild
+# that produced the committed bundle, keeping the stale-bundle check deterministic.
 card/node_modules/
-card/package-lock.json
