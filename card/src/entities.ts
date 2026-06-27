@@ -31,6 +31,9 @@ export interface ResolvedEntities {
   battery_reserve_soc?: string;
   battery_floor_soc?: string;
   target_energy?: string;
+  departure?: string;
+  max_current?: string;
+  min_grid_floor?: string;
   price_forecast?: string;
   cheap_price?: string;
   active_transaction?: string;
@@ -97,6 +100,9 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.battery_reserve_soc = find("battery_reserve_soc");
   result.battery_floor_soc = find("battery_floor_soc");
   result.target_energy = find("target_energy");
+  result.departure = find("departure");
+  result.max_current = find("max_current");
+  result.min_grid_floor = find("min_grid_floor");
   result.price_forecast = find("price_forecast");
   result.cheap_price = find("cheap_price");
   result.active_transaction = find("active_transaction");

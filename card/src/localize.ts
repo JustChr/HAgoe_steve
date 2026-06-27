@@ -30,10 +30,17 @@ const en: Dict = {
   "control.battery_fill_to": "Fill battery to",
   "control.battery_use_to": "Use battery down to",
   "control.target_energy": "Car target energy",
+  "control.departure": "Departure",
+  "control.max_current": "Max current",
+  "control.min_grid_floor": "Min charge power",
   "control.tag": "Tag",
+
+  "live.target": "Target",
+  "live.surplus": "Surplus",
 
   "action.start": "Start",
   "action.stop": "Stop",
+  "action.stop_confirm": "Stop the active charging session?",
 
   "reason.smart_disabled": "Smart control disabled",
   "reason.mode_off": "Mode: Off — manual control",
@@ -109,10 +116,17 @@ const de: Dict = {
   "control.battery_fill_to": "Batterie laden bis",
   "control.battery_use_to": "Batterie nutzen bis",
   "control.target_energy": "Ziel-Energie Auto",
+  "control.departure": "Abfahrt",
+  "control.max_current": "Max. Strom",
+  "control.min_grid_floor": "Min. Ladeleistung",
   "control.tag": "Tag",
+
+  "live.target": "Ziel",
+  "live.surplus": "Überschuss",
 
   "action.start": "Starten",
   "action.stop": "Stoppen",
+  "action.stop_confirm": "Aktiven Ladevorgang stoppen?",
 
   "reason.smart_disabled": "Intelligente Steuerung deaktiviert",
   "reason.mode_off": "Modus: Aus — manuelle Steuerung",

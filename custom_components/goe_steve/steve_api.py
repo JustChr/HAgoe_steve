@@ -218,6 +218,18 @@ def latest_completed(
     )
 
 
+def recent_completed(
+    transactions: list[SteVeTransaction], limit: int = 5
+) -> list[SteVeTransaction]:
+    """The most recently finished sessions, newest first (by stop, then start)."""
+    finished = [tx for tx in transactions if tx.stop is not None]
+    finished.sort(
+        key=lambda tx: (tx.stop or datetime.min, tx.start or datetime.min),
+        reverse=True,
+    )
+    return finished[:limit]
+
+
 def build_steve_data(
     tags_raw: object, transactions_raw: object
 ) -> SteVeData:

@@ -15,6 +15,7 @@ from . import GoeSteveConfigEntry
 from .coordinator import SteVeCoordinator
 from .engine import compute_power_flow
 from .entity import GoeSteveEntity, SteVeEntity
+from .steve_api import recent_completed
 
 
 async def async_setup_entry(
@@ -284,6 +285,17 @@ class LastSessionEnergySensor(SteVeEntity, SensorEntity):
             "charge_box_id": tx.charge_box_id,
             "started": tx.start.isoformat() if tx.start else None,
             "stopped": tx.stop.isoformat() if tx.stop else None,
+            # Recent finished sessions (newest first) so the card can show a short
+            # history without a second sensor. Includes this last session at [0].
+            "recent": [
+                {
+                    "name": data.name_for_tag(s.id_tag),
+                    "energy": s.energy_kwh,
+                    "started": s.start.isoformat() if s.start else None,
+                    "stopped": s.stop.isoformat() if s.stop else None,
+                }
+                for s in recent_completed(data.transactions)
+            ],
         }
 
 

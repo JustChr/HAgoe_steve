@@ -106,6 +106,7 @@ export class GoeSteveCard extends LitElement {
       ${this._renderHeader(ent, title)}
       <div class="content">
         ${this._config.show_flow ? this._renderFlow(ent) : nothing}
+        ${this._config.show_controls ? this._renderLive(ent) : nothing}
         ${this._config.show_controls ? this._renderControls(ent) : nothing}
         ${this._config.show_sessions ? this._renderSessions(ent) : nothing}
       </div>
@@ -250,6 +251,42 @@ export class GoeSteveCard extends LitElement {
     </div>`;
   }
 
+  // --- Live telemetry ----------------------------------------------------------
+  /**
+   * A compact stat strip shown while the brain is actively controlling: the
+   * target current it's driving the charger at, plus the solar surplus it has to
+   * work with in the PV-aware modes. Both come from goe_steve sensors that the
+   * card otherwise never surfaces; the flow diagram already shows actual power.
+   */
+  private _renderLive(ent: ResolvedEntities): TemplateResult | typeof nothing {
+    if (!this._isOn(ent.controlling)) return nothing;
+    const targetCurrent = this._stateObj(ent.target_current);
+    const surplus = this._stateObj(ent.surplus);
+    const mode = this._stateObj(ent.charging_mode)?.state ?? "";
+    const showSurplus =
+      !!surplus &&
+      ["pv_only", "pv_minimum", "pv_price", "combined"].includes(mode);
+    const validTarget =
+      !!targetCurrent &&
+      !["unknown", "unavailable", ""].includes(targetCurrent.state);
+    if (!validTarget && !showSurplus) return nothing;
+    return html`<div class="live">
+      ${validTarget
+        ? this._stat(this._t("live.target"), this._fmtState(targetCurrent!))
+        : nothing}
+      ${showSurplus
+        ? this._stat(this._t("live.surplus"), this._fmtState(surplus!))
+        : nothing}
+    </div>`;
+  }
+
+  private _stat(label: string, value: string): TemplateResult {
+    return html`<div class="stat">
+      <span class="stat-label">${label}</span>
+      <span class="stat-val">${value}</span>
+    </div>`;
+  }
+
   // --- Inline controls ---------------------------------------------------------
   private _renderControls(ent: ResolvedEntities): TemplateResult {
     const mode = this._stateObj(ent.charging_mode);
@@ -274,6 +311,12 @@ export class GoeSteveCard extends LitElement {
     const manualCharge = this._stateObj(ent.manual_charge);
     const manualCurrent = this._stateObj(ent.manual_current);
     const manualPhases = this._stateObj(ent.manual_phases);
+
+    // Deadline picker pairs with target energy in the deadline-aware modes; the
+    // remaining tunables surface only in the mode where they actually bite.
+    const departure = this._stateObj(ent.departure);
+    const maxCurrent = this._stateObj(ent.max_current);
+    const minGridFloor = this._stateObj(ent.min_grid_floor);
 
     return html`<div class="controls">
       ${mode
@@ -333,6 +376,24 @@ export class GoeSteveCard extends LitElement {
             ${this._renderNumber(target)}
           </div>`
         : nothing}
+      ${departure && (modeState === "price" || modeState === "combined")
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.departure")}</span>
+            ${this._renderDateTime(departure)}
+          </div>`
+        : nothing}
+      ${minGridFloor && modeState === "pv_minimum"
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.min_grid_floor")}</span>
+            ${this._renderNumber(minGridFloor)}
+          </div>`
+        : nothing}
+      ${maxCurrent && modeState === "fast"
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.max_current")}</span>
+            ${this._renderNumber(maxCurrent)}
+          </div>`
+        : nothing}
       ${smart
         ? html`<div class="control">
             <span class="ctl-label">${this._t("control.smart_control")}</span>
@@ -382,6 +443,35 @@ export class GoeSteveCard extends LitElement {
     });
   }
 
+  /** Native datetime-local input bound to a `datetime` entity (UTC ISO state). */
+  private _renderDateTime(stateObj: HassEntity): TemplateResult {
+    return html`<input
+      class="ctl-datetime"
+      type="datetime-local"
+      .value=${this._toLocalInput(stateObj.state)}
+      @change=${(e: Event) =>
+        this._setDateTime(stateObj, (e.target as HTMLInputElement).value)}
+    />`;
+  }
+
+  /** UTC ISO → the `YYYY-MM-DDTHH:mm` local string a datetime-local expects. */
+  private _toLocalInput(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  private _setDateTime(stateObj: HassEntity, value: string): void {
+    if (!value) return;
+    const d = new Date(value); // parsed in the browser's local zone
+    if (Number.isNaN(d.getTime())) return;
+    this.hass.callService("datetime", "set_value", {
+      entity_id: stateObj.entity_id,
+      datetime: d.toISOString(),
+    });
+  }
+
   private _renderSelect(stateObj: HassEntity): TemplateResult {
     const options: string[] = stateObj.attributes.options ?? [];
     // A native <select> rather than HA's ha-select (mwc-select): the latter is
@@ -421,18 +511,50 @@ export class GoeSteveCard extends LitElement {
       !!active &&
       !["idle", "unknown", "unavailable", ""].includes(active.state);
 
+    // Live charging power for the running session — SteVe has no live meter value,
+    // so we pair the session's elapsed time with the actual car power from flow.
+    const carW = Number(this._stateObj(ent.power_flow)?.attributes?.car_w ?? NaN);
+    const meta = hasActive ? this._sessionMeta(active!, carW) : "";
+
+    // Recent finished sessions (newest first); [0] is the "last" line above, so
+    // the history list shows the older ones beneath it.
+    const recent = (last?.attributes?.recent ?? []) as Array<{
+      name?: string;
+      energy?: number | null;
+      stopped?: string | null;
+    }>;
+
     return html`<div class="sessions">
       ${this._renderTagPicker(picker, hasActive)}
       ${active
         ? html`<div class="session-row">
             <ha-icon icon="mdi:card-account-details"></ha-icon>
-            <span>${active.state === "idle" ? this._t("session.none") : this._t("session.charging", { state: (active.attributes.name as string) ?? active.state })}</span>
+            <span
+              >${active.state === "idle"
+                ? this._t("session.none")
+                : this._t("session.charging", {
+                    state: (active.attributes.name as string) ?? active.state,
+                  })}${meta ? html`<span class="session-meta"> · ${meta}</span>` : nothing}</span
+            >
           </div>`
         : nothing}
       ${last && last.state && last.state !== "unknown"
         ? html`<div class="session-row">
             <ha-icon icon="mdi:history"></ha-icon>
             <span>${this._t("session.last", { energy: this._fmtState(last) })}</span>
+          </div>`
+        : nothing}
+      ${recent.length > 1
+        ? html`<div class="history">
+            ${recent.slice(1).map(
+              (s) => html`<div class="hist-row">
+                <span class="hist-name">${s.name ?? this._t("session.tag")}</span>
+                <span class="hist-meta">
+                  ${s.energy != null ? `${s.energy.toFixed(2)} kWh` : "—"}
+                  ${s.stopped ? html`<span class="hist-date">${this._fmtDate(s.stopped)}</span>` : nothing}
+                </span>
+              </div>`,
+            )}
           </div>`
         : nothing}
       ${tags.length
@@ -483,7 +605,7 @@ export class GoeSteveCard extends LitElement {
         ${hasActive
           ? html`<button
               class="tag-btn stop"
-              @click=${() => this._callTagService("remote_stop")}
+              @click=${() => this._confirmStop()}
             >
               <ha-icon icon="mdi:stop"></ha-icon>${this._t("action.stop")}
             </button>`
@@ -501,6 +623,41 @@ export class GoeSteveCard extends LitElement {
   /** Call a SteVe tag service with no id_tag — it falls back to the selection. */
   private _callTagService(service: string): void {
     this.hass.callService(PLATFORM, service, {});
+  }
+
+  /** Stopping ends a live charging session, so confirm before doing it. */
+  private _confirmStop(): void {
+    if (window.confirm(this._t("action.stop_confirm"))) {
+      this._callTagService("remote_stop");
+    }
+  }
+
+  /** "1h 23m · 8.3 kW" for a running session — elapsed time + live car power. */
+  private _sessionMeta(active: HassEntity, carW: number): string {
+    const parts: string[] = [];
+    const dur = this._fmtDuration(active.attributes.started as string | undefined);
+    if (dur) parts.push(dur);
+    if (!Number.isNaN(carW) && carW > 50) parts.push(fmtPower(carW));
+    return parts.join(" · ");
+  }
+
+  /** Elapsed time since an ISO timestamp as a compact "1h 23m" / "5m" string. */
+  private _fmtDuration(started: string | undefined): string {
+    if (!started) return "";
+    const start = new Date(started).getTime();
+    if (Number.isNaN(start)) return "";
+    const mins = Math.max(0, Math.round((Date.now() - start) / 60000));
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  /** Localized short date for a session-history entry. */
+  private _fmtDate(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const lang = this.hass?.locale?.language || this.hass?.language || "en";
+    return d.toLocaleDateString(lang, { day: "numeric", month: "short" });
   }
 
   // --- hass helpers ------------------------------------------------------------
@@ -744,6 +901,46 @@ export class GoeSteveCard extends LitElement {
       font-size: 0.85rem;
       white-space: nowrap;
     }
+    .ctl-datetime {
+      flex: 1;
+      max-width: 60%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color, var(--ha-card-background));
+      color: var(--primary-text-color);
+      font-family: inherit;
+      font-size: 0.95rem;
+    }
+    .ctl-datetime:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
+
+    /* Live telemetry strip */
+    .live {
+      display: flex;
+      gap: 8px;
+      padding: 0 8px 8px;
+    }
+    .stat {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--secondary-background-color);
+    }
+    .stat-label {
+      font-size: 0.75rem;
+      color: var(--secondary-text-color);
+    }
+    .stat-val {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--primary-text-color);
+    }
 
     /* Sessions */
     .sessions {
@@ -764,6 +961,35 @@ export class GoeSteveCard extends LitElement {
     .session-row ha-icon {
       --mdc-icon-size: 18px;
       color: var(--secondary-text-color);
+    }
+    .session-meta {
+      color: var(--secondary-text-color);
+    }
+    .history {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin: 2px 0 0 26px;
+    }
+    .hist-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.82rem;
+      color: var(--secondary-text-color);
+    }
+    .hist-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .hist-meta {
+      display: inline-flex;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .hist-date {
+      opacity: 0.7;
     }
     .tags {
       display: flex;

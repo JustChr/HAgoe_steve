@@ -137,6 +137,19 @@ def test_latest_completed_picks_most_recent_stop():
     assert steve.latest_completed(txs).id_tag == "B"
 
 
+def test_recent_completed_newest_first_and_limited():
+    txs = steve.parse_transactions(
+        [
+            _tx(0, 1000, id_tag="A", stop="2026-06-14T08:00:00Z"),
+            _tx(0, 1000, id_tag="B", stop="2026-06-14T20:00:00Z"),
+            _tx(0, 1000, id_tag="C", stop="2026-06-15T06:00:00Z"),
+            _tx(0, None, id_tag="D", stop=None),  # open session excluded
+        ]
+    )
+    recent = steve.recent_completed(txs, limit=2)
+    assert [t.id_tag for t in recent] == ["C", "B"]
+
+
 def test_build_steve_data_assembles_snapshot():
     tags = [{"idTag": "A", "ocppTagPk": 1}]
     txs = [_tx(0, 1000, id_tag="A"), _tx(0, None, id_tag="A", stop=None)]
