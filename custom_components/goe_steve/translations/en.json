@@ -127,7 +127,7 @@
       "charging_mode": {
         "name": "Charging mode",
         "state": {
-          "off": "Off (manual)",
+          "off": "Manual",
           "pv_only": "Solar surplus only",
           "pv_minimum": "Solar + minimum",
           "pv_price": "Solar + cheap grid",
@@ -144,15 +144,24 @@
           "assist": "Assist (battery helps the car)"
         }
       },
+      "manual_phases": {
+        "name": "Manual phases",
+        "state": {
+          "1": "Single phase",
+          "3": "Three phase"
+        }
+      },
       "selected_tag": {
         "name": "Selected tag"
       }
     },
     "switch": {
+      "manual_charge": { "name": "Manual charging" },
       "smart_control": { "name": "Smart control" },
       "auto_phase": { "name": "Automatic phase switching" }
     },
     "number": {
+      "manual_current": { "name": "Manual current" },
       "min_current": { "name": "Minimum current" },
       "max_current": { "name": "Maximum current" },
       "battery_reserve_soc": { "name": "Home battery reserve" },

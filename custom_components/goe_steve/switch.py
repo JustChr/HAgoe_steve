@@ -21,8 +21,44 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     async_add_entities(
-        [SmartControlSwitch(coordinator), AutoPhaseSwitch(coordinator)]
+        [
+            ManualChargeSwitch(coordinator),
+            SmartControlSwitch(coordinator),
+            AutoPhaseSwitch(coordinator),
+        ]
     )
+
+
+class ManualChargeSwitch(GoeSteveEntity, RestoreEntity, SwitchEntity):
+    """Start/stop the charger in Manual mode (charging-mode 'Manual').
+
+    A primary control (not config): in Manual mode this is the user's start/stop.
+    It has no effect in the smart modes, where the brain decides on/off itself.
+    """
+
+    _attr_icon = "mdi:ev-station"
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "manual_charge")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None:
+            self.coordinator.settings.manual_charge = last.state == "on"
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.settings.manual_charge
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self.coordinator.settings.manual_charge = True
+        self.async_write_ha_state()
+        self.coordinator.request_apply()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self.coordinator.settings.manual_charge = False
+        self.async_write_ha_state()
+        self.coordinator.request_apply()
 
 
 class SmartControlSwitch(GoeSteveEntity, RestoreEntity, SwitchEntity):

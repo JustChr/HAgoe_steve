@@ -33,6 +33,17 @@ class GoeNumberDescription(NumberEntityDescription):
 
 NUMBERS: tuple[GoeNumberDescription, ...] = (
     GoeNumberDescription(
+        key="manual_current",
+        attr="manual_current_a",
+        icon="mdi:ev-station",
+        native_min_value=6,
+        native_max_value=32,
+        native_step=1,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        getter=lambda s: s.manual_current_a,
+        setter=lambda s, v: setattr(s, "manual_current_a", v),
+    ),
+    GoeNumberDescription(
         key="min_current",
         attr="min_current_a",
         icon="mdi:current-ac",

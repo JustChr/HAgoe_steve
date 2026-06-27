@@ -162,6 +162,10 @@ class RuntimeSettings:
     target_energy_kwh: float = DEFAULT_TARGET_ENERGY_KWH
     departure: datetime | None = None
     auto_phase: bool = DEFAULT_AUTO_PHASE
+    # Manual mode (mode == OFF) cockpit: start/stop, current and phase count.
+    manual_charge: bool = False
+    manual_current_a: float = DEFAULT_MAX_CURRENT
+    manual_phases: int = DEFAULT_PHASES
 
 
 class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
@@ -206,6 +210,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # Rolling-average buffers for input smoothing.
         self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
         self._grid_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
+
+    @property
+    def has_phase_control(self) -> bool:
+        """True when a go-e phase-switch entity is mapped (1↔3 selectable)."""
+        return bool(self._cfg.get(CONF_GOE_PHASE))
 
     # --- State reading helpers --------------------------------------------------
     def _get_float(self, conf_key: str) -> float | None:
@@ -371,6 +380,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             target_energy_kwh=self.settings.target_energy_kwh,
             departure=self.settings.departure,
             auto_phase=self.settings.auto_phase,
+            manual_charge=self.settings.manual_charge,
+            manual_current_a=self.settings.manual_current_a,
+            manual_phases=self.settings.manual_phases,
             max_phases=max(self._phases, 3),
             phase_dwell_s=PHASE_DWELL_S,
             min_on_dwell_s=MIN_ON_DWELL_S,
@@ -409,7 +421,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         # Rate-limit writes, but always allow a stop and a phase change through.
         phase_change = (
-            self.settings.auto_phase
+            (self.settings.auto_phase or decision.write_phases)
             and self._last_written_phases is not None
             and decision.target_phases != self._last_written_phases
         )
@@ -446,8 +458,13 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             _LOGGER.warning("Failed to set charger current via %s: %s", current_entity, err)
 
     async def _write_phases(self, decision: Decision) -> None:
-        """Write the phase count when auto-phase is on and an entity is mapped."""
-        if not self.settings.auto_phase:
+        """Write the phase count when an entity is mapped.
+
+        Driven by auto-phase (smart modes that adapt 1↔3) or an explicit
+        ``write_phases`` request from the decision (Manual mode, where the user
+        picks the phase count directly).
+        """
+        if not self.settings.auto_phase and not decision.write_phases:
             return
         phase_entity = self._cfg.get(CONF_GOE_PHASE)
         if not phase_entity:

@@ -22,6 +22,9 @@ const en: Dict = {
 
   "control.mode": "Mode",
   "control.battery": "Battery",
+  "control.manual_charge": "Charge now",
+  "control.manual_current": "Current",
+  "control.manual_phases": "Phases",
   "control.smart_control": "Smart control",
   "control.auto_phase": "Auto phase (1↔3)",
   "control.battery_fill_to": "Fill battery to",
@@ -34,6 +37,10 @@ const en: Dict = {
 
   "reason.smart_disabled": "Smart control disabled",
   "reason.mode_off": "Mode: Off — manual control",
+  "reason.manual_paused": "Manual mode — paused",
+  "reason.manual_charging": "Manual charging at {amps} A",
+  "reason.manual_charging_guarded":
+    "Manual charging at {amps} A (protecting home battery)",
   "reason.no_car": "No car connected",
   "reason.fast": "Fast charging at {amps} A",
   "reason.cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
@@ -94,6 +101,9 @@ const de: Dict = {
 
   "control.mode": "Modus",
   "control.battery": "Batterie",
+  "control.manual_charge": "Jetzt laden",
+  "control.manual_current": "Stromstärke",
+  "control.manual_phases": "Phasen",
   "control.smart_control": "Intelligente Steuerung",
   "control.auto_phase": "Auto-Phase (1↔3)",
   "control.battery_fill_to": "Batterie laden bis",
@@ -106,6 +116,10 @@ const de: Dict = {
 
   "reason.smart_disabled": "Intelligente Steuerung deaktiviert",
   "reason.mode_off": "Modus: Aus — manuelle Steuerung",
+  "reason.manual_paused": "Manueller Modus — pausiert",
+  "reason.manual_charging": "Manuelles Laden mit {amps} A",
+  "reason.manual_charging_guarded":
+    "Manuelles Laden mit {amps} A (Hausbatterie geschützt)",
   "reason.no_car": "Kein Auto verbunden",
   "reason.fast": "Schnellladen mit {amps} A",
   "reason.cheap_grid": "Günstiger Netzstrom {price}/kWh ≤ {threshold} → volle Leistung",

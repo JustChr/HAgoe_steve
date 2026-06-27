@@ -127,7 +127,7 @@
       "charging_mode": {
         "name": "Lademodus",
         "state": {
-          "off": "Aus (manuell)",
+          "off": "Manuell",
           "pv_only": "Nur Solarüberschuss",
           "pv_minimum": "Solar + Minimum",
           "pv_price": "Solar + günstiger Netzstrom",
@@ -144,15 +144,24 @@
           "assist": "Unterstützen (Batterie hilft dem Auto)"
         }
       },
+      "manual_phases": {
+        "name": "Manuelle Phasen",
+        "state": {
+          "1": "Einphasig",
+          "3": "Dreiphasig"
+        }
+      },
       "selected_tag": {
         "name": "Ausgewählter Tag"
       }
     },
     "switch": {
+      "manual_charge": { "name": "Manuelles Laden" },
       "smart_control": { "name": "Intelligente Steuerung" },
       "auto_phase": { "name": "Automatische Phasenumschaltung" }
     },
     "number": {
+      "manual_current": { "name": "Manueller Strom" },
       "min_current": { "name": "Mindeststrom" },
       "max_current": { "name": "Maximalstrom" },
       "battery_reserve_soc": { "name": "Reserve Hausbatterie" },

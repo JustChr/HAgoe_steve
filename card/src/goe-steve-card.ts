@@ -267,11 +267,40 @@ export class GoeSteveCard extends LitElement {
     const policyState = policy?.state;
     const modeState = mode?.state;
 
+    // Manual mode (charging-mode "off") turns the card into the cockpit: the user
+    // sets start/stop, current and phases here directly — no go-e app needed. The
+    // battery policy below still applies, so it's surfaced in both modes.
+    const isManual = modeState === "off";
+    const manualCharge = this._stateObj(ent.manual_charge);
+    const manualCurrent = this._stateObj(ent.manual_current);
+    const manualPhases = this._stateObj(ent.manual_phases);
+
     return html`<div class="controls">
       ${mode
         ? html`<div class="control">
             <span class="ctl-label">${this._t("control.mode")}</span>
             ${this._renderSelect(mode)}
+          </div>`
+        : nothing}
+      ${isManual && manualCharge
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.manual_charge")}</span>
+            <ha-switch
+              .checked=${this._isOn(ent.manual_charge)}
+              @change=${(e: Event) => this._toggle(ent.manual_charge, e)}
+            ></ha-switch>
+          </div>`
+        : nothing}
+      ${isManual && manualCurrent
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.manual_current")}</span>
+            ${this._renderNumber(manualCurrent)}
+          </div>`
+        : nothing}
+      ${isManual && manualPhases
+        ? html`<div class="control">
+            <span class="ctl-label">${this._t("control.manual_phases")}</span>
+            ${this._renderSelect(manualPhases)}
           </div>`
         : nothing}
       ${policy
@@ -313,7 +342,7 @@ export class GoeSteveCard extends LitElement {
             ></ha-switch>
           </div>`
         : nothing}
-      ${ent.auto_phase
+      ${ent.auto_phase && !isManual
         ? html`<div class="control">
             <span class="ctl-label">${this._t("control.auto_phase")}</span>
             <ha-switch

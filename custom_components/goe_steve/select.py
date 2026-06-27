@@ -26,6 +26,9 @@ async def async_setup_entry(
         ChargingModeSelect(coordinator),
         BatteryPolicySelect(coordinator),
     ]
+    # Manual phase choice only makes sense when a phase-switch entity is mapped.
+    if coordinator.has_phase_control:
+        entities.append(ManualPhaseSelect(coordinator))
     if coordinator.steve is not None:
         entities.append(SteVeTagSelect(coordinator.steve))
     async_add_entities(entities)
@@ -78,6 +81,38 @@ class BatteryPolicySelect(GoeSteveEntity, RestoreEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         self.coordinator.settings.battery_policy = BatteryPolicy(option)
+        self.async_write_ha_state()
+        self.coordinator.request_apply()
+
+
+class ManualPhaseSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
+    """Single- vs three-phase choice for Manual mode.
+
+    A primary control (not config): in Manual mode the user picks the phase
+    count directly and the brain writes the go-e phase switch. The smart modes
+    use the automatic phase logic instead and ignore this.
+    """
+
+    _attr_icon = "mdi:sine-wave"
+    _attr_options = ["1", "3"]
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "manual_phases")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state in self._attr_options:
+                self.coordinator.settings.manual_phases = int(last.state)
+
+    @property
+    def current_option(self) -> str:
+        return str(self.coordinator.settings.manual_phases)
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        self.coordinator.settings.manual_phases = int(option)
         self.async_write_ha_state()
         self.coordinator.request_apply()
 

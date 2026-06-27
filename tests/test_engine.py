@@ -63,9 +63,57 @@ def test_smart_disabled_relinquishes_control():
     assert d.control is False
 
 
-def test_off_mode_is_passthrough():
-    d = decide(_inputs(), _cfg(mode=ChargingMode.OFF))
-    assert d.control is False
+def test_manual_mode_paused_controls_but_does_not_charge():
+    # Manual mode (OFF) now actively drives the charger: with the manual switch
+    # off it holds the car off rather than going hands-off.
+    d = decide(_inputs(), _cfg(mode=ChargingMode.OFF, manual_charge=False))
+    assert d.control is True
+    assert d.should_charge is False
+    assert d.write_phases is True
+
+
+def test_manual_mode_charges_at_requested_current_and_phases():
+    d = decide(
+        _inputs(),
+        _cfg(
+            mode=ChargingMode.OFF,
+            manual_charge=True,
+            manual_current_a=12.0,
+            manual_phases=1,
+        ),
+    )
+    assert d.control is True
+    assert d.should_charge is True
+    assert d.target_current_a == 12.0
+    assert d.target_phases == 1
+    assert d.write_phases is True
+
+
+def test_manual_mode_no_car_holds_off():
+    d = decide(
+        _inputs(car_connected=False),
+        _cfg(mode=ChargingMode.OFF, manual_charge=True),
+    )
+    assert d.control is True
+    assert d.should_charge is False
+
+
+def test_manual_mode_protect_trims_current_when_battery_discharges():
+    # PROTECT holds the home battery: with no hold switch the guard trims the
+    # car's current down by the battery discharge (fallback path).
+    d = decide(
+        _inputs(battery_soc=50.0, battery_power_w=-2300.0, voltage_v=230.0),
+        _cfg(
+            mode=ChargingMode.OFF,
+            manual_charge=True,
+            manual_current_a=16.0,
+            manual_phases=1,
+            battery_policy=BatteryPolicy.PROTECT,
+        ),
+    )
+    assert d.should_charge is True
+    assert d.target_current_a < 16.0
+    assert "protecting" in d.reason.lower()
 
 
 def test_no_car_does_not_charge_but_controls():

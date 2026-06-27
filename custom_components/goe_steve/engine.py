@@ -109,6 +109,11 @@ class EngineConfig:
     battery_floor_soc: float = 20.0  # Assist: stop discharging the battery here
     target_energy_kwh: float = 0.0  # 0 disables deadline planning
     departure: datetime | None = None  # deadline for Price / Combined modes
+    # Manual mode (mode == OFF): the user is the brain. Start/stop, current and
+    # phase count come straight from these; the battery policy still applies.
+    manual_charge: bool = False
+    manual_current_a: float = 16.0
+    manual_phases: int = 3
     # Phase switching.
     auto_phase: bool = False
     max_phases: int = 3
@@ -145,6 +150,10 @@ class Decision:
     should_charge: bool = False
     target_current_a: float = 0.0
     target_phases: int = 3
+    # Force the phase entity to be written this cycle even when auto-phase is off
+    # (Manual mode picks phases explicitly). Smart fixed-phase modes leave it False
+    # so they never touch a phase switch the user controls.
+    write_phases: bool = False
     surplus_w: float = 0.0
     reason: str = ""
     # Structured form of ``reason`` so the Lovelace card can localize it: a stable
@@ -541,7 +550,11 @@ def _apply_charge_dwell(
 # rather than composed at runtime, so both sides do plain placeholder substitution.
 _REASON_TEMPLATES: dict[str, str] = {
     "smart_disabled": "Smart control disabled",
-    "mode_off": "Mode: Off — manual control",
+    "manual_paused": "Manual mode — paused",
+    "manual_charging": "Manual charging at {amps} A",
+    "manual_charging_guarded": (
+        "Manual charging at {amps} A (protecting home battery)"
+    ),
     "no_car": "No car connected",
     "fast": "Fast charging at {amps} A",
     "cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
@@ -582,6 +595,69 @@ def _reason(key: str, **params: str) -> tuple[str, str, dict[str, str]]:
     return _REASON_TEMPLATES[key].format(**params), key, params
 
 
+def _decide_manual(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState
+) -> Decision:
+    """Manual mode (``ChargingMode.OFF``): the user is the brain.
+
+    Start/stop, charging current and phase count come straight from the manual
+    controls; the battery policy still governs whether the home battery is held
+    back from the car (and trims the current as a fallback when no hold switch is
+    mapped), exactly as in the smart modes — so users learn one battery concept.
+
+    Note this *actively drives* the charger (``control=True``): manual no longer
+    means hands-off. To fully release the charger to the go-e app, turn Smart
+    control off (handled by the master gate above).
+    """
+    phases = cfg.manual_phases if cfg.manual_phases in (1, 3) else inp.phases
+
+    if not inp.car_connected:
+        reason, rkey, rparams = _reason("no_car")
+        return Decision(
+            control=True,
+            should_charge=False,
+            target_phases=phases,
+            write_phases=True,
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
+        )
+
+    if not cfg.manual_charge:
+        reason, rkey, rparams = _reason("manual_paused")
+        return Decision(
+            control=True,
+            should_charge=False,
+            target_phases=phases,
+            write_phases=True,
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
+        )
+
+    # Charging: hold the home battery per policy and trim as the fallback, then
+    # drive the user's requested current.
+    hold = _hold_battery(inp, cfg)
+    current, guarded = _battery_guard_current(
+        cfg.manual_current_a, phases, inp, cfg, hold=hold
+    )
+    if guarded:
+        reason, rkey, rparams = _reason("manual_charging_guarded", amps=f"{current:.1f}")
+    else:
+        reason, rkey, rparams = _reason("manual_charging", amps=f"{current:.0f}")
+    return Decision(
+        control=True,
+        should_charge=True,
+        target_current_a=current,
+        target_phases=phases,
+        write_phases=True,
+        hold_battery=hold,
+        reason=reason,
+        reason_key=rkey,
+        reason_params=rparams,
+    )
+
+
 def decide(
     inp: ChargerInputs, cfg: EngineConfig, state: EngineState | None = None
 ) -> Decision:
@@ -600,10 +676,7 @@ def decide(
             control=False, reason=reason, reason_key=rkey, reason_params=rparams
         )
     if cfg.mode is ChargingMode.OFF:
-        reason, rkey, rparams = _reason("mode_off")
-        return Decision(
-            control=False, reason=reason, reason_key=rkey, reason_params=rparams
-        )
+        return _decide_manual(inp, cfg, state)
     if not inp.car_connected:
         reason, rkey, rparams = _reason("no_car")
         return Decision(
