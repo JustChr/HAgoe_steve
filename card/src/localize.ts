@@ -44,6 +44,7 @@ const en: Dict = {
 
   "reason.smart_disabled": "Smart control disabled",
   "reason.mode_off": "Mode: Off — manual control",
+  "reason.manual_passive": "Manual mode — charger left as-is",
   "reason.manual_paused": "Manual mode — paused",
   "reason.manual_charging": "Manual charging at {amps} A",
   "reason.manual_charging_guarded":
@@ -130,6 +131,7 @@ const de: Dict = {
 
   "reason.smart_disabled": "Intelligente Steuerung deaktiviert",
   "reason.mode_off": "Modus: Aus — manuelle Steuerung",
+  "reason.manual_passive": "Manueller Modus — Wallbox unverändert",
   "reason.manual_paused": "Manueller Modus — pausiert",
   "reason.manual_charging": "Manuelles Laden mit {amps} A",
   "reason.manual_charging_guarded":

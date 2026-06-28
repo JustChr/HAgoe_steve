@@ -165,5 +165,10 @@ class GoeNumber(GoeSteveEntity, RestoreEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         self.entity_description.setter(self.coordinator.settings, value)
+        # Adjusting the Manual current is the user taking over: leave the passive
+        # window so the brain drives the charger from here. Other tunables (config)
+        # don't affect the Manual hands-off transition.
+        if self.entity_description.key == "manual_current":
+            self.coordinator.set_manual_passive(False)
         self.async_write_ha_state()
         self.coordinator.request_apply()

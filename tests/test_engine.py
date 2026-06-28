@@ -72,6 +72,19 @@ def test_manual_mode_paused_controls_but_does_not_charge():
     assert d.write_phases is True
 
 
+def test_manual_passive_is_hands_off():
+    # Right after switching into Manual (before any manual control is touched) the
+    # engine goes fully hands-off so the coordinator leaves the charger as-is —
+    # even though the manual switch would otherwise ask to charge.
+    d = decide(
+        _inputs(),
+        _cfg(mode=ChargingMode.OFF, manual_passive=True, manual_charge=True),
+    )
+    assert d.control is False
+    assert d.should_charge is False
+    assert d.reason_key == "manual_passive"
+
+
 def test_manual_mode_charges_at_requested_current_and_phases():
     d = decide(
         _inputs(),

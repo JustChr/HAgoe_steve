@@ -114,6 +114,11 @@ class EngineConfig:
     manual_charge: bool = False
     manual_current_a: float = 16.0
     manual_phases: int = 3
+    # True in the brief window right after the user switches *into* Manual mode,
+    # before they touch any manual control. While set, the brain leaves the
+    # charger exactly as it found it (no writes) so entering Manual never disturbs
+    # an in-progress session. Cleared the moment a manual control is used.
+    manual_passive: bool = False
     # Phase switching.
     auto_phase: bool = False
     max_phases: int = 3
@@ -550,6 +555,7 @@ def _apply_charge_dwell(
 # rather than composed at runtime, so both sides do plain placeholder substitution.
 _REASON_TEMPLATES: dict[str, str] = {
     "smart_disabled": "Smart control disabled",
+    "manual_passive": "Manual mode — charger left as-is",
     "manual_paused": "Manual mode — paused",
     "manual_charging": "Manual charging at {amps} A",
     "manual_charging_guarded": (
@@ -610,6 +616,20 @@ def _decide_manual(
     control off (handled by the master gate above).
     """
     phases = cfg.manual_phases if cfg.manual_phases in (1, 3) else inp.phases
+
+    # Just switched into Manual and nothing touched yet: hands fully off. The
+    # coordinator skips applying this decision entirely (no writes, no releases),
+    # so the charger keeps doing whatever it was. ``control=False`` keeps that
+    # intent explicit; the user takes over by using a manual control.
+    if cfg.manual_passive:
+        reason, rkey, rparams = _reason("manual_passive")
+        return Decision(
+            control=False,
+            target_phases=phases,
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
+        )
 
     if not inp.car_connected:
         reason, rkey, rparams = _reason("no_car")

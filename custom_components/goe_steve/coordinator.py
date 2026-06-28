@@ -207,6 +207,12 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # None=never touched. Skips redundant writes and releases on handoff so a
         # switch we never set is left alone.
         self._last_written_hold: bool | None = None
+        # True for the window after the user switches *into* Manual mode but before
+        # they touch a manual control: we leave the charger exactly as it was — no
+        # writes, no releases — so entering Manual never disturbs a running session.
+        # Cleared the instant any manual control is used, or another mode is picked.
+        # Runtime-only by design: a Manual mode restored on restart drives normally.
+        self._manual_passive = False
         self._last_write_at: datetime | None = None
         # Rolling-average buffers for input smoothing.
         self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
@@ -407,6 +413,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             manual_charge=self.settings.manual_charge,
             manual_current_a=self.settings.manual_current_a,
             manual_phases=self.settings.manual_phases,
+            manual_passive=self._manual_passive,
             max_phases=max(self._phases, 3),
             phase_dwell_s=PHASE_DWELL_S,
             min_on_dwell_s=MIN_ON_DWELL_S,
@@ -414,7 +421,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         )
 
         decision = decide(inputs, cfg, self._state)
-        await self._apply(decision)
+        # In the passive window right after switching into Manual, leave the
+        # charger exactly as it was: skip applying entirely (no writes, no
+        # releases) until the user takes over via a manual control.
+        if not self._manual_passive:
+            await self._apply(decision)
         return decision
 
     async def _apply(self, decision: Decision) -> None:
@@ -626,6 +637,15 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """
         if self._last_written_hold:
             await self._write_hold(False)
+
+    def set_manual_passive(self, passive: bool) -> None:
+        """Arm or clear the Manual-mode passive window.
+
+        Set ``True`` when the user switches into Manual (leave the charger
+        untouched); cleared (``False``) by any other mode pick or the first use of
+        a manual control. Callers follow with :meth:`request_apply` themselves.
+        """
+        self._manual_passive = passive
 
     def request_apply(self) -> None:
         """Ask for an immediate re-evaluation after a settings change."""

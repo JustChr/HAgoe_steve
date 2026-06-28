@@ -52,11 +52,15 @@ class ManualChargeSwitch(GoeSteveEntity, RestoreEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         self.coordinator.settings.manual_charge = True
+        # Start/stop is the user taking over: leave the passive window.
+        self.coordinator.set_manual_passive(False)
         self.async_write_ha_state()
         self.coordinator.request_apply()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self.coordinator.settings.manual_charge = False
+        # Start/stop is the user taking over: leave the passive window.
+        self.coordinator.set_manual_passive(False)
         self.async_write_ha_state()
         self.coordinator.request_apply()
 

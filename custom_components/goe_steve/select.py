@@ -54,7 +54,11 @@ class ChargingModeSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
         return self.coordinator.settings.mode.value
 
     async def async_select_option(self, option: str) -> None:
-        self.coordinator.settings.mode = ChargingMode(option)
+        mode = ChargingMode(option)
+        self.coordinator.settings.mode = mode
+        # Switching into Manual should not disturb the charger: stay passive until
+        # the user touches a manual control. Picking any other mode drives at once.
+        self.coordinator.set_manual_passive(mode is ChargingMode.OFF)
         self.async_write_ha_state()
         self.coordinator.request_apply()
 
@@ -113,6 +117,8 @@ class ManualPhaseSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
         if option not in self._attr_options:
             return
         self.coordinator.settings.manual_phases = int(option)
+        # Using a manual control engages Manual: take over the charger from here.
+        self.coordinator.set_manual_passive(False)
         self.async_write_ha_state()
         self.coordinator.request_apply()
 
