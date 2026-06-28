@@ -33,6 +33,7 @@
           "goe_connected_entity": "Car connected status",
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
+          "goe_energy_entity": "Session energy (optional)",
           "voltage": "Grid voltage per phase",
           "phases": "Phases used for charging"
         },
@@ -43,6 +44,7 @@
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
           "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
           "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
+          "goe_energy_entity": "The charger's energy delivered in the current session (go-e 'energy since car connected'). Shown live next to the running session on the card.",
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
           "phases": "How many phases charging uses by default when automatic phase switching is off."
         }
@@ -86,6 +88,7 @@
           "goe_connected_entity": "Car connected status",
           "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
+          "goe_energy_entity": "Session energy (optional)",
           "voltage": "Grid voltage per phase",
           "phases": "Phases used for charging",
           "steve_url": "SteVe URL (optional)",
@@ -108,6 +111,7 @@
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
           "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
           "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
+          "goe_energy_entity": "The charger's energy delivered in the current session (go-e 'energy since car connected'). Shown live next to the running session on the card.",
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
           "phases": "How many phases charging uses by default when automatic phase switching is off."
         }

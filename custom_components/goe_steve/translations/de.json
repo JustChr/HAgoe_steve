@@ -33,6 +33,7 @@
           "goe_connected_entity": "Status: Fahrzeug verbunden",
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
+          "goe_energy_entity": "Sitzungsenergie (optional)",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden"
         },
@@ -43,6 +44,7 @@
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
           "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
           "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
+          "goe_energy_entity": "Im aktuellen Ladevorgang abgegebene Energie der Wallbox (go-e „Energie seit Fahrzeug verbunden“). Wird live neben dem laufenden Ladevorgang auf der Karte angezeigt.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }
@@ -86,6 +88,7 @@
           "goe_connected_entity": "Status: Fahrzeug verbunden",
           "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
+          "goe_energy_entity": "Sitzungsenergie (optional)",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden",
           "steve_url": "SteVe-URL (optional)",
@@ -108,6 +111,7 @@
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
           "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
           "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
+          "goe_energy_entity": "Im aktuellen Ladevorgang abgegebene Energie der Wallbox (go-e „Energie seit Fahrzeug verbunden“). Wird live neben dem laufenden Ladevorgang auf der Karte angezeigt.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }

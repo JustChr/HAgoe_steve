@@ -27,6 +27,7 @@ from .const import (
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
+    CONF_GOE_ENERGY,
     CONF_GOE_FORCE,
     CONF_GOE_PHASE,
     CONF_GOE_POWER,
@@ -53,6 +54,9 @@ _POWER_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="power")
 )
 _OPTIONAL_POWER_SENSOR = _POWER_SENSOR
+_ENERGY_SENSOR = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+)
 _BATTERY_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="battery")
 )
@@ -104,6 +108,10 @@ def _charger_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_GOE_POWER,
                 description={"suggested_value": defaults.get(CONF_GOE_POWER)},
             ): _OPTIONAL_POWER_SENSOR,
+            vol.Optional(
+                CONF_GOE_ENERGY,
+                description={"suggested_value": defaults.get(CONF_GOE_ENERGY)},
+            ): _ENERGY_SENSOR,
             vol.Required(
                 CONF_VOLTAGE, default=defaults.get(CONF_VOLTAGE, DEFAULT_VOLTAGE)
             ): selector.NumberSelector(

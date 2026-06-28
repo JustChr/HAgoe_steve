@@ -26,6 +26,7 @@ from .const import (
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
+    CONF_GOE_ENERGY,
     CONF_GOE_FORCE,
     CONF_GOE_PHASE,
     CONF_GOE_POWER,
@@ -246,6 +247,29 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             return float(raw) > 1
         except (ValueError, TypeError):
             return None
+
+    @property
+    def goe_session_energy_kwh(self) -> float | None:
+        """Energy charged in the running session (kWh), from the go-e meter.
+
+        Reads the mapped session-energy entity and normalizes to kWh by its
+        unit — go-e exposes this either as Wh or kWh depending on the entity.
+        Returns None when unmapped or unavailable.
+        """
+        entity_id = self._cfg.get(CONF_GOE_ENERGY)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
+            return None
+        try:
+            value = float(state.state)
+        except (ValueError, TypeError):
+            return None
+        unit = str(state.attributes.get("unit_of_measurement", "")).lower()
+        if unit in ("wh", "watt-hour", "watthour"):
+            value /= 1000.0
+        return value
 
     def _read_phases(self) -> int:
         """Actual phase count the car is charging on, best-effort.

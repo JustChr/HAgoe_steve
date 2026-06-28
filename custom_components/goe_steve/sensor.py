@@ -178,6 +178,9 @@ class PowerFlowSensor(GoeSteveEntity, SensorEntity):
             "house_w": round(flow.house_w),
             "car_connected": inputs.car_connected,
             "phases": inputs.phases,
+            # Live "charged so far" for the running session (kWh), when the go-e
+            # session-energy entity is mapped — the card pairs this with car_w.
+            "session_energy_kwh": self.coordinator.goe_session_energy_kwh,
         }
 
 

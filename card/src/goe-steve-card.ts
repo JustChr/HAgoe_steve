@@ -496,13 +496,9 @@ export class GoeSteveCard extends LitElement {
   // --- Charging sessions / per-RFID energy -------------------------------------
   private _renderSessions(ent: ResolvedEntities): TemplateResult | typeof nothing {
     const active = this._stateObj(ent.active_transaction);
-    const last = this._stateObj(ent.last_session_energy);
     const picker = this._stateObj(ent.selected_tag);
-    const tags = ent.tag_energy
-      .map((id) => this._stateObj(id))
-      .filter((s): s is HassEntity => !!s);
 
-    if (!active && !last && !picker && tags.length === 0) return nothing;
+    if (!active && !picker) return nothing;
 
     // A session is "authorized/running" when SteVe reports an active transaction.
     // The picker's action zone keys off this: authorize/start when idle, stop when
@@ -511,18 +507,13 @@ export class GoeSteveCard extends LitElement {
       !!active &&
       !["idle", "unknown", "unavailable", ""].includes(active.state);
 
-    // Live charging power for the running session — SteVe has no live meter value,
-    // so we pair the session's elapsed time with the actual car power from flow.
-    const carW = Number(this._stateObj(ent.power_flow)?.attributes?.car_w ?? NaN);
-    const meta = hasActive ? this._sessionMeta(active!, carW) : "";
-
-    // Recent finished sessions (newest first); [0] is the "last" line above, so
-    // the history list shows the older ones beneath it.
-    const recent = (last?.attributes?.recent ?? []) as Array<{
-      name?: string;
-      energy?: number | null;
-      stopped?: string | null;
-    }>;
+    // Live readout for the running session. SteVe has no live meter value, so we
+    // pair the session's elapsed time with the actual car power from flow, plus
+    // the energy charged so far from the go-e session-energy entity (when mapped).
+    const flow = this._stateObj(ent.power_flow)?.attributes;
+    const carW = Number(flow?.car_w ?? NaN);
+    const energyKwh = Number(flow?.session_energy_kwh ?? NaN);
+    const meta = hasActive ? this._sessionMeta(active!, carW, energyKwh) : "";
 
     return html`<div class="sessions">
       ${this._renderTagPicker(picker, hasActive)}
@@ -536,37 +527,6 @@ export class GoeSteveCard extends LitElement {
                     state: (active.attributes.name as string) ?? active.state,
                   })}${meta ? html`<span class="session-meta"> · ${meta}</span>` : nothing}</span
             >
-          </div>`
-        : nothing}
-      ${last && last.state && last.state !== "unknown"
-        ? html`<div class="session-row">
-            <ha-icon icon="mdi:history"></ha-icon>
-            <span>${this._t("session.last", { energy: this._fmtState(last) })}</span>
-          </div>`
-        : nothing}
-      ${recent.length > 1
-        ? html`<div class="history">
-            ${recent.slice(1).map(
-              (s) => html`<div class="hist-row">
-                <span class="hist-name">${s.name ?? this._t("session.tag")}</span>
-                <span class="hist-meta">
-                  ${s.energy != null ? `${s.energy.toFixed(2)} kWh` : "—"}
-                  ${s.stopped ? html`<span class="hist-date">${this._fmtDate(s.stopped)}</span>` : nothing}
-                </span>
-              </div>`,
-            )}
-          </div>`
-        : nothing}
-      ${tags.length
-        ? html`<div class="tags">
-            ${tags.map(
-              (t) => html`<div class="tag">
-                <span class="tag-id">${t.attributes.name ?? t.attributes.id_tag ?? this._t("session.tag")}</span>
-                <span class="tag-kwh ${t.attributes.blocked ? "blocked" : ""}">
-                  ${this._fmtState(t)}${t.attributes.blocked ? ` · ${this._t("session.blocked")}` : ""}
-                </span>
-              </div>`,
-            )}
           </div>`
         : nothing}
     </div>`;
@@ -632,12 +592,18 @@ export class GoeSteveCard extends LitElement {
     }
   }
 
-  /** "1h 23m · 8.3 kW" for a running session — elapsed time + live car power. */
-  private _sessionMeta(active: HassEntity, carW: number): string {
+  /**
+   * "1h 23m · 8.3 kW · 11.4 kWh" for a running session — elapsed time, live car
+   * power, and the energy charged so far (when the go-e session-energy entity is
+   * mapped; omitted otherwise).
+   */
+  private _sessionMeta(active: HassEntity, carW: number, energyKwh: number): string {
     const parts: string[] = [];
     const dur = this._fmtDuration(active.attributes.started as string | undefined);
     if (dur) parts.push(dur);
     if (!Number.isNaN(carW) && carW > 50) parts.push(fmtPower(carW));
+    if (!Number.isNaN(energyKwh) && energyKwh > 0)
+      parts.push(`${energyKwh.toFixed(2)} kWh`);
     return parts.join(" · ");
   }
 
@@ -650,14 +616,6 @@ export class GoeSteveCard extends LitElement {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  }
-
-  /** Localized short date for a session-history entry. */
-  private _fmtDate(iso: string): string {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "";
-    const lang = this.hass?.locale?.language || this.hass?.language || "en";
-    return d.toLocaleDateString(lang, { day: "numeric", month: "short" });
   }
 
   // --- hass helpers ------------------------------------------------------------

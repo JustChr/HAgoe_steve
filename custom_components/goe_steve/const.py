@@ -28,6 +28,9 @@ CONF_GOE_FORCE: Final = "goe_force_entity"
 CONF_GOE_CONNECTED: Final = "goe_connected_entity"
 CONF_GOE_CHARGING: Final = "goe_charging_entity"
 CONF_GOE_POWER: Final = "goe_power_entity"
+# Energy delivered in the current charging session (go-e "energy since car
+# connected"). Optional; surfaces the live "charged so far" figure on the card.
+CONF_GOE_ENERGY: Final = "goe_energy_entity"
 
 # --- Config entry keys: SteVe linkage (Phase 3, all optional) ----------------------
 CONF_STEVE_URL: Final = "steve_url"
