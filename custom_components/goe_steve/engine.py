@@ -4,55 +4,84 @@ This module is intentionally free of any Home Assistant imports so that the
 decision logic can be reasoned about and unit-tested in isolation (see
 ``tests/test_engine.py``). The coordinator feeds it a snapshot of the world
 (:class:`ChargerInputs`), the current settings (:class:`EngineConfig`) and a
-small mutable :class:`EngineState` (dwell/hysteresis memory carried across
+small mutable :class:`EngineState` (smoothing/dwell memory carried across
 cycles) and gets back a single :class:`Decision` describing what the charger
 should do and, crucially, *why* — the human-readable ``reason`` is surfaced in
 the UI.
 
-Scope (this file): price-aware modes (PV+price / Price-optimized / Combined),
-the home-battery reserve line (one SoC threshold deciding whether the battery
-or the car comes first — see :func:`compute_surplus`), automatic 1↔3-phase
-switching with hysteresis + a dwell timer, and a minimum on/off dwell to stop
-the charger flapping. Everything time-dependent receives ``now`` explicitly so
-the logic stays deterministic and testable.
+Architecture — strategies + arbiter (v3):
+
+Every cycle, each strategy enabled by the charging mode independently proposes
+the charging *power* it could justify right now:
+
+* **Solar surplus** — the smoothed solar power available to the car.
+* **Cheap grid** — full power while the spot price is at/below the threshold.
+* **Departure plan** — full power during the cheapest forecast slots needed to
+  cover the *remaining* energy (target − delivered) by departure, guaranteed.
+* **Minimum floor** — the minimum current, always (Solar + minimum mode).
+* **Full power** — always (Fast mode).
+
+The arbiter takes the highest proposal (grid strategies win ties, so the
+battery-hold below stays engaged), then applies the shared constraints: the
+home-battery policy, 1↔3-phase resolution with hysteresis + dwell, and the
+start-confirmation / ride-out machine that keeps the charger from flapping.
+
+Home-battery policy (one reserve line, two zones):
+
+* **Below the reserve** the battery comes first: the car gets only genuine
+  excess solar and any battery discharge is deducted immediately.
+* **At/above the reserve** the battery is a *fluctuation buffer*: the car
+  follows the smoothed surplus, the battery bridges short dips and spikes, and
+  only sustained discharge into the car is corrected.
+* **Whenever a grid strategy wins** (cheap hour, plan, floor, Fast) the battery
+  is held (``hold_battery``) so grid power charges the car, never the battery.
+
+Everything time-dependent receives ``now`` explicitly so the logic stays
+deterministic and testable.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 
 
 class ChargingMode(StrEnum):
-    """User-selectable charging strategy."""
+    """User-selectable charging mode — a preset over the engine's strategies."""
 
-    OFF = "off"
-    PV_ONLY = "pv_only"
-    PV_MINIMUM = "pv_minimum"
-    PV_PRICE = "pv_price"  # solar, plus full power while grid price is cheap
-    PRICE = "price"  # cheapest-hours charging to a target by a deadline
-    COMBINED = "combined"  # surplus + cheap-grid + deadline guarantee
-    FAST = "fast"
+    SMART = "smart"  # surplus + cheap grid + departure plan
+    SOLAR = "solar"  # surplus only
+    SOLAR_MIN = "solar_min"  # surplus, but never below the minimum current
+    FAST = "fast"  # full power, unconditionally
+    MANUAL = "manual"  # the user is the brain (bypasses the arbiter)
 
 
 #: Modes offered to the user and implemented by :func:`decide`.
 SUPPORTED_MODES: tuple[ChargingMode, ...] = (
-    ChargingMode.OFF,
-    ChargingMode.PV_ONLY,
-    ChargingMode.PV_MINIMUM,
-    ChargingMode.PV_PRICE,
-    ChargingMode.PRICE,
-    ChargingMode.COMBINED,
+    ChargingMode.SMART,
+    ChargingMode.SOLAR,
+    ChargingMode.SOLAR_MIN,
     ChargingMode.FAST,
+    ChargingMode.MANUAL,
 )
 
-#: Retained for the original Phase 1 callers/tests.
-PHASE1_MODES: tuple[ChargingMode, ...] = (
-    ChargingMode.OFF,
-    ChargingMode.PV_ONLY,
-    ChargingMode.PV_MINIMUM,
-    ChargingMode.FAST,
+#: v2 → v3 migration: the old mode zoo maps onto the presets. The three
+#: price-aware modes were combinations of the same strategies Smart enables.
+LEGACY_MODE_MAP: dict[str, ChargingMode] = {
+    "off": ChargingMode.MANUAL,
+    "pv_only": ChargingMode.SOLAR,
+    "pv_minimum": ChargingMode.SOLAR_MIN,
+    "pv_price": ChargingMode.SMART,
+    "price": ChargingMode.SMART,
+    "combined": ChargingMode.SMART,
+    "fast": ChargingMode.FAST,
+}
+
+#: Modes whose arbiter includes the solar-surplus strategy.
+_SOLAR_MODES: frozenset[ChargingMode] = frozenset(
+    {ChargingMode.SMART, ChargingMode.SOLAR, ChargingMode.SOLAR_MIN}
 )
 
 
@@ -82,6 +111,9 @@ class ChargerInputs:
     # Price environment.
     price_now: float | None = None
     price_forecast: list[PriceSlot] | None = None
+    # Energy delivered in the running session (kWh), anchored at plug-in by the
+    # coordinator. Feeds the departure plan (remaining = target − delivered).
+    session_delivered_kwh: float | None = None
     # Wall-clock time for deadline/dwell reasoning (None disables time logic).
     now: datetime | None = None
 
@@ -90,19 +122,19 @@ class ChargerInputs:
 class EngineConfig:
     """Current settings — mostly runtime-adjustable via number/select entities."""
 
-    mode: ChargingMode = ChargingMode.OFF
+    mode: ChargingMode = ChargingMode.MANUAL
     smart_enabled: bool = True
     min_current_a: float = 6.0
     max_current_a: float = 16.0
-    # The home-battery reserve line (% SoC): below it the battery comes first,
-    # above it the car may run on the battery down to the line. 100 = never.
+    # The home-battery reserve line (% SoC): below it the battery comes first
+    # (the car gets only genuine excess solar); at/above it the battery buffers
+    # surplus fluctuations for the car. 100 = always protect.
     battery_reserve_soc: float = 100.0
-    min_grid_floor_w: float = 1400.0
     cheap_price: float = 0.15  # ≤ this (currency/kWh) counts as "cheap grid"
     target_energy_kwh: float = 0.0  # 0 disables deadline planning
-    departure: datetime | None = None  # deadline for Price / Combined modes
-    # Manual mode (mode == OFF): the user is the brain. Start/stop, current and
-    # phase count come straight from these; the reserve line still applies.
+    departure: datetime | None = None  # deadline for the departure plan
+    # Manual mode: the user is the brain. Start/stop, current and phase count
+    # come straight from these; the battery is held while grid-assisted.
     manual_charge: bool = False
     manual_current_a: float = 16.0
     manual_phases: int = 3
@@ -115,23 +147,36 @@ class EngineConfig:
     auto_phase: bool = False
     max_phases: int = 3
     phase_dwell_s: float = 300.0  # min time between phase switches
-    # Minimum on/off dwell to stop the relay flapping.
-    min_on_dwell_s: float = 120.0
-    min_off_dwell_s: float = 120.0
+    # Solar smoothing + battery-buffer behaviour.
+    smooth_window_s: float = 120.0  # rolling window for the surplus average
+    discharge_tolerance_w: float = 300.0  # sustained battery→car drain above this…
+    discharge_grace_s: float = 180.0  # …for this long triggers a decisive ease-off
+    # Start/stop shaping ("ride out, then stop").
+    start_confirm_s: float = 180.0  # surplus must hold ≥ min this long to start
+    stop_ride_out_s: float = 300.0  # keep min current this long through a dip
 
 
 @dataclass(slots=True)
 class EngineState:
     """Mutable memory carried across cycles by the coordinator.
 
-    Holds only what the dwell/hysteresis logic needs to remember; it is reset on
-    restart, which simply means timers start fresh.
+    Holds the smoothing windows and the timers of the start/stop machine; it is
+    reset on restart, which simply means the windows and timers start fresh.
     """
 
+    # Phase hysteresis/dwell memory.
     phases: int | None = None
     phase_changed_at: datetime | None = None
+    # Start/stop machine.
     charging: bool | None = None
-    charge_changed_at: datetime | None = None
+    active_source: str | None = None  # "solar" | "grid" while charging
+    surplus_ok_since: datetime | None = None
+    ride_out_since: datetime | None = None
+    # Battery-buffer memory.
+    discharge_high_since: datetime | None = None
+    avail_zone: str | None = None  # "protect" | "buffer" the samples belong to
+    avail_samples: deque[tuple[datetime, float]] = field(default_factory=deque)
+    discharge_samples: deque[tuple[datetime, float]] = field(default_factory=deque)
 
 
 @dataclass(slots=True)
@@ -139,8 +184,8 @@ class Decision:
     """The engine's output for one cycle.
 
     ``control`` is False when the brain should keep its hands off entirely
-    (Off mode, smart control disabled, stale data) — the coordinator then writes
-    nothing, leaving manual/app control untouched.
+    (smart control disabled, Manual-passive, stale data) — the coordinator then
+    writes nothing, leaving manual/app control untouched.
     """
 
     control: bool
@@ -160,13 +205,17 @@ class Decision:
     reason_params: dict[str, str] = field(default_factory=dict)
     # True while we are deliberately grid-charging and want the home battery
     # blocked from discharging into the car (driven onto a user-mapped hold
-    # switch by the coordinator). See :func:`_hold_battery`.
+    # switch by the coordinator).
     hold_battery: bool = False
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
 # below starts trimming grid-charge current.
 _BATTERY_DRAIN_TOLERANCE_W: float = 100.0
+
+# Manual charging counts as grid-assisted (→ hold the battery) once the
+# requested power exceeds the available surplus by more than this margin.
+_MANUAL_GRID_MARGIN_W: float = 100.0
 
 
 @dataclass(slots=True)
@@ -225,82 +274,106 @@ def _current_to_power(current_a: float, phases: int, voltage_v: float) -> float:
     return current_a * phases * voltage_v
 
 
-def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
-    """Power (W) available to the car, governed by the home-battery reserve line.
+# --- Solar availability (the surplus strategy's signal) --------------------------
 
-    Base headroom is grid export plus the car's own current draw (the car's draw
-    suppresses export, so it must be added back).
+def _smoothed(
+    samples: deque[tuple[datetime, float]],
+    now: datetime | None,
+    value: float,
+    window_s: float,
+) -> float:
+    """Time-based rolling average over ``window_s`` seconds.
 
-    One rule — the reserve line (``battery_reserve_soc``):
+    With ``now`` unknown the value passes through raw (stateless tests / one-shot
+    reasoning). Samples arrive event-driven, so the window is wall-clock based,
+    not count based.
+    """
+    if now is None:
+        return value
+    samples.append((now, value))
+    cutoff = now - timedelta(seconds=window_s)
+    while samples and samples[0][0] < cutoff:
+        samples.popleft()
+    return sum(v for _, v in samples) / len(samples)
 
-    * **Below the line** the battery comes first: the car gets nothing, so all
-      solar fills the battery up to the reserve. (Grid charging — cheap hours,
-      Fast, the deadline plan — doesn't ride on surplus and still runs.)
-    * **At the line** the reserve is satisfied: the car takes the solar that
-      would push the battery further, but any discharge is subtracted so the
-      battery is never pulled below the line.
-    * **Above the line** the car comes first: availability is lifted to the
-      configured maximum, so the battery actively backs the car down to the
-      line and charging never stalls on solar alone.
 
-    With the SoC unknown we can't place the battery against the line, so the
-    car rides genuine solar excess only (discharge subtracted, nothing
-    reclaimed) — the battery is never silently drained.
+@dataclass(slots=True)
+class Availability:
+    """Solar power available to the car right now, and how it was derived."""
+
+    power_w: float
+    zone: str  # "protect" (below reserve / SoC unknown) or "buffer"
+    eased: bool  # sustained battery→car discharge is being corrected
+
+
+def compute_availability(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState
+) -> Availability:
+    """Smoothed solar power available to the car (W), per the battery policy.
+
+    The underlying identity — invariant to the car's own current changes, so it
+    can be smoothed without chasing our own moves — is::
+
+        available = PV − house = grid_export + car_draw + battery_signed
+
+    (``battery_signed``: + charging adds reclaimable solar, − discharging
+    subtracts power that is *not* solar.)
+
+    Two zones from the single reserve line:
+
+    * **protect** (SoC below the reserve, or unknown): the battery comes first.
+      No reclaim of solar the battery is absorbing, and any discharge is
+      deducted immediately — zero tolerance.
+    * **buffer** (SoC at/above the reserve): solar flowing into the battery is
+      reclaimable for the car, and discharge is deducted only via the smoothed
+      window — so the battery bridges short dips and spikes. Sustained
+      discharge beyond ``discharge_tolerance_w`` for ``discharge_grace_s``
+      switches to the raw deduction (a decisive ease-off).
     """
     export_w = max(0.0, -inp.grid_power_w)
-    surplus = export_w + max(0.0, inp.car_actual_power_w)
-
+    base = export_w + max(0.0, inp.car_actual_power_w)
+    batt = inp.battery_power_w
     soc = inp.battery_soc
-    if soc is None:
-        if inp.battery_power_w is not None:
-            surplus -= max(0.0, -inp.battery_power_w)
-        return max(0.0, surplus)
+    protect = soc is None or soc < cfg.battery_reserve_soc
+    zone = "protect" if protect else "buffer"
 
-    if soc < cfg.battery_reserve_soc:
-        return 0.0
+    # The formula changes across the reserve line; stale samples from the other
+    # zone would blend two different signals, so start the window fresh.
+    if zone != state.avail_zone:
+        state.avail_samples.clear()
+        state.discharge_samples.clear()
+        state.discharge_high_since = None
+        state.avail_zone = zone
 
-    if inp.battery_power_w is not None:
-        # Reclaim solar flowing into the battery (it's above/at its reserve), and
-        # discount any discharge so the car's own draw (added back above) can't
-        # masquerade as solar and drag the battery below the line.
-        surplus += max(0.0, inp.battery_power_w)
-        surplus -= max(0.0, -inp.battery_power_w)
+    discharge_raw = max(0.0, -batt) if batt is not None else 0.0
+    if not protect and batt is not None:
+        base += max(0.0, batt)  # reclaim solar the battery is absorbing
 
-    if soc > cfg.battery_reserve_soc:
-        ceiling = _current_to_power(
-            cfg.max_current_a, max(1, inp.phases), inp.voltage_v
-        )
-        surplus = max(surplus, ceiling)
+    base_s = _smoothed(state.avail_samples, inp.now, base, cfg.smooth_window_s)
 
-    return max(0.0, surplus)
+    if protect:
+        return Availability(max(0.0, base_s - discharge_raw), zone, False)
+
+    dis_s = _smoothed(
+        state.discharge_samples, inp.now, discharge_raw, cfg.smooth_window_s
+    )
+    eased = _track_sustained_discharge(inp, cfg, state, discharge_raw)
+    penalty = discharge_raw if eased else dis_s
+    return Availability(max(0.0, base_s - penalty), zone, eased)
 
 
-def _hold_battery(inp: ChargerInputs, cfg: EngineConfig) -> bool:
-    """Whether to protect the home battery from powering the car right now.
-
-    The home battery system regulates the grid to ~0, so during a grid charge it
-    will discharge into the car *by default* unless we stop it. When this returns
-    True the coordinator turns on a user-mapped hold switch (block discharge / raise
-    the grid setpoint) so the grid supplies the car instead; and as a fallback when
-    no hold switch is mapped, :func:`_battery_guard_current` trims the car's current.
-    When it returns False the battery is *deliberately* allowed to help the car
-    (and the guard leaves the current alone) — that's the reserve line at work.
-
-    One rule for every grid-charge path (Fast, cheap hour, deadline hour,
-    Manual, PV+minimum top-up):
-
-    * **Price at/below the cheap threshold → always hold**, regardless of the
-      line: a stored kWh is worth the expensive-hour price it will offset
-      later, so burning it against cheap grid would be backwards.
-    * Otherwise the reserve line decides: at/below the line (or with the SoC
-      unknown) the battery is held; strictly above it the battery may back the
-      car down to the line.
-    """
-    if inp.price_now is not None and inp.price_now <= cfg.cheap_price:
-        return True
-    if inp.battery_soc is None:
-        return True
-    return inp.battery_soc <= cfg.battery_reserve_soc
+def _track_sustained_discharge(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState, discharge_raw: float
+) -> bool:
+    """True once the battery has discharged beyond tolerance for the grace time."""
+    if inp.now is None or discharge_raw <= cfg.discharge_tolerance_w:
+        state.discharge_high_since = None
+        return False
+    if state.discharge_high_since is None:
+        state.discharge_high_since = inp.now
+    return (
+        inp.now - state.discharge_high_since
+    ).total_seconds() >= cfg.discharge_grace_s
 
 
 def _battery_guard_current(
@@ -315,18 +388,15 @@ def _battery_guard_current(
 
     The home battery system regulates the grid to ~0, so it automatically covers
     any load above solar — which means a grid charge will *drain the home battery*
-    unless something stops it. The real fix is the hold switch (see
-    :func:`_hold_battery`), which blocks discharge so the grid supplies the car.
-    This is the *fallback* for when no hold switch is mapped (or it has no effect):
-    we lower the car's current by whatever the battery is discharging. With the grid
-    pinned at 0 this does **not** shift the load onto the grid — it simply throttles
-    the car back down to the genuine solar surplus (never below the EV's minimum
-    current), which is the best we can do without a hold switch.
-
-    Driven by the *same* decision as the hold switch (``hold``): we trim only when
-    the battery is at/below its reserve line. Above the line the battery is
-    deliberately backing the car, so we leave the current alone. Re-evaluated each
-    cycle, so it converges as the inverter responds.
+    unless something stops it. The real fix is the hold switch (turned on by the
+    coordinator whenever ``Decision.hold_battery`` is set), which blocks discharge
+    so the grid supplies the car. This is the *fallback* for when no hold switch is
+    mapped (or it has no effect): we lower the car's current by whatever the
+    battery is discharging. With the grid pinned at 0 this does **not** shift the
+    load onto the grid — it simply throttles the car back down to the genuine
+    solar surplus (never below the EV's minimum current), which is the best we can
+    do without a hold switch. Re-evaluated each cycle, so it converges as the
+    inverter responds.
 
     Returns ``(current, guarded)`` where ``guarded`` flags that we trimmed.
     """
@@ -340,15 +410,7 @@ def _battery_guard_current(
     return guarded_a, guarded_a < full_current_a
 
 
-def _battery_held(inp: ChargerInputs, cfg: EngineConfig) -> bool:
-    """True when the car is parked so the home battery fills to the reserve."""
-    return (
-        inp.battery_soc is not None
-        and inp.battery_soc < cfg.battery_reserve_soc
-    )
-
-
-# --- Price helpers --------------------------------------------------------------
+# --- The departure plan -----------------------------------------------------------
 
 def _slot_minutes(forecast: list[PriceSlot], index: int) -> float:
     """Length of slot ``index`` in minutes (falls back to 60 at the tail)."""
@@ -360,29 +422,52 @@ def _slot_minutes(forecast: list[PriceSlot], index: int) -> float:
     return 60.0
 
 
-def _is_cheap_window(
-    inp: ChargerInputs, cfg: EngineConfig
-) -> tuple[bool, dict[str, str]]:
-    """Should we grid-charge *now* to hit the target energy by departure?
+def _plan_remaining_kwh(inp: ChargerInputs, cfg: EngineConfig) -> float | None:
+    """Energy still owed to the departure target, or None when not planning.
 
-    Greedy cheapest-hours plan, recomputed every cycle so it self-corrects:
-    take the upcoming slots before the deadline, sort by price, and keep the
-    cheapest ones until their charging capacity covers ``target_energy_kwh``.
-    Charge if the current slot is in that cheapest set.
-
-    On a match returns the ``deadline_plan`` reason params (``price``/``target``);
-    otherwise an empty dict.
+    Subtracts what the running session has already delivered, so the plan books
+    only the cheap hours actually still needed — and stops once the target is in
+    the car.
     """
-    if (
-        not cfg.target_energy_kwh
-        or cfg.departure is None
-        or inp.now is None
-        or not inp.price_forecast
-    ):
-        return False, {}
+    if not cfg.target_energy_kwh or cfg.departure is None or inp.now is None:
+        return None
+    return cfg.target_energy_kwh - (inp.session_delivered_kwh or 0.0)
 
+
+def _deadline_now(
+    inp: ChargerInputs, cfg: EngineConfig, phases: int
+) -> tuple[str, dict[str, str]] | None:
+    """Should the departure plan grid-charge *right now*? Returns (reason_key, params).
+
+    Greedy cheapest-slots plan over the forecast, recomputed every cycle so it
+    self-corrects as prices update and energy is delivered. ``phases`` is the
+    phase count grid charging would actually use, so the per-slot capacity is
+    realistic (a 1φ-locked wallbox books three times the hours).
+
+    The target is a **hard guarantee**: the plan simply keeps booking the
+    least-expensive remaining slots until their capacity covers the remaining
+    energy, whether or not they are "cheap" — and if the remaining time barely
+    covers the remaining energy at full power, it charges regardless of the
+    forecast (``deadline_urgent``).
+    """
+    remaining = _plan_remaining_kwh(inp, cfg)
+    if remaining is None or remaining <= 0:
+        return None
     if inp.now >= cfg.departure:
-        return False, {}
+        return None
+
+    max_power_kw = _current_to_power(cfg.max_current_a, phases, inp.voltage_v) / 1000.0
+    if max_power_kw <= 0:
+        return None
+
+    # Safety net (also covers a missing/short forecast): when every remaining
+    # hour is needed to make the target, price no longer matters.
+    hours_left = (cfg.departure - inp.now).total_seconds() / 3600.0
+    if hours_left * max_power_kw <= remaining:
+        return "deadline_urgent", {"remaining": f"{max(0.0, remaining):.0f}"}
+
+    if not inp.price_forecast:
+        return None
 
     upcoming = [
         (i, s)
@@ -391,18 +476,12 @@ def _is_cheap_window(
         and s.start + timedelta(minutes=_slot_minutes(inp.price_forecast, i)) > inp.now
     ]
     if not upcoming:
-        return False, {}
-
-    max_power_kw = (
-        _current_to_power(cfg.max_current_a, cfg.max_phases, inp.voltage_v) / 1000.0
-    )
-    if max_power_kw <= 0:
-        return False, {}
+        return None
 
     chosen: set[int] = set()
     energy = 0.0
-    for i, slot in sorted(upcoming, key=lambda pair: pair[1].price):
-        if energy >= cfg.target_energy_kwh:
+    for i, _slot in sorted(upcoming, key=lambda pair: pair[1].price):
+        if energy >= remaining:
             break
         chosen.add(i)
         energy += max_power_kw * (_slot_minutes(inp.price_forecast, i) / 60.0)
@@ -414,34 +493,35 @@ def _is_cheap_window(
     )
     if current_index in chosen:
         price = inp.price_forecast[current_index].price
-        return True, {
+        return "deadline_plan", {
             "price": f"{price:.3f}",
-            "target": f"{cfg.target_energy_kwh:.0f}",
+            "remaining": f"{remaining:.0f}",
         }
-    return False, {}
+    return None
 
 
-# --- Phase + dwell helpers ------------------------------------------------------
+# --- Phase resolution --------------------------------------------------------------
 
 def _resolve_phases(
     surplus_w: float, inp: ChargerInputs, cfg: EngineConfig, state: EngineState
 ) -> int:
     """Pick 1 or 3 phases for solar charging, with hysteresis and a dwell timer.
 
-    A single phase lets the car keep charging on a small surplus that three
-    phases (with their higher minimum) could not use. We switch up to three
-    phases only once the surplus can sustain their minimum, and back down only
-    once it drops below what a single phase can deliver at full current — the
-    gap between the two thresholds is the hysteresis band. A dwell timer caps
-    how often the contactor may toggle.
+    The thresholds evaluate the surplus against both *candidate* configurations
+    (what three phases would minimally need, what one phase could maximally
+    deliver) rather than the currently active phase count, so the choice is
+    free of the current/target coupling. We switch up to three phases only once
+    the surplus can sustain their minimum, and back down only once it drops
+    below what a single phase can deliver at full current — the gap between the
+    two thresholds is the hysteresis band. A dwell timer caps how often the
+    contactor may toggle.
 
     Surplus charging *prefers* a single phase: with no remembered phase yet we
-    start at 1φ (not the configured default, which is typically 3φ) so a small
-    surplus is used immediately, climbing to 3φ only once it sustains the
-    higher minimum.
+    start at 1φ so a small surplus is used immediately, climbing to 3φ only
+    once it sustains the higher minimum.
     """
     if not cfg.auto_phase or cfg.max_phases < 3:
-        return inp.phases
+        return max(1, inp.phases)
 
     current = state.phases if state.phases in (1, 3) else 1
     up_threshold = _current_to_power(cfg.min_current_a, 3, inp.voltage_v)
@@ -470,58 +550,7 @@ def _resolve_phases(
     return desired
 
 
-#: Modes that should always charge at full phase count (max power), never on a
-#: single phase: Fast, and the grid-charging branches (cheap-grid / deadline) of
-#: the price-aware modes. Surplus charging is handled separately by
-#: :func:`_resolve_phases`, which prefers a single phase.
-_FULL_PHASE_MODES: frozenset[ChargingMode] = frozenset(
-    {ChargingMode.FAST, ChargingMode.PRICE}
-)
-
-
-def _phases_for(
-    mode: ChargingMode,
-    surplus_w: float,
-    inp: ChargerInputs,
-    cfg: EngineConfig,
-    state: EngineState,
-    *,
-    grid_charging: bool,
-) -> int:
-    """Per-mode phase count, honouring the ``auto_phase`` master toggle.
-
-    With auto-phase off (or no 3-phase headroom) phases are left untouched —
-    today's behaviour. With it on: power/grid charging runs at the full phase
-    count for maximum throughput, while solar-surplus charging adapts 1↔3
-    phases via :func:`_resolve_phases` (preferring a single phase).
-    """
-    if not cfg.auto_phase or cfg.max_phases < 3:
-        return inp.phases
-    if grid_charging or mode in _FULL_PHASE_MODES:
-        return cfg.max_phases
-    return _resolve_phases(surplus_w, inp, cfg, state)
-
-
-def _apply_charge_dwell(
-    want_charge: bool, inp: ChargerInputs, cfg: EngineConfig, state: EngineState
-) -> bool:
-    """Hold the previous on/off state until its minimum dwell has elapsed."""
-    if state.charging is None:
-        state.charging = want_charge
-        state.charge_changed_at = inp.now
-        return want_charge
-    if want_charge == state.charging:
-        return want_charge
-    if inp.now is not None and state.charge_changed_at is not None:
-        dwell = cfg.min_on_dwell_s if state.charging else cfg.min_off_dwell_s
-        if (inp.now - state.charge_changed_at).total_seconds() < dwell:
-            return state.charging
-    state.charging = want_charge
-    state.charge_changed_at = inp.now
-    return want_charge
-
-
-# --- The decision ---------------------------------------------------------------
+# --- Reasons ------------------------------------------------------------------------
 
 # Reason catalog: a stable key → English template. The engine emits the key plus
 # pre-formatted string params; the card localizes the same key (see the card's
@@ -544,26 +573,31 @@ _REASON_TEMPLATES: dict[str, str] = {
         "(protecting home battery → {amps} A)"
     ),
     "deadline_plan": (
-        "Cheap-hours plan: charging now at {price}/kWh "
-        "to reach {target} kWh by departure"
+        "Planned cheap hour at {price}/kWh — {remaining} kWh to go by departure"
     ),
     "deadline_plan_guarded": (
-        "Cheap-hours plan: charging now at {price}/kWh "
-        "to reach {target} kWh by departure (protecting home battery → {amps} A)"
+        "Planned cheap hour at {price}/kWh — {remaining} kWh to go by departure "
+        "(protecting home battery → {amps} A)"
     ),
-    "holding_off_dwell": "Holding off (anti-flap dwell)",
-    "price_waiting": "Waiting for a cheaper price window",
-    "charging": "Charging",
+    "deadline_urgent": (
+        "Charging now to make the departure target — {remaining} kWh to go"
+    ),
+    "target_reached": "Departure target reached — {delivered} kWh charged",
+    "plan_waiting": "Waiting for a planned cheap hour",
     "waiting_battery_reserve": (
         "Waiting — home battery {soc}% < reserve {reserve}%"
     ),
     "waiting_surplus": "Waiting for surplus — {surplus} W < {needed} W needed",
+    "surplus_confirm": "Surplus {surplus} W — confirming before start",
+    "surplus_ride_out": "Surplus dipped — riding it out at {amps} A",
     "solar_surplus": "Solar surplus {surplus} W → {amps} A",
     "solar_surplus_phase": "Solar surplus {surplus} W → {amps} A ({phases}-phase)",
+    "solar_surplus_eased": (
+        "Solar surplus {surplus} W → {amps} A (easing off home battery)"
+    ),
     "solar_min_topup": (
         "Minimum {amps} A (surplus only {surplus} W, topping up from grid)"
     ),
-    "holding_charge_dwell": "Holding charge (anti-flap dwell)",
 }
 
 
@@ -576,15 +610,110 @@ def _reason(key: str, **params: str) -> tuple[str, str, dict[str, str]]:
     return _REASON_TEMPLATES[key].format(**params), key, params
 
 
+# --- Strategies + arbiter -----------------------------------------------------------
+
+@dataclass(slots=True)
+class _Proposal:
+    """One strategy's bid for this cycle, compared by deliverable power."""
+
+    kind: str  # "cheap" | "plan" | "urgent" | "fast" | "floor" | "solar"
+    source: str  # "grid" | "solar"
+    power_w: float
+    params: dict[str, str] = field(default_factory=dict)
+
+
+def _collect_proposals(
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    avail: Availability,
+    *,
+    grid_phases: int,
+    floor_phases: int,
+) -> list[_Proposal]:
+    """All proposals from the mode's enabled strategies, grid strategies first.
+
+    Ordering matters: the arbiter keeps the *first* of equal-power proposals, so
+    listing grid strategies ahead of solar keeps the battery-hold engaged when a
+    grid strategy ties with the surplus.
+    """
+    proposals: list[_Proposal] = []
+    max_grid_w = _current_to_power(cfg.max_current_a, grid_phases, inp.voltage_v)
+
+    if cfg.mode is ChargingMode.FAST:
+        proposals.append(_Proposal("fast", "grid", max_grid_w))
+
+    if cfg.mode is ChargingMode.SMART:
+        if inp.price_now is not None and inp.price_now <= cfg.cheap_price:
+            proposals.append(
+                _Proposal(
+                    "cheap",
+                    "grid",
+                    max_grid_w,
+                    {
+                        "price": f"{inp.price_now:.3f}",
+                        "threshold": f"{cfg.cheap_price:.3f}",
+                    },
+                )
+            )
+        plan = _deadline_now(inp, cfg, grid_phases)
+        if plan is not None:
+            key, params = plan
+            proposals.append(
+                _Proposal("urgent" if key == "deadline_urgent" else "plan",
+                          "grid", max_grid_w, params)
+            )
+
+    if cfg.mode is ChargingMode.SOLAR_MIN:
+        floor_w = _current_to_power(cfg.min_current_a, floor_phases, inp.voltage_v)
+        proposals.append(_Proposal("floor", "grid", floor_w))
+
+    if cfg.mode in _SOLAR_MODES:
+        proposals.append(
+            _Proposal("solar", "solar", min(avail.power_w, max_grid_w))
+        )
+
+    return proposals
+
+
+def _idle_reason(
+    inp: ChargerInputs, cfg: EngineConfig, avail: Availability, needed_w: float
+) -> tuple[str, str, dict[str, str]]:
+    """Why the charger is (staying) off — the most informative answer first."""
+    remaining = _plan_remaining_kwh(inp, cfg)
+    if remaining is not None and remaining <= 0:
+        return _reason(
+            "target_reached",
+            delivered=f"{inp.session_delivered_kwh or 0.0:.1f}",
+        )
+    if (
+        cfg.mode in _SOLAR_MODES
+        and inp.battery_soc is not None
+        and inp.battery_soc < cfg.battery_reserve_soc
+    ):
+        return _reason(
+            "waiting_battery_reserve",
+            soc=f"{inp.battery_soc:.0f}",
+            reserve=f"{cfg.battery_reserve_soc:.0f}",
+        )
+    if remaining is not None and remaining > 0:
+        return _reason("plan_waiting")
+    return _reason(
+        "waiting_surplus",
+        surplus=f"{avail.power_w:.0f}",
+        needed=f"{needed_w:.0f}",
+    )
+
+
 def _decide_manual(
     inp: ChargerInputs, cfg: EngineConfig, state: EngineState
 ) -> Decision:
-    """Manual mode (``ChargingMode.OFF``): the user is the brain.
+    """Manual mode: the user is the brain.
 
     Start/stop, charging current and phase count come straight from the manual
-    controls; the reserve line still governs whether the home battery is held
-    back from the car (and trims the current as a fallback when no hold switch is
-    mapped), exactly as in the smart modes — so users learn one battery concept.
+    controls. The battery policy still applies in spirit: once the requested
+    power exceeds the available surplus the charge is grid-assisted, so the
+    battery is held (and the guard trims as the fallback) — the same single
+    concept as everywhere else: deliberate grid power never drains the battery.
 
     Note this *actively drives* the charger (``control=True``): manual no longer
     means hands-off. To fully release the charger to the go-e app, turn Smart
@@ -630,9 +759,11 @@ def _decide_manual(
             reason_params=rparams,
         )
 
-    # Charging: hold the home battery per the reserve line and trim as the
-    # fallback, then drive the user's requested current.
-    hold = _hold_battery(inp, cfg)
+    # Charging: grid-assisted (requested power above the surplus) holds the home
+    # battery; the guard trims as the fallback when no hold switch is mapped.
+    avail = compute_availability(inp, cfg, state)
+    requested_w = _current_to_power(cfg.manual_current_a, phases, inp.voltage_v)
+    hold = requested_w > avail.power_w + _MANUAL_GRID_MARGIN_W
     current, guarded = _battery_guard_current(
         cfg.manual_current_a, phases, inp, cfg, hold=hold
     )
@@ -646,6 +777,7 @@ def _decide_manual(
         target_current_a=current,
         target_phases=phases,
         write_phases=True,
+        surplus_w=avail.power_w,
         hold_battery=hold,
         reason=reason,
         reason_key=rkey,
@@ -653,12 +785,22 @@ def _decide_manual(
     )
 
 
+def _reset_session_state(state: EngineState) -> None:
+    """Forget the start/stop machine when no car is connected."""
+    state.charging = False
+    state.active_source = None
+    state.ride_out_since = None
+    state.surplus_ok_since = None
+
+
+# --- The decision ---------------------------------------------------------------
+
 def decide(
     inp: ChargerInputs, cfg: EngineConfig, state: EngineState | None = None
 ) -> Decision:
     """Return the charging decision for the current cycle.
 
-    ``state`` carries dwell/hysteresis memory between cycles; a fresh one is used
+    ``state`` carries smoothing/dwell memory between cycles; a fresh one is used
     when omitted (e.g. one-shot reasoning or tests that don't exercise timers).
     """
     if state is None:
@@ -670,175 +812,176 @@ def decide(
         return Decision(
             control=False, reason=reason, reason_key=rkey, reason_params=rparams
         )
-    if cfg.mode is ChargingMode.OFF:
+    if cfg.mode is ChargingMode.MANUAL:
         return _decide_manual(inp, cfg, state)
     if not inp.car_connected:
+        _reset_session_state(state)
         reason, rkey, rparams = _reason("no_car")
         return Decision(
             control=True,
             should_charge=False,
-            target_phases=inp.phases,
+            target_phases=max(1, inp.phases),
             reason=reason,
             reason_key=rkey,
             reason_params=rparams,
         )
 
-    # --- Fast: just go ----------------------------------------------------------
-    if cfg.mode is ChargingMode.FAST:
-        reason, rkey, rparams = _reason("fast", amps=f"{cfg.max_current_a:.0f}")
+    # --- Collect proposals ---------------------------------------------------------
+    avail = compute_availability(inp, cfg, state)
+    grid_phases = cfg.max_phases if cfg.auto_phase else max(1, inp.phases)
+    floor_phases = 1 if cfg.auto_phase else max(1, inp.phases)
+    min_solar_w = _current_to_power(cfg.min_current_a, floor_phases, inp.voltage_v)
+
+    proposals = _collect_proposals(
+        inp, cfg, avail, grid_phases=grid_phases, floor_phases=floor_phases
+    )
+
+    winner: _Proposal | None = None
+    for proposal in proposals:
+        if winner is None or proposal.power_w > winner.power_w:
+            winner = proposal
+
+    # A grid strategy always delivers at least the minimum; the surplus counts
+    # only once it can sustain the minimum current on its cheapest phase config.
+    active = winner is not None and (
+        winner.source == "grid" or winner.power_w >= min_solar_w
+    )
+
+    # --- Start-confirmation window (solar starts only) -----------------------------
+    if avail.power_w >= min_solar_w:
+        if state.surplus_ok_since is None:
+            state.surplus_ok_since = inp.now
+    else:
+        state.surplus_ok_since = None
+    solar_confirmed = inp.now is None or (
+        state.surplus_ok_since is not None
+        and (inp.now - state.surplus_ok_since).total_seconds() >= cfg.start_confirm_s
+    )
+
+    # --- Nothing demands charging: ride out a solar dip, then stop -----------------
+    if not active:
+        if (
+            state.charging
+            and state.active_source == "solar"
+            and inp.now is not None
+        ):
+            if state.ride_out_since is None:
+                state.ride_out_since = inp.now
+            if (
+                inp.now - state.ride_out_since
+            ).total_seconds() < cfg.stop_ride_out_s:
+                reason, rkey, rparams = _reason(
+                    "surplus_ride_out", amps=f"{cfg.min_current_a:.0f}"
+                )
+                return Decision(
+                    control=True,
+                    should_charge=True,
+                    target_current_a=cfg.min_current_a,
+                    target_phases=max(1, inp.phases),
+                    surplus_w=avail.power_w,
+                    reason=reason,
+                    reason_key=rkey,
+                    reason_params=rparams,
+                )
+        state.charging = False
+        state.active_source = None
+        state.ride_out_since = None
+        reason, rkey, rparams = _idle_reason(inp, cfg, avail, min_solar_w)
+        return Decision(
+            control=True,
+            should_charge=False,
+            target_phases=max(1, inp.phases),
+            surplus_w=avail.power_w,
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
+        )
+
+    assert winner is not None  # narrowed by `active`
+    state.ride_out_since = None
+
+    # --- Solar starts wait for the confirmation window -----------------------------
+    if not state.charging and winner.source == "solar" and not solar_confirmed:
+        reason, rkey, rparams = _reason(
+            "surplus_confirm", surplus=f"{avail.power_w:.0f}"
+        )
+        return Decision(
+            control=True,
+            should_charge=False,
+            target_phases=max(1, inp.phases),
+            surplus_w=avail.power_w,
+            reason=reason,
+            reason_key=rkey,
+            reason_params=rparams,
+        )
+
+    state.charging = True
+    state.active_source = winner.source
+
+    # --- Build the charging decision ------------------------------------------------
+    if winner.source == "grid":
+        if winner.kind == "floor":
+            phases = _resolve_phases(avail.power_w, inp, cfg, state)
+            base_amps = cfg.min_current_a
+        else:
+            phases = grid_phases
+            base_amps = cfg.max_current_a
+        amps, guarded = _battery_guard_current(
+            base_amps, phases, inp, cfg, hold=True
+        )
+        params = dict(winner.params)
+        if winner.kind == "cheap":
+            key = "cheap_grid_guarded" if guarded else "cheap_grid"
+            if guarded:
+                params["amps"] = f"{amps:.1f}"
+        elif winner.kind == "plan":
+            key = "deadline_plan_guarded" if guarded else "deadline_plan"
+            if guarded:
+                params["amps"] = f"{amps:.1f}"
+        elif winner.kind == "urgent":
+            key = "deadline_urgent"
+        elif winner.kind == "fast":
+            key = "fast"
+            params["amps"] = f"{amps:.0f}"
+        else:  # floor
+            key = "solar_min_topup"
+            params["amps"] = f"{amps:.1f}"
+            params["surplus"] = f"{avail.power_w:.0f}"
+        reason, rkey, rparams = _reason(key, **params)
         return Decision(
             control=True,
             should_charge=True,
-            target_current_a=cfg.max_current_a,
-            target_phases=_phases_for(
-                cfg.mode, 0.0, inp, cfg, state, grid_charging=True
-            ),
-            hold_battery=_hold_battery(inp, cfg),
+            target_current_a=amps,
+            target_phases=phases,
+            surplus_w=avail.power_w,
+            hold_battery=True,
             reason=reason,
             reason_key=rkey,
             reason_params=rparams,
         )
 
-    # --- Cheap-grid charging (price-aware modes) --------------------------------
-    # Grid charging draws from the grid, not the home battery, so the reserve
-    # wait (battery filling to its line) does not apply here.
-    cheap_now = (
-        inp.price_now is not None
-        and inp.price_now <= cfg.cheap_price
-        and cfg.mode in (ChargingMode.PV_PRICE, ChargingMode.COMBINED)
+    # Solar winner: follow the smoothed surplus; the battery buffers around it.
+    phases = _resolve_phases(avail.power_w, inp, cfg, state)
+    amps = _clamp(
+        _power_to_current(avail.power_w, phases, inp.voltage_v),
+        cfg.min_current_a,
+        cfg.max_current_a,
     )
-    deadline_now, deadline_params = (False, {})
-    if cfg.mode in (ChargingMode.PRICE, ChargingMode.COMBINED):
-        deadline_now, deadline_params = _is_cheap_window(inp, cfg)
-
-    if cheap_now or deadline_now:
-        phases = _phases_for(cfg.mode, 0.0, inp, cfg, state, grid_charging=True)
-        # One decision drives both the hold switch and the current-trim fallback,
-        # so they stay consistent. _hold_battery already covers both cases here:
-        # a cheap price always holds (grid, never the battery), and a deadline
-        # hour that is *not* actually cheap follows the reserve line (above it
-        # the battery may help hit the departure).
-        hold = _hold_battery(inp, cfg)
-        current, guarded = _battery_guard_current(
-            cfg.max_current_a, phases, inp, cfg, hold=hold
-        )
-        if cheap_now:
-            base, params = "cheap_grid", {
-                "price": f"{inp.price_now:.3f}",
-                "threshold": f"{cfg.cheap_price:.3f}",
-            }
-        else:
-            base, params = "deadline_plan", dict(deadline_params)
-        if guarded:
-            base += "_guarded"
-            params["amps"] = f"{current:.1f}"
-        want = _apply_charge_dwell(True, inp, cfg, state)
-        reason, rkey, rparams = (
-            _reason(base, **params) if want else _reason("holding_off_dwell")
-        )
-        return Decision(
-            control=True,
-            should_charge=want,
-            target_current_a=current if want else 0.0,
-            target_phases=phases,
-            hold_battery=want and hold,
-            reason=reason,
-            reason_key=rkey,
-            reason_params=rparams,
-        )
-
-    # --- Pure Price mode with nothing to do -------------------------------------
-    if cfg.mode is ChargingMode.PRICE:
-        want = _apply_charge_dwell(False, inp, cfg, state)
-        reason, rkey, rparams = _reason("charging" if want else "price_waiting")
-        return Decision(
-            control=True,
-            should_charge=want,
-            target_current_a=cfg.max_current_a if want else 0.0,
-            target_phases=inp.phases,
-            hold_battery=want and _hold_battery(inp, cfg),
-            reason=reason,
-            reason_key=rkey,
-            reason_params=rparams,
-        )
-
-    # --- PV-based modes (PV_ONLY / PV_MINIMUM / PV_PRICE surplus / COMBINED) -----
-    surplus = compute_surplus(inp, cfg)
-    phases = _phases_for(cfg.mode, surplus, inp, cfg, state, grid_charging=False)
-    pv_current = _power_to_current(surplus, phases, inp.voltage_v)
-    min_power = _current_to_power(cfg.min_current_a, phases, inp.voltage_v)
-
-    guarantees_floor = cfg.mode is ChargingMode.PV_MINIMUM
-
-    if not guarantees_floor and pv_current < cfg.min_current_a:
-        if _battery_held(inp, cfg):
-            reason, rkey, rparams = _reason(
-                "waiting_battery_reserve",
-                soc=f"{inp.battery_soc:.0f}",
-                reserve=f"{cfg.battery_reserve_soc:.0f}",
-            )
-        else:
-            reason, rkey, rparams = _reason(
-                "waiting_surplus",
-                surplus=f"{surplus:.0f}",
-                needed=f"{min_power:.0f}",
-            )
-        want = _apply_charge_dwell(False, inp, cfg, state)
-        return Decision(
-            control=True,
-            should_charge=want,
-            target_current_a=cfg.min_current_a if want else 0.0,
-            target_phases=phases,
-            surplus_w=surplus,
-            reason=reason,
-            reason_key=rkey,
-            reason_params=rparams,
-        )
-
-    # Pure solar charging rides on real surplus, so it never holds the battery
-    # (above the line the battery may back the car here). The exception is the
-    # PV+minimum grid top-up below: that draws above solar, so — with the grid
-    # pinned at 0 — the battery would supply the floor unless the line holds it.
-    hold = False
-    if guarantees_floor:
-        floor_current = max(
-            cfg.min_current_a,
-            _power_to_current(cfg.min_grid_floor_w, phases, inp.voltage_v),
-        )
-        current = _clamp(
-            max(pv_current, floor_current), cfg.min_current_a, cfg.max_current_a
-        )
-        if pv_current >= floor_current:
-            base, params = "solar_surplus", {
-                "surplus": f"{surplus:.0f}",
-                "amps": f"{current:.1f}",
-            }
-        else:
-            base, params = "solar_min_topup", {
-                "amps": f"{current:.1f}",
-                "surplus": f"{surplus:.0f}",
-            }
-            hold = _hold_battery(inp, cfg)
+    params = {"surplus": f"{avail.power_w:.0f}", "amps": f"{amps:.1f}"}
+    if avail.eased:
+        key = "solar_surplus_eased"
+    elif phases != inp.phases:
+        key = "solar_surplus_phase"
+        params["phases"] = str(phases)
     else:
-        current = _clamp(pv_current, cfg.min_current_a, cfg.max_current_a)
-        params = {"surplus": f"{surplus:.0f}", "amps": f"{current:.1f}"}
-        if phases != inp.phases:
-            base = "solar_surplus_phase"
-            params["phases"] = str(phases)
-        else:
-            base = "solar_surplus"
-
-    want = _apply_charge_dwell(True, inp, cfg, state)
-    reason, rkey, rparams = (
-        _reason(base, **params) if want else _reason("holding_charge_dwell")
-    )
+        key = "solar_surplus"
+    reason, rkey, rparams = _reason(key, **params)
     return Decision(
         control=True,
-        should_charge=want,
-        target_current_a=current if want else 0.0,
+        should_charge=True,
+        target_current_a=amps,
         target_phases=phases,
-        surplus_w=surplus,
-        hold_battery=want and hold,
+        surplus_w=avail.power_w,
         reason=reason,
         reason_key=rkey,
         reason_params=rparams,

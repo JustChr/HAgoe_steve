@@ -30,7 +30,7 @@ const en: Dict = {
   "control.target_energy": "Car target energy",
   "control.departure": "Departure",
   "control.max_current": "Max current",
-  "control.min_grid_floor": "Min charge power",
+  "control.min_current": "Min current",
   "control.tag": "Tag",
 
   "live.target": "Target",
@@ -41,7 +41,6 @@ const en: Dict = {
   "action.stop_confirm": "Stop the active charging session?",
 
   "reason.smart_disabled": "Smart control disabled",
-  "reason.mode_off": "Mode: Off — manual control",
   "reason.manual_passive": "Manual mode — charger left as-is",
   "reason.manual_paused": "Manual mode — paused",
   "reason.manual_charging": "Manual charging at {amps} A",
@@ -53,20 +52,24 @@ const en: Dict = {
   "reason.cheap_grid_guarded":
     "Cheap grid {price}/kWh ≤ {threshold} → full power (protecting home battery → {amps} A)",
   "reason.deadline_plan":
-    "Cheap-hours plan: charging now at {price}/kWh to reach {target} kWh by departure",
+    "Planned cheap hour at {price}/kWh — {remaining} kWh to go by departure",
   "reason.deadline_plan_guarded":
-    "Cheap-hours plan: charging now at {price}/kWh to reach {target} kWh by departure (protecting home battery → {amps} A)",
-  "reason.holding_off_dwell": "Holding off (anti-flap dwell)",
-  "reason.price_waiting": "Waiting for a cheaper price window",
-  "reason.charging": "Charging",
+    "Planned cheap hour at {price}/kWh — {remaining} kWh to go by departure (protecting home battery → {amps} A)",
+  "reason.deadline_urgent":
+    "Charging now to make the departure target — {remaining} kWh to go",
+  "reason.target_reached": "Departure target reached — {delivered} kWh charged",
+  "reason.plan_waiting": "Waiting for a planned cheap hour",
   "reason.waiting_battery_reserve":
     "Waiting — home battery {soc}% < reserve {reserve}%",
   "reason.waiting_surplus": "Waiting for surplus — {surplus} W < {needed} W needed",
+  "reason.surplus_confirm": "Surplus {surplus} W — confirming before start",
+  "reason.surplus_ride_out": "Surplus dipped — riding it out at {amps} A",
   "reason.solar_surplus": "Solar surplus {surplus} W → {amps} A",
   "reason.solar_surplus_phase": "Solar surplus {surplus} W → {amps} A ({phases}-phase)",
+  "reason.solar_surplus_eased":
+    "Solar surplus {surplus} W → {amps} A (easing off home battery)",
   "reason.solar_min_topup":
     "Minimum {amps} A (surplus only {surplus} W, topping up from grid)",
-  "reason.holding_charge_dwell": "Holding charge (anti-flap dwell)",
 
   "session.none": "No active session",
   "session.charging": "Charging: {state}",
@@ -115,7 +118,7 @@ const de: Dict = {
   "control.target_energy": "Ziel-Energie Auto",
   "control.departure": "Abfahrt",
   "control.max_current": "Max. Strom",
-  "control.min_grid_floor": "Min. Ladeleistung",
+  "control.min_current": "Min. Strom",
   "control.tag": "Tag",
 
   "live.target": "Ziel",
@@ -126,7 +129,6 @@ const de: Dict = {
   "action.stop_confirm": "Aktiven Ladevorgang stoppen?",
 
   "reason.smart_disabled": "Intelligente Steuerung deaktiviert",
-  "reason.mode_off": "Modus: Aus — manuelle Steuerung",
   "reason.manual_passive": "Manueller Modus — Wallbox unverändert",
   "reason.manual_paused": "Manueller Modus — pausiert",
   "reason.manual_charging": "Manuelles Laden mit {amps} A",
@@ -138,20 +140,24 @@ const de: Dict = {
   "reason.cheap_grid_guarded":
     "Günstiger Netzstrom {price}/kWh ≤ {threshold} → volle Leistung (Hausbatterie geschützt → {amps} A)",
   "reason.deadline_plan":
-    "Günstig-Stunden-Plan: lädt jetzt zu {price}/kWh, um {target} kWh bis zur Abfahrt zu erreichen",
+    "Geplante Günstig-Stunde zu {price}/kWh — noch {remaining} kWh bis zur Abfahrt",
   "reason.deadline_plan_guarded":
-    "Günstig-Stunden-Plan: lädt jetzt zu {price}/kWh, um {target} kWh bis zur Abfahrt zu erreichen (Hausbatterie geschützt → {amps} A)",
-  "reason.holding_off_dwell": "Pausiert (Anti-Flatter-Sperre)",
-  "reason.price_waiting": "Warten auf ein günstigeres Preisfenster",
-  "reason.charging": "Lädt",
+    "Geplante Günstig-Stunde zu {price}/kWh — noch {remaining} kWh bis zur Abfahrt (Hausbatterie geschützt → {amps} A)",
+  "reason.deadline_urgent":
+    "Lädt jetzt, um das Abfahrtsziel zu erreichen — noch {remaining} kWh",
+  "reason.target_reached": "Abfahrtsziel erreicht — {delivered} kWh geladen",
+  "reason.plan_waiting": "Warten auf eine geplante Günstig-Stunde",
   "reason.waiting_battery_reserve":
     "Warten — Hausbatterie {soc}% < Reserve {reserve}%",
   "reason.waiting_surplus": "Warten auf Überschuss — {surplus} W < {needed} W benötigt",
+  "reason.surplus_confirm": "Überschuss {surplus} W — kurze Bestätigung vor dem Start",
+  "reason.surplus_ride_out": "Überschuss eingebrochen — überbrückt mit {amps} A",
   "reason.solar_surplus": "Solarüberschuss {surplus} W → {amps} A",
   "reason.solar_surplus_phase": "Solarüberschuss {surplus} W → {amps} A ({phases}-phasig)",
+  "reason.solar_surplus_eased":
+    "Solarüberschuss {surplus} W → {amps} A (Hausbatterie wird entlastet)",
   "reason.solar_min_topup":
     "Minimum {amps} A (nur {surplus} W Überschuss, Aufstockung aus dem Netz)",
-  "reason.holding_charge_dwell": "Ladung gehalten (Anti-Flatter-Sperre)",
 
   "session.none": "Kein aktiver Ladevorgang",
   "session.charging": "Lädt: {state}",

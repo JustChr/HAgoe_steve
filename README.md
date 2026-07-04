@@ -26,17 +26,22 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 - It reacts to grid/PV/battery power changes **within seconds** (event-driven, debounced), with a
   30 s poll as a safety net, computing a target charging current and writing it back to the go-e's
   current-control `number` entity (writes are throttled so it doesn't chase noise).
-- **Modes:** Off (manual), Solar surplus only, Solar + minimum, Solar + cheap grid,
-  Price-optimized (cheapest hours to a departure deadline), Combined, and Fast.
+- **Five modes, one brain:** Smart (solar first + cheap grid + a hard departure guarantee),
+  Solar only, Solar + minimum, Fast, and Manual. Under the hood each mode enables a set of
+  *strategies* that bid a charging power every cycle; the highest bid drives the charger.
 - **One home-battery rule — the reserve line:** a single *"Keep home battery above X %"*
-  number. Below the line the battery comes first (all solar fills it); above the line the car
-  comes first and the battery actively backs it down to the line. 100 % = the battery never
-  powers the car.
+  number. Below the line the battery comes first (all solar fills it, the car gets only
+  genuine excess); at/above the line the battery is a **fluctuation buffer** — the car follows
+  the ~2-minute smoothed surplus and the battery bridges cloud dips instead of the car chasing
+  them. Sustained discharge into the car is corrected, so the battery never becomes the car's
+  power source. 100 % = always protect.
 - **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
-  helper) and the brain flips it on while grid-charging with the battery at/below its reserve
-  line — and always during cheap hours, when grid power is worth less than stored energy — so
-  the car draws from the grid instead of draining your home battery. Solar surplus still
-  charges the battery.
+  helper) and the brain flips it on whenever it deliberately charges from the grid (cheap
+  hours, the departure plan, Fast) so the car draws from the grid instead of draining your
+  home battery. Solar surplus still charges the battery.
+- **Calm start/stop ("ride out, then stop"):** a solar start needs ~3 minutes of confirmed
+  surplus; a surplus collapse is ridden out for ~5 minutes at minimum current before a clean
+  stop — few, deliberate transitions instead of relay flapping.
 - **Mode-aware 1↔3 phase switching** with anti-flap hysteresis and dwell timers: power modes
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
   prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch
@@ -118,13 +123,12 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 
 | Entity | Purpose |
 |--------|---------|
-| `select` Charging mode | Off / Solar surplus / Solar+minimum / Solar+cheap-grid / Price-optimized / Combined / Fast |
-| `switch` Smart control | Master enable — off = manual |
+| `select` Charging mode | Smart / Solar only / Solar+minimum / Fast / Manual |
+| `switch` Smart control | Master enable — off = hands off entirely |
 | `switch` Auto phase | Enable mode-aware 1↔3 phase switching (needs a mapped go-e phase entity) |
-| `number` Min/Max current | Charge current bounds |
-| `number` Keep home battery above | The reserve line (SoC %) — below it the battery comes first, above it it backs the car; 100 = never |
-| `number` Car target energy | kWh to deliver by departure (Price / Combined) |
-| `number` Minimum charge power | Floor for *Solar + minimum* |
+| `number` Min/Max current | Charge current bounds (min is also the *Solar + minimum* floor) |
+| `number` Keep home battery above | The reserve line (SoC %) — below it the battery comes first, at/above it it buffers for the car; 100 = always protect |
+| `number` Car target energy | kWh to deliver by departure (Smart) |
 | `number` Cheap price | At/below this price/kWh, grid counts as cheap |
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the reserve line |

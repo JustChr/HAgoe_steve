@@ -10,7 +10,6 @@ from homeassistant.const import (
     PERCENTAGE,
     UnitOfElectricCurrent,
     UnitOfEnergy,
-    UnitOfPower,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
@@ -78,18 +77,6 @@ NUMBERS: tuple[GoeNumberDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         getter=lambda s: s.battery_reserve_soc,
         setter=lambda s, v: setattr(s, "battery_reserve_soc", v),
-    ),
-    GoeNumberDescription(
-        key="min_grid_floor",
-        attr="min_grid_floor_w",
-        icon="mdi:transmission-tower",
-        native_min_value=0,
-        native_max_value=11000,
-        native_step=100,
-        native_unit_of_measurement=UnitOfPower.WATT,
-        entity_category=EntityCategory.CONFIG,
-        getter=lambda s: s.min_grid_floor_w,
-        setter=lambda s, v: setattr(s, "min_grid_floor_w", v),
     ),
     GoeNumberDescription(
         key="cheap_price",

@@ -1,196 +1,140 @@
-# Charging behavior matrix
+# Charging behavior — the contract
 
-What the brain does in every situation — by mode, price, and home-battery state. Derived from
-the regulation engine ([`engine.py`](../custom_components/goe_steve/engine.py), `decide()`).
+What the brain does in every situation. Derived from the regulation engine
+([`engine.py`](../custom_components/goe_steve/engine.py), `decide()`), which implements a
+**strategies + arbiter** design (v3).
 
 Defaults (all runtime-adjustable): **6 A min / 16 A max**, cheap grid **≤ 0.15 /kWh**,
-home-battery **reserve line 100 %**, PV+minimum floor **1400 W**.
+home-battery **reserve line 100 %**.
 
 ---
 
-## You set two things
+## How a decision is made (every ~30 s, plus on every sensor change)
 
-| You choose… | Answers | Options |
+1. **Gates** — smart control on? car connected? required inputs fresh? Otherwise the brain
+   releases the charger entirely (no writes).
+2. **Every enabled strategy proposes a charging power** (see the table below).
+3. **The arbiter takes the highest proposal.** Grid strategies win ties, so the battery-hold
+   stays engaged when grid and solar could deliver the same.
+4. **Shared constraints** shape the winner: the battery policy, 1↔3-phase resolution
+   (hysteresis + 5-min dwell), and the start-confirmation / ride-out machine.
+5. The coordinator writes current / phases / start-stop / battery-hold, with the usual write
+   shaping (5 s settle, 1 A deadband, redundant writes skipped).
+
+## The strategies
+
+| Strategy | Proposes | Active in |
 |---|---|---|
-| **Mode** | Where the energy comes from | Off · Solar only · Solar + minimum · Solar + cheap grid · Price-optimized · Combined · Fast |
-| **Home-battery reserve** | How full the battery must be before the car may use it | one number, 0–100 % |
+| **Solar surplus** | the ~2-min smoothed surplus (0 if below the minimum) | Smart, Solar only, Solar + minimum |
+| **Cheap grid** | full power while `price ≤ cheap threshold` | Smart |
+| **Departure plan** | full power during the cheapest forecast slots that cover the **remaining** energy (target − delivered) by departure — **hard guarantee** | Smart |
+| **Minimum floor** | the minimum current, always | Solar + minimum |
+| **Full power** | maximum, unconditionally | Fast |
 
-**Modes in one line each:**
+## Modes are presets
 
-| Mode | What it does |
-|---|---|
-| **Off** | Hands off — manual control. |
-| **Solar only** | Charge only on solar surplus. No sun, no charge. |
-| **Solar + minimum** | Solar surplus, but never below a small floor (tops up from grid). |
-| **Solar + cheap grid** | Solar surplus, **plus** full power whenever grid price ≤ cheap. |
-| **Price-optimized** | Reach a target kWh by a departure time using the cheapest hours (ignores sun). |
-| **Combined** | Solar surplus **+** cheap grid **+** the deadline guarantee. |
-| **Fast** | Full power now, no questions. |
+| Mode | Strategies | One line |
+|---|---|---|
+| **Smart** | surplus + cheap grid + departure plan | Solar first, cheap grid opportunistically, target guaranteed by departure. |
+| **Solar only** | surplus | No sun, no charge. |
+| **Solar + minimum** | surplus + floor | Solar surplus, but never below the minimum current (tops up from grid). |
+| **Fast** | full power | Full power now, no questions. |
+| **Manual** | — (bypasses the arbiter) | You drive: start/stop, current, phases from the card. |
+
+Without a PV sensor, Smart degrades gracefully to price-only charging (the surplus strategy
+simply proposes 0). Old modes map automatically: *Solar + cheap grid*, *Price-optimized* and
+*Combined* → **Smart**; *Off* → **Manual**.
 
 ---
 
-## The home-battery reserve line (read this once)
+## The home battery (read this once)
 
-One number — **"Keep home battery above X %"** — answers the only battery question there is:
-*may my home battery power the car, and down to what level?*
+One slider — **"Keep home battery above X %"** — plus one principle:
+
+> **The battery may buffer solar charging, but deliberate grid charging never drains it.**
 
 ```
 100 % ┤
-      │   ABOVE the line — the car comes first:
-      │   • the car takes solar surplus, including solar headed for the battery
-      │   • the battery actively backs the car, down to the line
-      │   • the hold switch stays OFF during grid charging
+      │   AT/ABOVE the line — the battery is a fluctuation buffer:
+      │   • the car follows the ~2-minute smoothed surplus
+      │   • short dips/spikes (clouds) are bridged by the battery — the car
+      │     current stays calm instead of chasing every wobble
+      │   • sustained discharge into the car (> 300 W for > 3 min) is corrected:
+      │     the car eases off until solar genuinely covers it again
   X % ┤◄══ your reserve line ══════════════════════════════════════════
       │   BELOW the line — the battery comes first:
-      │   • the car gets no solar surplus (all solar fills the battery)
-      │   • only real grid charging runs: cheap hours, Fast, the deadline plan
-      │   • the hold switch is ON whenever the brain grid-charges
+      │   • all solar fills the battery; the car gets only genuine excess
+      │     (export the battery can't absorb), with zero discharge tolerance
+      │   • grid charging (cheap hours, plan, floor, Fast) still runs
   0 % ┤
 ```
 
-- **At exactly the line** the reserve is satisfied: the car takes the solar that would push the
-  battery higher, but any discharge is subtracted — the battery is never pulled below the line.
-- **100 % = the battery never powers the car** (the conservative default). The car still
-  charges on real solar excess once the battery is full.
-- **SoC unavailable?** The car rides genuine solar excess only and the battery is always held
-  during grid charging — never silently drained.
+**Whenever a grid strategy wins** (cheap hour, departure plan, minimum floor, Fast — and
+Manual whenever the requested power exceeds the surplus), the brain turns the mapped
+**battery-hold switch ON** so grid power charges the car, never the battery. It is released
+as soon as solar carries the session again or the brain lets go. As a fallback when no hold
+switch is mapped, the current is trimmed by whatever the battery discharges.
 
-**One exception, and it's in your favor: cheap grid always wins.** Whenever the price is
-at/below your cheap threshold, the car runs purely on the grid and the battery is held
-**regardless of the line** — a stored kWh is worth the expensive-hour price it will offset
-later, so burning it against cheap grid would be backwards. Solar still tops the battery up
-during cheap hours.
+With the battery SoC unknown, the brain is conservative: genuine solar excess only.
 
 ---
 
-## The decision flow
+## Start/stop: "ride out, then stop"
 
-Checked top-to-bottom every cycle; **first match wins.**
+Solar charging transitions are deliberate, not flappy:
 
-```mermaid
-flowchart TD
-    A([Every cycle]) --> B{Smart control on?}
-    B -- No --> H[Hands off — manual]
-    B -- Yes --> C{Mode = Off?}
-    C -- Yes --> H
-    C -- No --> D{Car plugged in?}
-    D -- No --> I[Idle]
-    D -- Yes --> E{Mode = Fast?}
-    E -- Yes --> MAX[Charge at MAX<br/>hold: cheap price or per the line]
-    E -- No --> G{Grid cheap now, or a planned cheap hour?}
-    G -- Yes --> GRID[Charge at MAX from grid<br/>hold: cheap price or per the line]
-    G -- No --> J{Battery above the line, or enough solar surplus?}
-    J -- Yes --> SUN[Charge on solar — battery backs the car above the line]
-    J -- No --> K{Solar + minimum?}
-    K -- Yes --> FLOOR[Top up to the floor from grid<br/>hold per the line]
-    K -- No --> W[Wait]
+```
+surplus ≥ min ──────► confirm ~3 min ──────► CHARGING (follows smoothed surplus)
+                                                   │
+                                     surplus < min │ (cloud front, evening)
+                                                   ▼
+                                        RIDE-OUT ~5 min at min current
+                                        (battery covers above the line,
+                                         briefly grid below it)
+                                          │                │
+                              surplus back│                │ still gone
+                                          ▼                ▼
+                                       CHARGING          STOP (clean)
 ```
 
-- The **"cheap / planned hour"** branch is only reachable by the price-aware modes (Solar +
-  cheap grid, Price-optimized, Combined). The others answer *No* and go to the solar branch.
-- **Price-optimized** ignores solar: outside a planned hour it just **waits**.
+Grid strategies are exempt in both directions: a cheap hour / plan slot / Fast starts
+immediately and stops immediately at its boundary — no ride-out on expensive grid.
 
----
+## The departure plan (Smart)
 
-## What each mode commands
+* Set **target energy** and **departure**; 0 kWh disables planning.
+* Remaining = target − energy delivered this session (anchored at plug-in), so the plan
+  shrinks as the car fills and stops at the target. Solar surplus and cheap hours still
+  charge beyond it — the target is a floor, not a cap.
+* Slot capacity uses the phases charging can actually use (respects auto-phase off).
+* **Hard guarantee**: the plan books the least-expensive remaining slots until the remaining
+  energy is covered, whether or not they beat the cheap threshold. If the remaining time only
+  just covers the remaining energy at full power, it charges regardless of the forecast.
 
-"MAX/MIN" = the current bounds; "full phases" = max phases when Auto-phase is on, else the
-charger's current phase count (see [Phases](#phases)).
+## Phases (with auto-phase on)
 
-| Mode | Charges when… | Current | From |
-|---|---|---|---|
-| **Off** | — | — | manual |
-| **Fast** | car connected | MAX | grid (+ battery above the line) |
-| **Solar only** | surplus ≥ MIN, or battery above the line | surplus, clamped MIN…MAX (MAX above the line) | solar (+ battery above the line) |
-| **Solar + minimum** | always | max(surplus, floor) | solar; **grid top-up** below the floor |
-| **Solar + cheap grid** | price ≤ cheap **or** solar branch above | MAX when cheap, else as Solar only | grid when cheap, else solar |
-| **Price-optimized** | now is a planned cheap hour | MAX | grid |
-| **Combined** | price ≤ cheap **or** planned hour **or** solar branch | MAX when grid-charging, else surplus | grid / solar |
+* Solar charging prefers **1φ** (usable from ~1.4 kW) and climbs to **3φ** only once the
+  surplus sustains the 3φ minimum (~4.1 kW); back down below what 1φ can deliver at max
+  current. 5-minute dwell between switches. Thresholds evaluate both candidate
+  configurations, not the currently active one.
+* Grid charging always runs at the full phase count.
+* With auto-phase off the brain never touches the phase switch (except Manual, where you
+  pick the phases explicitly).
 
-When not charging you'll see a reason like *Waiting for surplus*, *Waiting for a cheaper
-price window*, or *Waiting — home battery {soc}% < reserve {reserve}%*.
+## Status reasons
 
----
+Every decision carries a plain-language reason (localized on the card): what's charging and
+why (`Solar surplus 5,2 kW → 7,5 A`, `Planned cheap hour…`), what it's waiting for
+(`confirming before start`, `battery below reserve`, `waiting for a planned cheap hour`), or
+what just finished (`Departure target reached`).
 
-## The hold switch — when it kicks in
+## Tunables (constants in [`const.py`](../custom_components/goe_steve/const.py))
 
-Background: a Victron-style system **always balances the grid to ~0**, covering any shortfall
-from the battery — so during a grid charge the battery *would* silently supply the car. The
-hold switch is the one lever that changes that. The brain drives it **only while it is
-actively grid-charging** (Fast, cheap hour, deadline hour, Manual charging, PV+minimum
-top-up), by one rule:
-
-> **Hold is ON when the price is cheap (any mode), or the battery is at/below the reserve
-> line, or its SoC is unknown. Otherwise the battery deliberately backs the car.**
-
-- The cheap-price part is mode-independent: even a Fast or Manual charge during a cheap hour
-  runs on the grid, never the battery.
-- A deadline-plan hour that is *not* actually cheap follows the line — above it the battery
-  may help hit the departure.
-
-**Always OFF** when: not charging, or charging on solar/battery surplus (so solar still fills
-the battery below the line, and the battery may back the car above it). The same decision
-drives both the hold switch **and** the current-trim fallback, so they never disagree.
-
-**Side effect worth knowing:** while hold is ON, the battery can't discharge for *anything* —
-your house loads run on grid too, not just the car. During cheap hours that's what you want;
-during a Fast charge below the line it's the price of protecting the reserve. The hold is
-released the moment the grid charge ends.
-
-**No hold switch mapped?** When the brain *would* hold, it instead **trims the car's current
-down to the genuine solar surplus** (never below MIN) so the battery isn't drained — i.e. a
-grid window quietly falls back to solar-only. Map a hold entity if you want true full-power
-grid charging that spares the battery.
-
----
-
-## Phases
-
-| Auto-phase | Charging type | Phases |
+| Constant | Default | Meaning |
 |---|---|---|
-| Off (or no 3φ entity) | any | charger's current count, untouched |
-| On | grid charging + Price mode | **max phases** (full power) |
-| On | solar surplus | adaptive **1 ↔ 3φ**, prefers 1φ; up to 3φ once surplus sustains the 3φ minimum |
-
-Hysteresis: up at `MIN × 3φ`, down at `MAX × 1φ`; a 300 s dwell caps how often it toggles.
-
----
-
-## When the brain re-evaluates & writes
-
-| Trigger | Cadence |
-|---|---|
-| Grid / PV / battery power changed | ~0.75 s debounce, then evaluate |
-| Periodic safety poll | every 30 s |
-| Setting changed (mode, reserve, any number) | immediate |
-| SteVe metering (never drives charging) | every 60 s |
-
-Write shaping: PV/grid are **3-sample averaged**; current writes are throttled to **5 s**
-(stops and phase changes bypass) with a **1 A** deadband; once charging starts/stops it holds
-that state for a **120 s** anti-flap dwell. Each controlling cycle writes the **hold switch
-first**, then start/stop, then the throttled current/phase.
-
----
-
-## Safety
-
-- Smart control off / Mode Off → brain hands off (manual). Car unplugged → idle.
-- Stale or missing grid/charger data → hands off rather than acting on bad numbers.
-- On hand-off the brain **releases** the force-state and turns the **hold switch off**.
-
----
-
-## Migrating from v1 (Protect / Share / Assist)
-
-The old battery policy and its two thresholds collapsed into the reserve line. On first start
-after the update your setting is mapped automatically:
-
-| Old policy | New reserve line | Behaves like |
-|---|---|---|
-| **Protect** | **100 %** | battery never powers the car; it fills first |
-| **Share** | your old **reserve** (e.g. 80 %) | car yields below it; above it the battery now *backs* the car down to it |
-| **Assist** | your old **floor** (e.g. 20 %) | battery backs the car down to the floor, as before |
-
-The one capability that no longer exists is Share's middle ground ("car may intercept
-battery-bound solar, but the battery never discharges"): above the line the battery now
-actively helps. If you don't want that, raise the line.
+| `SURPLUS_SMOOTH_WINDOW_S` | 120 s | rolling window the car's target follows |
+| `BATTERY_DISCHARGE_TOLERANCE_W` | 300 W | buffer discharge allowed before the ease-off |
+| `BATTERY_DISCHARGE_GRACE_S` | 180 s | how long it may exceed the tolerance |
+| `START_CONFIRM_S` | 180 s | surplus must hold ≥ min before a solar start |
+| `STOP_RIDE_OUT_S` | 300 s | dip ridden out at min current before a stop |
+| `PHASE_DWELL_S` | 300 s | minimum time between 1↔3 phase switches |

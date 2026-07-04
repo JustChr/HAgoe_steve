@@ -83,8 +83,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     * ``protect`` → 100 % — the battery never powers the car.
     * ``share``   → no seed — the line stays at the restored reserve.
     * ``assist``  → the old floor — the battery backs the car down to it.
+
+    v2 → v3: the strategies + arbiter engine. The "Minimum charge power" number
+    (``min_grid_floor``) is gone — Solar + minimum now simply guarantees the
+    minimum current — so its registry entry is dropped. The old charging modes
+    map onto the new presets when the mode select restores its state.
     """
-    if entry.version > 2:
+    if entry.version > 3:
         return False  # future schema from a newer install — don't guess
 
     if entry.version == 1:
@@ -125,6 +130,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 registry.async_remove(entity_id)
         hass.config_entries.async_update_entry(entry, data=data, version=2)
         _LOGGER.info("Migrated config entry to v2 (home-battery reserve line)")
+
+    if entry.version == 2:
+        registry = er.async_get(hass)
+        floor_id = registry.async_get_entity_id(
+            "number", DOMAIN, f"{entry.entry_id}_min_grid_floor"
+        )
+        if floor_id:
+            registry.async_remove(floor_id)
+        hass.config_entries.async_update_entry(entry, version=3)
+        _LOGGER.info("Migrated config entry to v3 (strategies + arbiter engine)")
 
     return True
 

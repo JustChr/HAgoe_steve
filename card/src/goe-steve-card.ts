@@ -270,8 +270,7 @@ export class GoeSteveCard extends LitElement {
     const surplus = this._stateObj(ent.surplus);
     const mode = this._stateObj(ent.charging_mode)?.state ?? "";
     const showSurplus =
-      !!surplus &&
-      ["pv_only", "pv_minimum", "pv_price", "combined"].includes(mode);
+      !!surplus && ["smart", "solar", "solar_min"].includes(mode);
     const validTarget =
       !!targetCurrent &&
       !["unknown", "unavailable", ""].includes(targetCurrent.state);
@@ -304,19 +303,19 @@ export class GoeSteveCard extends LitElement {
     const target = this._stateObj(ent.target_energy);
     const modeState = mode?.state;
 
-    // Manual mode (charging-mode "off") turns the card into the cockpit: the user
-    // sets start/stop, current and phases here directly — no go-e app needed. The
-    // reserve line below still applies, so it's surfaced in both modes.
-    const isManual = modeState === "off";
+    // Manual mode turns the card into the cockpit: the user sets start/stop,
+    // current and phases here directly — no go-e app needed. The reserve line
+    // below still applies, so it's surfaced in every mode.
+    const isManual = modeState === "manual";
     const manualCharge = this._stateObj(ent.manual_charge);
     const manualCurrent = this._stateObj(ent.manual_current);
     const manualPhases = this._stateObj(ent.manual_phases);
 
-    // Deadline picker pairs with target energy in the deadline-aware modes; the
-    // remaining tunables surface only in the mode where they actually bite.
+    // Deadline picker pairs with target energy in Smart (the deadline-aware
+    // mode); the remaining tunables surface only where they actually bite.
     const departure = this._stateObj(ent.departure);
     const maxCurrent = this._stateObj(ent.max_current);
-    const minGridFloor = this._stateObj(ent.min_grid_floor);
+    const minCurrent = this._stateObj(ent.min_current);
 
     return html`<div class="controls">
       ${mode
@@ -352,22 +351,22 @@ export class GoeSteveCard extends LitElement {
             ${this._renderNumber(reserve)}
           </div>`
         : nothing}
-      ${target && (modeState === "price" || modeState === "combined")
+      ${target && modeState === "smart"
         ? html`<div class="control">
             <span class="ctl-label">${this._t("control.target_energy")}</span>
             ${this._renderNumber(target)}
           </div>`
         : nothing}
-      ${departure && (modeState === "price" || modeState === "combined")
+      ${departure && modeState === "smart"
         ? html`<div class="control">
             <span class="ctl-label">${this._t("control.departure")}</span>
             ${this._renderDateTime(departure)}
           </div>`
         : nothing}
-      ${minGridFloor && modeState === "pv_minimum"
+      ${minCurrent && modeState === "solar_min"
         ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.min_grid_floor")}</span>
-            ${this._renderNumber(minGridFloor)}
+            <span class="ctl-label">${this._t("control.min_current")}</span>
+            ${this._renderNumber(minCurrent)}
           </div>`
         : nothing}
       ${maxCurrent && modeState === "fast"

@@ -18,7 +18,7 @@
           "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
-          "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on while charging from the grid (cheap price / Fast) so the car draws from the grid, not the battery. Solar surplus still charges the battery. It engages whenever the battery is at/below its reserve line, and always during cheap hours.",
+          "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on whenever it deliberately charges from the grid (cheap hours, the departure plan, Fast) so the car draws from the grid, never the battery. During solar charging it stays off, so the battery can buffer surplus fluctuations.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices)."
         }
@@ -31,7 +31,6 @@
           "goe_phase_entity": "Phase switch control (optional)",
           "goe_force_entity": "Start/stop control (recommended)",
           "goe_connected_entity": "Car connected status",
-          "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
           "goe_energy_entity": "Session energy (optional)",
           "voltage": "Grid voltage per phase",
@@ -42,7 +41,6 @@
           "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
           "goe_force_entity": "The go-e force-state entity ('Neutral / Don't charge / Charge', frc). The brain uses this to actually start and stop charging — without it the charger can't go below its 6 A minimum, so pausing won't work.",
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
-          "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
           "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
           "goe_energy_entity": "The charger's energy delivered in the current session (go-e 'energy since car connected'). Shown live next to the running session on the card.",
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
@@ -86,7 +84,6 @@
           "goe_phase_entity": "Phase switch control (optional)",
           "goe_force_entity": "Start/stop control (recommended)",
           "goe_connected_entity": "Car connected status",
-          "goe_charging_entity": "Charging status (optional)",
           "goe_power_entity": "Charging power (optional)",
           "goe_energy_entity": "Session energy (optional)",
           "voltage": "Grid voltage per phase",
@@ -102,14 +99,13 @@
           "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
-          "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on while charging from the grid (cheap price / Fast) so the car draws from the grid, not the battery. Solar surplus still charges the battery. It engages whenever the battery is at/below its reserve line, and always during cheap hours.",
+          "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on whenever it deliberately charges from the grid (cheap hours, the departure plan, Fast) so the car draws from the grid, never the battery. During solar charging it stays off, so the battery can buffer surplus fluctuations.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
           "goe_current_number": "The number entity that sets the charging current (A). The brain writes to this to steer charging.",
           "goe_phase_entity": "Entity that switches between 1 and 3 phases, if your charger supports it. Leave empty to keep phases fixed.",
           "goe_force_entity": "The go-e force-state entity ('Neutral / Don't charge / Charge', frc). The brain uses this to actually start and stop charging — without it the charger can't go below its 6 A minimum, so pausing won't work.",
           "goe_connected_entity": "Tells the brain whether a car is plugged in. Charging only starts when a car is connected.",
-          "goe_charging_entity": "Reports whether the car is actively drawing power. Improves status accuracy.",
           "goe_power_entity": "The charger's actual delivered power. Used for feedback and statistics.",
           "goe_energy_entity": "The charger's energy delivered in the current session (go-e 'energy since car connected'). Shown live next to the running session on the card.",
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
@@ -131,13 +127,11 @@
       "charging_mode": {
         "name": "Charging mode",
         "state": {
-          "off": "Manual",
-          "pv_only": "Solar surplus only",
-          "pv_minimum": "Solar + minimum",
-          "pv_price": "Solar + cheap grid",
-          "price": "Price-optimized",
-          "combined": "Combined",
-          "fast": "Fast"
+          "smart": "Smart",
+          "solar": "Solar only",
+          "solar_min": "Solar + minimum",
+          "fast": "Fast",
+          "manual": "Manual"
         }
       },
       "manual_phases": {
@@ -161,7 +155,6 @@
       "min_current": { "name": "Minimum current" },
       "max_current": { "name": "Maximum current" },
       "battery_reserve_soc": { "name": "Keep home battery above" },
-      "min_grid_floor": { "name": "Minimum charge power" },
       "cheap_price": { "name": "Cheap price threshold" },
       "target_energy": { "name": "Target energy by departure" }
     },

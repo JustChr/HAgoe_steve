@@ -10,7 +10,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import GoeSteveConfigEntry
 from .coordinator import SteVeCoordinator
-from .engine import SUPPORTED_MODES, ChargingMode
+from .engine import LEGACY_MODE_MAP, SUPPORTED_MODES, ChargingMode
 from .entity import GoeSteveEntity, SteVeEntity
 from .steve_api import SteVeTag
 
@@ -43,9 +43,15 @@ class ChargingModeSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        if (last := await self.async_get_last_state()) is not None:
-            if last.state in self._attr_options:
-                self.coordinator.settings.mode = ChargingMode(last.state)
+        if (last := await self.async_get_last_state()) is None:
+            return
+        # v2 → v3: the old mode zoo maps onto the presets, so a restored legacy
+        # value (e.g. "combined") lands on its equivalent instead of resetting.
+        restored = last.state
+        if restored in LEGACY_MODE_MAP:
+            self.coordinator.settings.mode = LEGACY_MODE_MAP[restored]
+        elif restored in self._attr_options:
+            self.coordinator.settings.mode = ChargingMode(restored)
 
     @property
     def current_option(self) -> str:
@@ -56,7 +62,7 @@ class ChargingModeSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
         self.coordinator.settings.mode = mode
         # Switching into Manual should not disturb the charger: stay passive until
         # the user touches a manual control. Picking any other mode drives at once.
-        self.coordinator.set_manual_passive(mode is ChargingMode.OFF)
+        self.coordinator.set_manual_passive(mode is ChargingMode.MANUAL)
         self.async_write_ha_state()
         self.coordinator.request_apply()
 

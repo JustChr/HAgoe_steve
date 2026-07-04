@@ -24,7 +24,6 @@ from .const import (
     CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
-    CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
     CONF_GOE_ENERGY,
@@ -99,10 +98,6 @@ def _charger_schema(defaults: dict[str, Any]) -> vol.Schema:
             ): _FORCE_ENTITY,
             vol.Required(
                 CONF_GOE_CONNECTED, default=defaults.get(CONF_GOE_CONNECTED)
-            ): _STATUS_ENTITY,
-            vol.Optional(
-                CONF_GOE_CHARGING,
-                description={"suggested_value": defaults.get(CONF_GOE_CHARGING)},
             ): _STATUS_ENTITY,
             vol.Optional(
                 CONF_GOE_POWER,
@@ -255,8 +250,9 @@ class GoeSteveConfigFlow(ConfigFlow, domain=DOMAIN):
     """Two-step setup: energy sources, then the charger."""
 
     # v2: Protect/Share/Assist + battery floor collapsed into the single
-    # home-battery reserve line (see async_migrate_entry).
-    VERSION = 2
+    # home-battery reserve line. v3: strategies + arbiter engine — mode presets,
+    # min_grid_floor removed (see async_migrate_entry).
+    VERSION = 3
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}

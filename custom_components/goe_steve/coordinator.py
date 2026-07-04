@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -20,11 +19,12 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    BATTERY_DISCHARGE_GRACE_S,
+    BATTERY_DISCHARGE_TOLERANCE_W,
     CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
     CONF_BATTERY_RESERVE_SEED,
     CONF_BATTERY_SOC,
-    CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
     CONF_GOE_CURRENT,
     CONF_GOE_ENERGY,
@@ -45,7 +45,6 @@ from .const import (
     DEFAULT_CHEAP_PRICE,
     DEFAULT_MAX_CURRENT,
     DEFAULT_MIN_CURRENT,
-    DEFAULT_MIN_GRID_FLOOR_W,
     DEFAULT_PHASES,
     DEFAULT_PRICE_FORECAST_ATTR,
     DEFAULT_SCAN_INTERVAL,
@@ -53,13 +52,13 @@ from .const import (
     DEFAULT_VOLTAGE,
     DOMAIN,
     INPUT_SETTLE_S,
-    MIN_OFF_DWELL_S,
-    MIN_ON_DWELL_S,
     MIN_UPDATE_INTERVAL_S,
     MIN_WRITE_DELTA_A,
     PHASE_DWELL_S,
-    SMOOTHING_SAMPLES,
+    START_CONFIRM_S,
     STEVE_SCAN_INTERVAL,
+    STOP_RIDE_OUT_S,
+    SURPLUS_SMOOTH_WINDOW_S,
 )
 from .engine import (
     ChargerInputs,
@@ -150,12 +149,11 @@ class RuntimeSettings:
     push their restored value back in on startup.
     """
 
-    mode: ChargingMode = ChargingMode.OFF
+    mode: ChargingMode = ChargingMode.MANUAL
     smart_enabled: bool = True
     min_current_a: float = DEFAULT_MIN_CURRENT
     max_current_a: float = DEFAULT_MAX_CURRENT
     battery_reserve_soc: float = DEFAULT_BATTERY_RESERVE_SOC
-    min_grid_floor_w: float = DEFAULT_MIN_GRID_FLOOR_W
     cheap_price: float = DEFAULT_CHEAP_PRICE
     target_energy_kwh: float = DEFAULT_TARGET_ENERGY_KWH
     departure: datetime | None = None
@@ -218,9 +216,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # Runtime-only by design: a Manual mode restored on restart drives normally.
         self._manual_passive = False
         self._last_write_at: datetime | None = None
-        # Rolling-average buffers for input smoothing.
-        self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
-        self._grid_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
+        # Session-energy anchor: the meter reading captured when the car plugged
+        # in, so "delivered this session" works whether the mapped entity is
+        # session-scoped (go-e "energy since car connected") or a total counter.
+        self._session_baseline_kwh: float | None = None
+        self._was_connected: bool | None = None
 
     def consume_reserve_seed(self) -> float | None:
         """Hand the v1→v2 reserve seed to the reserve number, at most once."""
@@ -367,12 +367,26 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         unit = state.attributes.get("unit_of_measurement")
         return str(unit) if unit is not None else None
 
-    @staticmethod
-    def _smooth(buffer: deque[float], value: float | None) -> float | None:
-        if value is None:
+    def _session_delivered_kwh(self, connected: bool) -> float | None:
+        """Energy delivered in the running session (kWh), anchored at plug-in.
+
+        On the connected rising edge the current meter reading becomes the
+        baseline; a reading below the baseline means the meter reset itself
+        (go-e's session counter does at plug-in), so the raw value already *is*
+        the session figure. With no rising edge observed yet (restart mid-
+        session) the entity is assumed session-scoped, matching go-e's
+        "energy since car connected".
+        """
+        raw = self.goe_session_energy_kwh
+        if connected and self._was_connected is False:
+            self._session_baseline_kwh = raw or 0.0
+        self._was_connected = connected
+        if raw is None:
             return None
-        buffer.append(value)
-        return sum(buffer) / len(buffer)
+        base = self._session_baseline_kwh
+        if base is None or raw < base:
+            return raw
+        return raw - base
 
     # --- The regulation loop ----------------------------------------------------
     async def _async_update_data(self) -> Decision:
@@ -388,21 +402,23 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                 reason="Waiting for charger / grid data",
             )
 
-        grid = self._smooth(self._grid_samples, grid_raw)
-        pv = self._smooth(self._pv_samples, self._get_float(CONF_PV_POWER))
         price_now, forecast = self._read_price()
 
+        # Raw power readings go straight in: the engine smooths the *derived*
+        # surplus over a time window itself, which — unlike smoothing grid and
+        # car power separately — is invariant to the car's own current changes.
         inputs = ChargerInputs(
             car_connected=connected,
             car_actual_power_w=self._get_float(CONF_GOE_POWER) or 0.0,
             phases=self._read_phases(),
             voltage_v=self._voltage,
-            grid_power_w=grid if grid is not None else grid_raw,
-            pv_power_w=pv,
+            grid_power_w=grid_raw,
+            pv_power_w=self._get_float(CONF_PV_POWER),
             battery_soc=self._get_float(CONF_BATTERY_SOC),
             battery_power_w=self._get_float(CONF_BATTERY_POWER),
             price_now=price_now,
             price_forecast=forecast,
+            session_delivered_kwh=self._session_delivered_kwh(connected),
             now=dt_util.utcnow(),
         )
         self.last_inputs = inputs
@@ -412,7 +428,6 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             min_current_a=self.settings.min_current_a,
             max_current_a=self.settings.max_current_a,
             battery_reserve_soc=self.settings.battery_reserve_soc,
-            min_grid_floor_w=self.settings.min_grid_floor_w,
             cheap_price=self.settings.cheap_price,
             target_energy_kwh=self.settings.target_energy_kwh,
             departure=self.settings.departure,
@@ -423,8 +438,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             manual_passive=self._manual_passive,
             max_phases=max(self._phases, 3),
             phase_dwell_s=PHASE_DWELL_S,
-            min_on_dwell_s=MIN_ON_DWELL_S,
-            min_off_dwell_s=MIN_OFF_DWELL_S,
+            smooth_window_s=SURPLUS_SMOOTH_WINDOW_S,
+            discharge_tolerance_w=BATTERY_DISCHARGE_TOLERANCE_W,
+            discharge_grace_s=BATTERY_DISCHARGE_GRACE_S,
+            start_confirm_s=START_CONFIRM_S,
+            stop_ride_out_s=STOP_RIDE_OUT_S,
         )
 
         decision = decide(inputs, cfg, self._state)
@@ -457,6 +475,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         if self._cfg.get(CONF_GOE_FORCE):
             await self._write_force(decision.should_charge)
             if not decision.should_charge:
+                # Forget the last written current: while paused the go-e may
+                # clamp/alter the amp value, so the first write after resuming
+                # must not be deadband-compared against a stale reading.
+                self._last_written_a = None
                 return
 
         target = round(decision.target_current_a) if decision.should_charge else 0

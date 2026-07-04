@@ -27,6 +27,9 @@ CONF_GOE_CURRENT: Final = "goe_current_number"
 CONF_GOE_PHASE: Final = "goe_phase_entity"
 CONF_GOE_FORCE: Final = "goe_force_entity"
 CONF_GOE_CONNECTED: Final = "goe_connected_entity"
+# Legacy (pre-v3): a mapped "charging status" entity that was never read by the
+# engine. No longer offered in the config flow; the key is kept so old entries
+# carrying it keep loading. Charging state is inferred from connected + power.
 CONF_GOE_CHARGING: Final = "goe_charging_entity"
 CONF_GOE_POWER: Final = "goe_power_entity"
 # Energy delivered in the current charging session (go-e "energy since car
@@ -65,21 +68,33 @@ DEFAULT_MAX_CURRENT: Final = 16.0  # A
 DEFAULT_VOLTAGE: Final = 230.0  # V per phase
 DEFAULT_PHASES: Final = 3
 # % — the home-battery reserve line: below it the battery comes first (car gets
-# no solar surplus), above it the battery may back the car down to the line.
-# 100 = the battery never powers the car (the conservative default).
+# only genuine excess solar), at/above it the battery buffers surplus
+# fluctuations for the car. 100 = always protect (the conservative default).
 DEFAULT_BATTERY_RESERVE_SOC: Final = 100.0
-DEFAULT_MIN_GRID_FLOOR_W: Final = 1400.0  # W — PV+minimum: always charge at least this
 DEFAULT_CHEAP_PRICE: Final = 0.15  # currency/kWh — at/below this, grid is "cheap"
 DEFAULT_TARGET_ENERGY_KWH: Final = 0.0  # kWh — 0 disables deadline planning
 
-# --- Phase switching & anti-flap (static engine behaviour) ------------------------
+# --- Phase switching (static engine behaviour) -------------------------------------
 DEFAULT_AUTO_PHASE: Final = False  # off until the user maps a phase-control entity
 PHASE_DWELL_S: Final = 300.0  # min seconds between 1↔3 phase switches
-MIN_ON_DWELL_S: Final = 120.0  # keep charging at least this long once started
-MIN_OFF_DWELL_S: Final = 120.0  # stay paused at least this long once stopped
 
-# --- Input smoothing --------------------------------------------------------------
-SMOOTHING_SAMPLES: Final = 3  # rolling-average window for PV/grid power
+# --- Solar smoothing + battery buffer ----------------------------------------------
+# The car follows a rolling time-window average of the solar surplus; the home
+# battery bridges anything shorter than the window, so the car current stays calm
+# through passing clouds instead of chasing every dip.
+SURPLUS_SMOOTH_WINDOW_S: Final = 120.0
+# Above the reserve line the battery may buffer freely — but discharge into the
+# car beyond this power, sustained for the grace time, triggers a decisive
+# ease-off so the battery never becomes the car's power source.
+BATTERY_DISCHARGE_TOLERANCE_W: Final = 300.0
+BATTERY_DISCHARGE_GRACE_S: Final = 180.0
+
+# --- Start/stop shaping ("ride out, then stop") -------------------------------------
+# Surplus must sustain the minimum current this long before a solar start…
+START_CONFIRM_S: Final = 180.0
+# …and once charging, a surplus collapse is ridden out at minimum current this
+# long before a clean stop. Few, deliberate transitions instead of flapping.
+STOP_RIDE_OUT_S: Final = 300.0
 
 # Grid and battery come from the same inverter but report a beat apart, so a raw
 # state-change burst would briefly mix a fresh reading with a stale one. We

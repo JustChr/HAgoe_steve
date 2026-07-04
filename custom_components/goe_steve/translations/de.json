@@ -18,7 +18,7 @@
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
-          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Er greift, solange die Batterie auf/unter ihrer Reservelinie ist – und bei günstigem Netzpreis immer.",
+          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn immer dann ein, wenn sie bewusst aus dem Netz lädt (günstige Stunden, Abfahrtsplan, Schnellladen), damit das Auto aus dem Netz lädt und nie aus der Batterie. Beim Solarladen bleibt er aus, damit die Batterie Überschuss-Schwankungen abpuffern kann.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen)."
         }
@@ -31,7 +31,6 @@
           "goe_phase_entity": "Phasenumschaltung (optional)",
           "goe_force_entity": "Start/Stopp-Steuerung (empfohlen)",
           "goe_connected_entity": "Status: Fahrzeug verbunden",
-          "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
           "goe_energy_entity": "Sitzungsenergie (optional)",
           "voltage": "Netzspannung pro Phase",
@@ -42,7 +41,6 @@
           "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
           "goe_force_entity": "Die go-e Force-State-Entität („Neutral / Nicht laden / Laden“, frc). Damit startet und stoppt die Steuerung das Laden tatsächlich — ohne sie kann die Wallbox ihre 6-A-Untergrenze nicht unterschreiten, ein Pausieren funktioniert also nicht.",
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
-          "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
           "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
           "goe_energy_entity": "Im aktuellen Ladevorgang abgegebene Energie der Wallbox (go-e „Energie seit Fahrzeug verbunden“). Wird live neben dem laufenden Ladevorgang auf der Karte angezeigt.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
@@ -86,7 +84,6 @@
           "goe_phase_entity": "Phasenumschaltung (optional)",
           "goe_force_entity": "Start/Stopp-Steuerung (empfohlen)",
           "goe_connected_entity": "Status: Fahrzeug verbunden",
-          "goe_charging_entity": "Ladestatus (optional)",
           "goe_power_entity": "Ladeleistung (optional)",
           "goe_energy_entity": "Sitzungsenergie (optional)",
           "voltage": "Netzspannung pro Phase",
@@ -102,14 +99,13 @@
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
-          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Er greift, solange die Batterie auf/unter ihrer Reservelinie ist – und bei günstigem Netzpreis immer.",
+          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn immer dann ein, wenn sie bewusst aus dem Netz lädt (günstige Stunden, Abfahrtsplan, Schnellladen), damit das Auto aus dem Netz lädt und nie aus der Batterie. Beim Solarladen bleibt er aus, damit die Batterie Überschuss-Schwankungen abpuffern kann.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
           "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
           "goe_force_entity": "Die go-e Force-State-Entität („Neutral / Nicht laden / Laden“, frc). Damit startet und stoppt die Steuerung das Laden tatsächlich — ohne sie kann die Wallbox ihre 6-A-Untergrenze nicht unterschreiten, ein Pausieren funktioniert also nicht.",
           "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
-          "goe_charging_entity": "Meldet, ob das Fahrzeug aktiv Leistung bezieht. Verbessert die Statusanzeige.",
           "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
           "goe_energy_entity": "Im aktuellen Ladevorgang abgegebene Energie der Wallbox (go-e „Energie seit Fahrzeug verbunden“). Wird live neben dem laufenden Ladevorgang auf der Karte angezeigt.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
@@ -131,13 +127,11 @@
       "charging_mode": {
         "name": "Lademodus",
         "state": {
-          "off": "Manuell",
-          "pv_only": "Nur Solarüberschuss",
-          "pv_minimum": "Solar + Minimum",
-          "pv_price": "Solar + günstiger Netzstrom",
-          "price": "Preisoptimiert",
-          "combined": "Kombiniert",
-          "fast": "Schnell"
+          "smart": "Smart",
+          "solar": "Nur Solar",
+          "solar_min": "Solar + Minimum",
+          "fast": "Schnell",
+          "manual": "Manuell"
         }
       },
       "manual_phases": {
@@ -161,7 +155,6 @@
       "min_current": { "name": "Mindeststrom" },
       "max_current": { "name": "Maximalstrom" },
       "battery_reserve_soc": { "name": "Hausbatterie halten über" },
-      "min_grid_floor": { "name": "Mindest-Ladeleistung" },
       "cheap_price": { "name": "Schwelle günstiger Preis" },
       "target_energy": { "name": "Zielenergie bis Abfahrt" }
     },

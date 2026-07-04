@@ -69,11 +69,22 @@ concept document; this file is the actionable to-do list.
       policy (protect→100, share→old reserve, assist→old floor) and removes the orphaned
       entities. Intentionally dropped: Share's middle ground (intercept battery-bound solar
       without ever discharging) — raise the line instead.
-- [ ] PV/price forecast-aware planning.
+- [x] **v3.0 — strategies + arbiter engine (green-field redesign).** The 7-mode if/else
+      ladder replaced by independent strategies (surplus / cheap grid / departure plan /
+      minimum floor / full power) that each bid a charging power; the highest bid wins, grid
+      strategies take ties. Modes collapse to five presets (Smart / Solar only / Solar+minimum
+      / Fast / Manual) with automatic migration of restored legacy values. Battery model:
+      below the reserve the battery comes first (genuine excess only, zero discharge
+      tolerance); at/above it it *buffers* — the car follows a 2-min time-smoothed surplus,
+      dips are bridged, sustained discharge (>300 W >3 min) eases the car off; every
+      deliberate grid charge engages the hold switch. Start/stop: 3-min surplus confirmation,
+      5-min ride-out at min current, no ride-out for grid slots. Deadline plan now subtracts
+      delivered session energy (anchored at plug-in), uses achievable phases for slot
+      capacity, and hard-guarantees the target (urgency fallback without a forecast).
+      Time-based smoothing replaces `SMOOTHING_SAMPLES` (the follow-up below). `min_grid_floor`
+      removed (floor = min current); dead `goe_charging` config input dropped from the flow.
+- [ ] PV/price forecast-aware planning (solar forecast feeding the departure plan).
 - [ ] Diagnostics: data-source health/staleness, last-decision timestamp, dashboards.
-
-  Follow-up worth revisiting: smoothing is sample-based (`SMOOTHING_SAMPLES=3`), so its time
-  window now varies with event cadence — consider time-based smoothing if noise becomes an issue.
 
 ## Open items / decisions to make during build
 - [ ] go-e write path: existing integration's `number`/service vs. its API — confirm.

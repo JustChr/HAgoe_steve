@@ -14,10 +14,11 @@ limits**.
 
 ## Highlights
 
-- **Charging modes:** Off, Solar surplus, Solar + minimum, Solar + cheap grid, Price-optimized
-  (cheapest hours to a departure deadline), Combined, and Fast.
+- **Charging modes:** Smart (solar first + cheap grid + a hard departure guarantee),
+  Solar only, Solar + minimum, Fast, and Manual.
 - **One home-battery rule:** *"Keep home battery above X %"* — below the line the battery
-  comes first, above it it actively backs the car down to the line (100 % = never).
+  comes first; at/above it it buffers surplus fluctuations for the car, and deliberate grid
+  charging never drains it (100 % = always protect).
 - **Automatic 1↔3 phase switching** with anti-flap hysteresis and dwell timers.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).
 - **SteVe metering & control:** per-RFID kWh, session sensors, and services to authorize/block
