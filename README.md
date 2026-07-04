@@ -15,7 +15,7 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 > **Status: early days, actively tested.** All charging modes (solar, price-aware,
 > combined), automatic phase switching and the single home-battery reserve line are in
 > place, plus SteVe metering (per-RFID kWh, sessions), authorization/remote-control services, and
-> **two bundled Lovelace cards** (energy-flow + price-forecast). It works on the author's own
+> **two bundled Lovelace cards** (an answer-strip main card + price-forecast). It works on the author's own
 > setup, but it's still young and not every wallbox/inverter/price-provider combination has been
 > exercised yet. **Try it, and please [open an issue](https://github.com/JustChr/HAgoe_steve/issues)**
 > with what worked, what broke, or what you'd like — feedback shapes where this goes next. 🙏
@@ -38,7 +38,9 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 - **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
   helper) and the brain flips it on whenever it deliberately charges from the grid (cheap
   hours, the departure plan, Fast) so the car draws from the grid instead of draining your
-  home battery. Solar surplus still charges the battery.
+  home battery. Solar surplus still charges the battery. An **Auto / Hold / Free** control (and
+  a *Home battery held* sensor) lets you see and override that decision, and the card shows it
+  as a shield chip.
 - **Calm start/stop ("ride out, then stop"):** a solar start needs ~3 minutes of confirmed
   surplus; a surplus collapse is ridden out for ~5 minutes at minimum current before a clean
   stop — few, deliberate transitions instead of relay flapping.
@@ -47,11 +49,12 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
   prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch
   *and* map a go-e phase-control entity during setup — without a mapped phase entity there is
   nothing to switch.
-- **Two Lovelace cards:** a main card with the live PV → house / battery / car / grid energy
-  flow, the brain's plain-language reason, inline controls (charging mode, the home-battery
-  reserve line, smart control, auto-phase, and the mode's own tunables like car target energy)
-  and per-RFID energy; plus a price-forecast card that plots upcoming electricity prices with a
-  **draggable "cheap" threshold** you set right on the chart.
+- **Two Lovelace cards:** a main *answer-strip* card — a live charging figure with a ring + source
+  bar splitting the car's power into **solar / battery / grid**, a one-line PV/house/grid/battery
+  balance, the brain's plain-language reason, chips for state that used to be invisible (battery
+  hold, price verdict, dwell countdowns, phases), a plan strip with a **draggable price target**,
+  and inline controls (mode, Auto/Hold/Free home battery, the reserve line, the mode's tunables);
+  plus a price-forecast card that plots upcoming prices with a **draggable "cheap" threshold**.
 - Safety: if the car isn't connected or required data is stale, the brain keeps its hands off;
   turning **Smart control** off returns full manual control.
 
@@ -90,18 +93,22 @@ manual dashboard *Resources* entry needed. After setup, edit a dashboard, *Add c
 them from the card picker (both show a preview). With one Smart Charging device they auto-discover
 all entities; if you run more than one, pick the device in the card's visual editor.
 
-**1. Smart Charging card** (`custom:goe-steve-card`) — the main card. A live energy-flow diagram
-(PV → house / battery / car / grid), the brain's current reason and mode/reserve chips, inline
-controls (charging mode, the home-battery reserve line, smart-control toggle, the active mode's
-tunables) and per-RFID energy.
+**1. Smart Charging card** (`custom:goe-steve-card`) — the main card, an **answer strip**: a big
+live charging figure with a ring + source bar showing how much of the charge is **solar / battery /
+grid** right now, a one-line balance (PV, house, grid ±, battery ± with SoC vs. the reserve line),
+the brain's reason, and chips for the state it used to hide — the **battery-hold shield**, the price
+verdict, live dwell countdowns and the phase count. A **plan strip** (Smart mode) shows the price
+forecast with the booked cheap windows and a **draggable price target**, and a segmented mode control
+plus an **Auto / Hold / Free** home-battery three-way sit below. The session duration ticks live.
 
 ```yaml
 type: custom:goe-steve-card
 # device: <optional — auto-detected when there's only one>
 # title: My Wallbox
-# show_flow: true
+# show_flow: true       # the source bar + balance line
 # show_controls: true
 # show_sessions: true
+# compact: false        # true hides controls (wall dashboards)
 ```
 
 **2. Price card** (`custom:goe-steve-price-card`) — an electricity-price forecast chart with a
@@ -124,6 +131,7 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | Entity | Purpose |
 |--------|---------|
 | `select` Charging mode | Smart / Solar only / Solar+minimum / Fast / Manual |
+| `select` Home battery | Auto / Hold / Free — let the brain decide, always block discharge, or never |
 | `switch` Smart control | Master enable — off = hands off entirely |
 | `switch` Auto phase | Enable mode-aware 1↔3 phase switching (needs a mapped go-e phase entity) |
 | `number` Min/Max current | Charge current bounds (min is also the *Solar + minimum* floor) |
@@ -133,8 +141,9 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the reserve line |
 | `sensor` Target current | What the brain is asking for |
-| `sensor` Power flow | Live PV/grid/battery/house/car balance (attributes) — drives the card |
+| `sensor` Power flow | Live PV/grid/battery/house/car balance + the car's solar/battery/grid source split (attributes) — drives the card |
 | `binary_sensor` Brain controlling / Charging requested | Brain state |
+| `binary_sensor` Home battery held | On while the battery is blocked from discharging into the car (the shield chip) |
 | `sensor` Active session / Last session energy | SteVe transactions (when configured) |
 | `sensor` `{tag} energy` (one per RFID) | Cumulative kWh charged per id-tag |
 

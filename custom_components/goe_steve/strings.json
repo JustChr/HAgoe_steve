@@ -141,6 +141,14 @@
           "3": "Three phase"
         }
       },
+      "battery_hold_mode": {
+        "name": "Home battery",
+        "state": {
+          "auto": "Auto",
+          "hold": "Hold",
+          "free": "Free"
+        }
+      },
       "selected_tag": {
         "name": "Selected tag"
       }
@@ -173,7 +181,8 @@
     },
     "binary_sensor": {
       "controlling": { "name": "Brain controlling" },
-      "charging_requested": { "name": "Charging requested" }
+      "charging_requested": { "name": "Charging requested" },
+      "battery_hold": { "name": "Home battery held" }
     }
   },
   "services": {

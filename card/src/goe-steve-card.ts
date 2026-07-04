@@ -14,11 +14,18 @@ import { localize } from "./localize";
 /** Display name of the integration, used in the empty-state message. */
 const INTEGRATION_NAME = "go-e + SteVe Smart Charging";
 
+/** Data older than this (seconds) flips the live dot to "updated Ns ago". */
+const STALE_AFTER_S = 45;
+
+/** Volts per phase assumed when deriving actual amps from car power. */
+const ASSUMED_VOLTAGE = 230;
+
 /** Minimal shape of the bits of `hass` we touch — avoids pulling HA's types. */
 interface HassEntity {
   entity_id: string;
   state: string;
   attributes: Record<string, any>;
+  last_updated?: string;
 }
 interface Hass {
   states: Record<string, HassEntity>;
@@ -38,6 +45,8 @@ export interface GoeSteveCardConfig {
   show_flow?: boolean;
   show_controls?: boolean;
   show_sessions?: boolean;
+  /** Wall-dashboard preset: hides the controls block for a read-only card. */
+  compact?: boolean;
 }
 
 const fmtPower = (w: number | null | undefined): string => {
@@ -47,10 +56,43 @@ const fmtPower = (w: number | null | undefined): string => {
   return `${Math.round(w)} W`;
 };
 
+/** kW with one decimal (the hero + balance line all speak kW). */
+const fmtKw = (w: number | null | undefined): string => {
+  if (w === null || w === undefined || Number.isNaN(w)) return "—";
+  return `${(w / 1000).toFixed(1)} kW`;
+};
+
+/** Seconds → "1:23" / "1:02:03" for durations and countdowns. */
+const fmtClock = (secs: number): string => {
+  const s = Math.max(0, Math.round(secs));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(ss).padStart(2, "0")}`;
+};
+
+const num = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isNaN(n) ? NaN : n;
+};
+
 @customElement("goe-steve-card")
 export class GoeSteveCard extends LitElement {
   @property({ attribute: false }) public hass!: Hass;
   @state() private _config!: GoeSteveCardConfig;
+
+  /** Wall-clock tick so durations/countdowns/freshness advance every second
+   *  card-side, with no entity roundtrip (concept freshness fix 4). */
+  @state() private _now = Date.now();
+  private _timer?: number;
+
+  /** Optimistic control state: a tapped mode/toggle highlights immediately and
+   *  is trusted until the entity confirms (or a short timeout elapses). */
+  @state() private _optimistic = new Map<string, { value: string; at: number }>();
+
+  /** Live cheap-price target while the plan-strip pill is being dragged (ct or
+   *  currency/kWh, matching the number entity); null when not dragging. */
+  @state() private _dragTarget: number | null = null;
 
   public static getConfigElement(): HTMLElement {
     return document.createElement("goe-steve-card-editor");
@@ -66,12 +108,25 @@ export class GoeSteveCard extends LitElement {
       show_flow: true,
       show_controls: true,
       show_sessions: true,
+      compact: false,
       ...config,
     };
   }
 
   public getCardSize(): number {
     return 8;
+  }
+
+  public connectedCallback(): void {
+    super.connectedCallback();
+    this._timer = window.setInterval(() => {
+      this._now = Date.now();
+    }, 1000);
+  }
+
+  public disconnectedCallback(): void {
+    super.disconnectedCallback();
+    if (this._timer) window.clearInterval(this._timer);
   }
 
   private get _entities(): ResolvedEntities | null {
@@ -101,14 +156,18 @@ export class GoeSteveCard extends LitElement {
       this._config.title ??
       this._deviceName(ent.deviceId) ??
       this._t("card.default_title");
+    const controls = this._config.show_controls && !this._config.compact;
 
     return html`<ha-card>
-      ${this._renderHeader(ent, title)}
-      <div class="content">
-        ${this._config.show_flow ? this._renderFlow(ent) : nothing}
-        ${this._config.show_controls ? this._renderLive(ent) : nothing}
-        ${this._config.show_controls ? this._renderControls(ent) : nothing}
-        ${this._config.show_sessions ? this._renderSessions(ent) : nothing}
+      <div class="hacard">
+        ${this._renderHead(ent, title)}
+        ${this._renderHero(ent)}
+        ${this._renderWhy(ent)}
+        ${this._config.show_flow ? this._renderSplit(ent) : nothing}
+        ${this._renderChips(ent)}
+        ${this._renderPlan(ent)}
+        ${controls ? this._renderControls(ent) : nothing}
+        ${this._config.show_sessions ? this._renderSession(ent) : nothing}
       </div>
     </ha-card>`;
   }
@@ -119,63 +178,573 @@ export class GoeSteveCard extends LitElement {
     return html`${before}<b>${INTEGRATION_NAME}</b>${after ?? ""}`;
   }
 
-  // --- Header: status reason + mode/battery-reserve chips -----------------------
-  private _renderHeader(ent: ResolvedEntities, title: string): TemplateResult {
+  // --- Header: brain icon, title, always-on liveness dot -----------------------
+  private _renderHead(ent: ResolvedEntities, title: string): TemplateResult {
     const status = this._stateObj(ent.status);
-    const reason = this._statusReason(status);
     const controlling = this._isOn(ent.controlling);
-    const mode = this._displayState(ent.charging_mode);
-    // The home-battery reserve line at a glance: "≥ 80 %" = the battery is kept
-    // above 80 % and may back the car down to it (100 % = never used for the car).
-    const reserve = this._stateObj(ent.battery_reserve_soc);
-    const reserveChip =
-      reserve && !["unknown", "unavailable", ""].includes(reserve.state)
-        ? `≥ ${Math.round(Number(reserve.state))} %`
-        : undefined;
+    const age = this._ageSeconds(status ?? this._stateObj(ent.power_flow));
+    const stale = age !== null && age > STALE_AFTER_S;
+    const liveText = stale
+      ? this._t("live.updated_ago", { ago: this._fmtAgo(age!) })
+      : this._t("live.live");
 
-    return html`<div class="header">
-      <div class="title-row">
-        <ha-icon class="brain ${controlling ? "active" : ""}" icon="mdi:brain"></ha-icon>
-        <span class="title">${title}</span>
+    return html`<div class="c-head">
+      <ha-icon class="brain ${controlling ? "" : "off"}" icon="mdi:brain"></ha-icon>
+      <span class="c-title">${title}</span>
+      <span class="livedot ${stale ? "stale" : ""}"><i></i>${liveText}</span>
+    </div>`;
+  }
+
+  // --- Hero: big live power + ring source split + subline ----------------------
+  private _renderHero(ent: ResolvedEntities): TemplateResult {
+    const flow = this._stateObj(ent.power_flow)?.attributes ?? {};
+    const status = this._stateObj(ent.status)?.attributes ?? {};
+    const carW = num(flow.car_w);
+    const charging = status.charging === true || carW > 50;
+    const connected = flow.car_connected;
+    const phases = num(flow.phases);
+    const split = this._sourceShares(flow);
+
+    const C = 2 * Math.PI * 44;
+    let acc = 0;
+    const arc = (share: number, color: string) => {
+      const seg = svg`<circle
+        cx="50" cy="50" r="44" stroke="${color}"
+        style="stroke-dasharray:${Math.max(share, 0) * C} ${C};
+               stroke-dashoffset:${-acc * C};
+               opacity:${share > 0 ? 1 : 0}"></circle>`;
+      acc += Math.max(share, 0);
+      return seg;
+    };
+
+    const solarPct =
+      split.total > 0 ? Math.round((split.solar / split.total) * 100) : 0;
+    const targetA = num(status.target_current_a);
+    const actualA = charging && phases > 0 ? carW / (phases * ASSUMED_VOLTAGE) : NaN;
+    const sub = this._heroSub(connected, charging, phases, targetA, actualA, solarPct);
+
+    return html`<div class="c-hero">
+      <div class="ring ${charging ? "on" : ""}">
+        <svg viewBox="0 0 100 100" fill="none" stroke-width="7" stroke-linecap="round">
+          <circle class="track" cx="50" cy="50" r="44"></circle>
+          ${arc(split.total ? split.grid / split.total : 0, "var(--goe-grid)")}
+          ${arc(split.total ? split.battery / split.total : 0, "var(--goe-battery)")}
+          ${arc(split.total ? split.solar / split.total : 0, "var(--goe-solar)")}
+        </svg>
+        <div class="caric">
+          <ha-icon icon="${connected === false ? "mdi:car-off" : "mdi:car-electric"}"></ha-icon>
+        </div>
       </div>
-      <div class="reason">${reason}</div>
-      <div class="chips">
-        ${mode ? html`<span class="chip"><ha-icon icon="mdi:ev-station"></ha-icon>${mode}</span>` : nothing}
-        ${reserveChip ? html`<span class="chip"><ha-icon icon="mdi:home-battery"></ha-icon>${reserveChip}</span>` : nothing}
+      <div class="heroright">
+        <div class="power">
+          ${Number.isNaN(carW) ? "—" : (carW / 1000).toFixed(1)} <small>kW</small>
+        </div>
+        <div class="herosub">${sub}</div>
       </div>
     </div>`;
   }
 
-  /**
-   * Localize the status line from the sensor's structured `reason_key` +
-   * `reason_params` attributes (the engine emits English in the state itself).
-   * Falls back to the raw English state when the key is missing or untranslated
-   * — e.g. an older integration build, or a key the card doesn't know yet.
-   */
-  private _statusReason(status: HassEntity | undefined): string {
-    const raw =
-      status?.state && status.state !== "unknown" ? status.state : "—";
+  private _heroSub(
+    connected: unknown,
+    charging: boolean,
+    phases: number,
+    targetA: number,
+    actualA: number,
+    solarPct: number,
+  ): string {
+    if (connected === false) return this._t("hero.not_connected");
+    if (!charging)
+      return phases > 0
+        ? this._t("hero.paused_ready", { phases: String(phases) })
+        : this._t("hero.paused");
+    const parts: string[] = [];
+    // Show the brain's target amps, and flag when the car actually takes less
+    // (a car-side limit or a failed write) — a fact two sensors held but never
+    // compared.
+    if (!Number.isNaN(actualA) && !Number.isNaN(targetA) && Math.abs(targetA - actualA) >= 1.5) {
+      parts.push(this._t("hero.asked_takes", {
+        asked: String(Math.round(targetA)),
+        takes: String(Math.round(actualA)),
+      }));
+    } else if (!Number.isNaN(targetA) && targetA > 0) {
+      parts.push(`${Math.round(targetA)} A`);
+    } else if (!Number.isNaN(actualA)) {
+      parts.push(`${Math.round(actualA)} A`);
+    }
+    if (phases > 0) parts.push(`${phases} φ`);
+    parts.push(this._t("hero.solar_share", { pct: String(solarPct) }));
+    return parts.join(" · ");
+  }
+
+  // --- The "why" line ----------------------------------------------------------
+  private _renderWhy(ent: ResolvedEntities): TemplateResult {
+    const status = this._stateObj(ent.status);
+    return html`<div class="why">${this._statusReason(status)}</div>`;
+  }
+
+  // --- Source bar + balance line (replaces the old node diagram) ---------------
+  private _renderSplit(ent: ResolvedEntities): TemplateResult {
+    const flow = this._stateObj(ent.power_flow)?.attributes ?? {};
+    const statusA = this._stateObj(ent.status)?.attributes ?? {};
+    const carW = num(flow.car_w);
+    const charging = statusA.charging === true || carW > 50;
+    const split = this._sourceShares(flow);
+    const seg = (key: "solar" | "battery" | "grid") => {
+      const share = split.total > 0 ? split[key] / split.total : 0;
+      if (share <= 0.001) return nothing;
+      const label = this._t(`source.${key}`);
+      return html`<button
+        class="seg-src ${key}"
+        style="flex-grow:${Math.max(share * 100, 0.001)}"
+        @click=${() => this._tapSource(key, split[key], carW)}
+      >
+        ${share > 0.14 ? `${label} ${Math.round(share * 100)} %` : share > 0.05 ? `${Math.round(share * 100)} %` : ""}
+      </button>`;
+    };
+
+    return html`<div class="split">
+      <div class="splitbar ${charging ? "flowing" : ""}">
+        ${seg("solar")}${seg("battery")}${seg("grid")}
+      </div>
+      <div class="splitnote" id="splitnote">
+        ${this._splitNote ?? this._defaultSplitNote(split.total, flow)}
+      </div>
+      ${this._renderBalance(ent, flow)}
+    </div>`;
+  }
+
+  private _splitNote: string | null = null;
+  private _tapSource(key: "solar" | "battery" | "grid", w: number, carW: number): void {
+    const label = this._t(`source.${key}`);
+    this._splitNote =
+      w > 0
+        ? this._t("source.to_car", {
+            source: label,
+            watts: fmtPower(w),
+            total: fmtKw(carW),
+          })
+        : this._t("source.none", { source: label });
+    this.requestUpdate();
+  }
+  private _defaultSplitNote(total: number, flow: Record<string, any>): string {
+    if (total > 0) return this._t("source.tap_hint");
+    return flow.car_connected === false
+      ? this._t("source.exporting")
+      : this._t("source.paused");
+  }
+
+  private _renderBalance(ent: ResolvedEntities, flow: Record<string, any>): TemplateResult {
+    const pv = num(flow.pv_w);
+    const house = num(flow.house_w);
+    const grid = num(flow.grid_w);
+    const batt = flow.battery_w === null || flow.battery_w === undefined ? null : num(flow.battery_w);
+    const soc = flow.battery_soc;
+    const reserve = num(this._stateObj(ent.battery_reserve_soc)?.state);
+    const hold = this._holdActive(ent);
+
+    const items: TemplateResult[] = [];
+    if (!Number.isNaN(pv))
+      items.push(html`<span><i class="dot" style="background:var(--goe-solar)"></i>${this._t("balance.pv")} <b>${fmtKw(pv)}</b></span>`);
+    if (!Number.isNaN(house))
+      items.push(html`<span>${this._t("balance.house")} <b>${fmtKw(house)}</b></span>`);
+    if (!Number.isNaN(grid))
+      items.push(html`<span><i class="dot" style="background:var(--goe-grid)"></i>${grid < -50 ? this._t("balance.export") : this._t("balance.grid")} <b>${fmtKw(Math.abs(grid))}</b></span>`);
+    if (batt !== null) {
+      const dir = batt > 50 ? "+ " : batt < -50 ? "− " : "";
+      const power = Math.abs(batt) <= 50 ? this._t("balance.idle") : `${dir}${fmtKw(Math.abs(batt))}`;
+      const socTxt =
+        soc != null
+          ? ` · ${Math.round(num(soc))} %${Number.isNaN(reserve) ? "" : ` ▸ ${Math.round(reserve)} %`}${hold ? " 🛡" : ""}`
+          : "";
+      items.push(html`<span><i class="dot" style="background:var(--goe-battery)"></i>${this._t("balance.battery")} <b>${power}</b>${socTxt}</span>`);
+    }
+    return html`<div class="balance">${items}</div>`;
+  }
+
+  // --- Chips: previously invisible engine facts --------------------------------
+  private _renderChips(ent: ResolvedEntities): TemplateResult {
+    const status = this._stateObj(ent.status)?.attributes ?? {};
+    const chips: TemplateResult[] = [];
+
+    // Battery-hold shield (the missing piece).
+    if (this._holdActive(ent)) {
+      const manual = (status.hold_source ?? "auto") === "hold";
+      chips.push(this._chip("mdi:shield", manual ? "chip.hold_manual" : "chip.hold", {}, "hold"));
+    }
+
+    // Price verdict against the cheap threshold.
+    const price = this._stateObj(ent.price_forecast);
+    if (price && !["unknown", "unavailable", ""].includes(price.state)) {
+      const now = num(price.state);
+      const target = this._cheapTarget(ent);
+      const unit = price.attributes.unit ?? "";
+      if (!Number.isNaN(now)) {
+        const ok = !Number.isNaN(target) && now <= target;
+        chips.push(
+          this._chip(
+            "mdi:cash-clock",
+            ok ? "chip.price_cheap" : "chip.price_wait",
+            { price: this._fmtPriceNum(now), unit, target: this._fmtPriceNum(target) },
+            ok ? "cheap" : "",
+          ),
+        );
+      }
+    }
+
+    // Live dwell countdowns.
+    const resume = this._countdown(status.resume_not_before);
+    if (resume !== null)
+      chips.push(this._chip("mdi:clock-outline", "chip.resume_in", { time: fmtClock(resume) }));
+    const pause = this._countdown(status.pause_not_before);
+    if (pause !== null)
+      chips.push(this._chip("mdi:clock-outline", "chip.riding_out", { time: fmtClock(pause) }));
+
+    // Phase count.
+    const phases = num((this._stateObj(ent.power_flow)?.attributes ?? {}).phases);
+    if (!Number.isNaN(phases) && phases > 0)
+      chips.push(this._chip("mdi:sine-wave", "chip.phases", { phases: String(phases) }));
+
+    // Forced-off explainer.
+    if (status.forced === false)
+      chips.push(this._chip("mdi:hand-back-left", "chip.forced_off", {}, "hold"));
+
+    if (chips.length === 0) return html``;
+    return html`<div class="chips">${chips}</div>`;
+  }
+
+  private _chip(
+    icon: string,
+    key: string,
+    params: Record<string, string>,
+    cls = "",
+  ): TemplateResult {
+    return html`<span class="chipx ${cls}"><ha-icon icon="${icon}"></ha-icon>${this._t(key, params)}</span>`;
+  }
+
+  // --- Plan strip: what happens next + the draggable price target --------------
+  private _renderPlan(ent: ResolvedEntities): TemplateResult | typeof nothing {
+    const mode = this._effectiveState(ent.charging_mode);
+    if (mode !== "smart") return nothing;
+    const price = this._stateObj(ent.price_forecast);
+    const slots: { start: string; price: number }[] = price?.attributes?.slots ?? [];
+    if (slots.length < 2) return nothing;
+
+    const status = this._stateObj(ent.status)?.attributes ?? {};
+    const bookedStarts = new Set<string>(status.plan ?? []);
+    const target = this._dragTarget ?? this._cheapTarget(ent);
+    const prices = slots.map((s) => s.price);
+    const lo = Math.min(...prices, target);
+    const hi = Math.max(...prices, target);
+    const range = hi - lo || 1;
+    const yFor = (p: number) => 8 + ((p - lo) / range) * 68; // px from baseline
+    const nowMs = this._now;
+    const nowIdx = this._nowSlotIndex(slots, nowMs);
+
+    const bars = slots.map((s, i) => {
+      const booked = bookedStarts.has(s.start);
+      const cheap = s.price <= target;
+      const cls = "pb" + (i === nowIdx ? " now" : "") + (booked ? " win" : cheap ? " cheap" : "");
+      return html`<i class="${cls}" style="height:${yFor(s.price)}px"></i>`;
+    });
+
+    const unit = price?.attributes?.unit ?? "";
+    const targetLabel = `↕ ≤ ${this._fmtPriceNum(target)} ${unit}`;
+    const axisR = this._t("plan.hours_ahead", { h: String(slots.length - 1) });
+    const planLine = this._planLine(ent, bookedStarts.size);
+
+    return html`<div class="plan">
+      <div
+        class="planbars"
+        @pointerdown=${this._planDown}
+        @pointermove=${this._planMove}
+        @pointerup=${this._planUp}
+        @pointercancel=${this._planUp}
+      >
+        ${bars}
+        <span class="thline" style="bottom:${yFor(target)}px">
+          <button
+            class="thhandle"
+            aria-label=${this._t("plan.target_aria")}
+            @keydown=${(e: KeyboardEvent) => this._planKey(ent, e)}
+          >${targetLabel}</button>
+        </span>
+      </div>
+      <div class="planaxis"><span>${this._t("plan.now")}</span><span>${axisR}</span></div>
+      <div class="planhint">${this._t("plan.drag_hint")}</div>
+      ${planLine}
+    </div>`;
+  }
+
+  private _planLine(
+    ent: ResolvedEntities,
+    windows: number,
+  ): TemplateResult | typeof nothing {
+    const target = num(this._stateObj(ent.target_energy)?.state);
+    if (Number.isNaN(target) || target <= 0) return nothing;
+    const delivered = num((this._stateObj(ent.power_flow)?.attributes ?? {}).session_energy_kwh);
+    const done = Number.isNaN(delivered) ? 0 : delivered;
+    const pct = Math.min(100, Math.round((done / target) * 100));
+    const track = windows >= 4 ? this._t("plan.on_track") : this._t("plan.tight");
+    return html`
+      <div class="planline">
+        <b>${done.toFixed(1)} / ${target.toFixed(0)} kWh</b> — ${track}
+      </div>
+      <div class="progress"><i style="width:${pct}%"></i></div>`;
+  }
+
+  private _nowSlotIndex(slots: { start: string }[], nowMs: number): number {
+    let idx = 0;
+    for (let i = 0; i < slots.length; i++) {
+      if (Date.parse(slots[i].start) <= nowMs) idx = i;
+      else break;
+    }
+    return idx;
+  }
+
+  // Drag the target: only the ↕ pill starts a drag, so the chart never hijacks
+  // page scrolling on touch. Writes number.cheap_price on release.
+  private _planDown = (e: PointerEvent): void => {
+    const target = e.target as HTMLElement;
+    if (!target.closest(".thhandle")) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this._dragTarget = this._cheapTarget(this._entities!);
+  };
+  private _planMove = (e: PointerEvent): void => {
+    if (this._dragTarget === null) return;
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const ent = this._entities!;
+    const price = this._stateObj(ent.price_forecast);
+    const slots: { price: number }[] = price?.attributes?.slots ?? [];
+    const prices = slots.map((s) => s.price);
+    const lo = Math.min(...prices, this._dragTarget);
+    const hi = Math.max(...prices, this._dragTarget);
+    const range = hi - lo || 1;
+    const fromBottom = box.bottom - e.clientY;
+    const value = lo + ((fromBottom - 8) / 68) * range;
+    this._dragTarget = this._clampTarget(ent, value);
+  };
+  private _planUp = (): void => {
+    if (this._dragTarget === null) return;
+    const ent = this._entities!;
+    const cheap = this._stateObj(ent.cheap_price);
+    if (cheap) this._setNumber(cheap, String(this._roundTarget(ent, this._dragTarget)));
+    this._dragTarget = null;
+  };
+  private _planKey(ent: ResolvedEntities, e: KeyboardEvent): void {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const cheap = this._stateObj(ent.cheap_price);
+    if (!cheap) return;
+    const step = num(cheap.attributes.step) || 0.01;
+    const cur = this._cheapTarget(ent);
+    const next = this._clampTarget(ent, cur + (e.key === "ArrowUp" ? step : -step));
+    this._setNumber(cheap, String(this._roundTarget(ent, next)));
+  }
+  private _clampTarget(ent: ResolvedEntities, v: number): number {
+    const cheap = this._stateObj(ent.cheap_price);
+    const min = num(cheap?.attributes.min);
+    const max = num(cheap?.attributes.max);
+    if (!Number.isNaN(min)) v = Math.max(min, v);
+    if (!Number.isNaN(max)) v = Math.min(max, v);
+    return v;
+  }
+  private _roundTarget(ent: ResolvedEntities, v: number): number {
+    const step = num(this._stateObj(ent.cheap_price)?.attributes.step) || 0.01;
+    return Math.round(v / step) * step;
+  }
+
+  // --- Controls: segmented mode + contextual tunables + battery three-way ------
+  private _renderControls(ent: ResolvedEntities): TemplateResult {
+    const mode = this._stateObj(ent.charging_mode);
+    const modeState = this._effectiveState(ent.charging_mode);
+    const isManual = modeState === "manual";
+
+    return html`<div class="controls">
+      ${mode ? this._renderModeSeg(ent, mode) : nothing}
+      <div class="ctxctl">
+        ${isManual ? this._renderManual(ent) : this._renderModeTunables(ent, modeState)}
+        ${this._renderBatteryThreeWay(ent)}
+        ${this._renderNumberRow(ent.battery_reserve_soc, "control.battery_reserve")}
+      </div>
+    </div>`;
+  }
+
+  private _renderModeSeg(ent: ResolvedEntities, mode: HassEntity): TemplateResult {
+    const options: string[] = mode.attributes.options ?? [];
+    const active = this._effectiveState(ent.charging_mode);
+    const icons: Record<string, string> = {
+      manual: "mdi:hand-back-right",
+      solar: "mdi:solar-power",
+      solar_min: "mdi:solar-power-variant",
+      smart: "mdi:brain",
+      fast: "mdi:flash",
+    };
+    return html`<div class="seg">
+      ${options.map(
+        (opt) => html`<button
+          class="${opt === active ? "on" : ""}"
+          @click=${() => this._selectOptimistic(mode, opt)}
+        >
+          <ha-icon icon="${icons[opt] ?? "mdi:ev-station"}"></ha-icon>
+          <span>${this._localizeOption(mode, opt)}</span>
+        </button>`,
+      )}
+    </div>`;
+  }
+
+  private _renderModeTunables(ent: ResolvedEntities, modeState: string | undefined): TemplateResult {
+    return html`
+      ${modeState === "smart"
+        ? html`${this._renderNumberRow(ent.target_energy, "control.target_energy")}
+            ${this._renderDateTimeRow(ent.departure, "control.departure")}`
+        : nothing}
+      ${modeState === "solar_min" ? this._renderNumberRow(ent.min_current, "control.min_current") : nothing}
+      ${modeState === "fast" ? this._renderNumberRow(ent.max_current, "control.max_current") : nothing}
+      ${ent.auto_phase
+        ? html`<div class="ctlrow">
+            <label>${this._t("control.auto_phase")}</label>
+            <ha-switch
+              .checked=${this._isOn(ent.auto_phase)}
+              @change=${(e: Event) => this._toggle(ent.auto_phase, e)}
+            ></ha-switch>
+          </div>`
+        : nothing}`;
+  }
+
+  private _renderManual(ent: ResolvedEntities): TemplateResult {
+    const charging = this._isOn(ent.manual_charge);
+    return html`
+      ${ent.manual_charge
+        ? html`<button
+            class="bigbtn ${charging ? "stop" : ""}"
+            @click=${() => this._toggleManualCharge(ent, charging)}
+          >
+            <ha-icon icon="${charging ? "mdi:stop" : "mdi:play"}"></ha-icon>
+            ${charging ? this._t("action.stop_charging") : this._t("action.start_charging")}
+          </button>`
+        : nothing}
+      ${this._renderNumberRow(ent.manual_current, "control.manual_current")}
+      ${ent.manual_phases
+        ? html`<div class="ctlrow">
+            <label>${this._t("control.manual_phases")}</label>
+            ${this._renderSelect(this._stateObj(ent.manual_phases)!)}
+          </div>`
+        : nothing}`;
+  }
+
+  private _renderBatteryThreeWay(ent: ResolvedEntities): TemplateResult | typeof nothing {
+    const sel = this._stateObj(ent.battery_hold_mode);
+    if (!sel) return nothing;
+    const options: string[] = sel.attributes.options ?? ["auto", "hold", "free"];
+    const active = this._effectiveState(ent.battery_hold_mode);
+    const holdActive = this._holdActive(ent);
+    return html`<div class="ctlrow">
+      <label>${this._t("control.home_battery")}</label>
+      <span class="minisg">
+        ${options.map(
+          (opt) => html`<button
+            class="${opt === active ? "on" : ""}"
+            @click=${() => this._selectOptimistic(sel, opt)}
+          >
+            ${this._localizeOption(sel, opt)}${opt === "auto" && holdActive && active === "auto" ? " 🛡" : ""}
+          </button>`,
+        )}
+      </span>
+    </div>`;
+  }
+
+  private _renderNumberRow(id: string | undefined, labelKey: string): TemplateResult | typeof nothing {
+    const stateObj = this._stateObj(id);
+    if (!stateObj) return nothing;
+    return html`<div class="ctlrow">
+      <label>${this._t(labelKey)}</label>
+      ${this._renderNumber(stateObj)}
+    </div>`;
+  }
+
+  private _renderDateTimeRow(id: string | undefined, labelKey: string): TemplateResult | typeof nothing {
+    const stateObj = this._stateObj(id);
+    if (!stateObj) return nothing;
+    return html`<div class="ctlrow">
+      <label>${this._t(labelKey)}</label>
+      ${this._renderDateTime(stateObj)}
+    </div>`;
+  }
+
+  // --- Session: live-ticking duration + tag + energy, with start/stop ----------
+  private _renderSession(ent: ResolvedEntities): TemplateResult | typeof nothing {
+    const active = this._stateObj(ent.active_transaction);
+    const picker = this._stateObj(ent.selected_tag);
+    if (!active && !picker) return nothing;
+
+    const hasActive =
+      !!active && !["idle", "unknown", "unavailable", ""].includes(active.state);
+    const flow = this._stateObj(ent.power_flow)?.attributes ?? {};
+    const energyKwh = num(flow.session_energy_kwh);
+
+    let meta: TemplateResult | string = "";
+    if (hasActive && active) {
+      const name = (active.attributes.name as string) ?? active.state;
+      const dur = this._liveDuration(active.attributes.started as string | undefined);
+      const parts: string[] = [];
+      if (dur) parts.push(dur);
+      if (!Number.isNaN(energyKwh) && energyKwh > 0) parts.push(`${energyKwh.toFixed(2)} kWh`);
+      meta = html`<b>${name}</b>${parts.length ? html` · <span class="mono">${parts.join(" · ")}</span>` : nothing}`;
+    }
+
+    return html`<div class="session">
+      ${this._renderTagPicker(picker, hasActive)}
+      <div class="session-row">
+        <ha-icon icon="mdi:card-account-details"></ha-icon>
+        <span>${hasActive ? meta : this._t("session.none_hint")}</span>
+      </div>
+    </div>`;
+  }
+
+  private _renderTagPicker(
+    picker: HassEntity | undefined,
+    hasActive: boolean,
+  ): TemplateResult | typeof nothing {
+    if (!picker) return nothing;
+    const options: string[] = picker.attributes.options ?? [];
+    if (options.length === 0) return nothing;
+    const hasSelection = options.includes(picker.state);
+    return html`<div class="tag-picker">
+      ${hasActive
+        ? nothing
+        : html`<div class="ctlrow">
+            <label>${this._t("control.tag")}</label>
+            ${this._renderSelect(picker)}
+          </div>`}
+      <div class="tag-actions">
+        ${hasActive
+          ? html`<button class="bigbtn stop" @click=${() => this._confirmStop()}>
+              <ha-icon icon="mdi:stop"></ha-icon>${this._t("action.stop")}
+            </button>`
+          : html`<button
+              class="bigbtn"
+              ?disabled=${!hasSelection}
+              @click=${() => this._callTagService("remote_start")}
+            >
+              <ha-icon icon="mdi:play"></ha-icon>${this._t("action.start")}
+            </button>`}
+      </div>
+    </div>`;
+  }
+
+  // --- localized status reason (unchanged from before) -------------------------
+  private _statusReason(status: HassEntity | undefined): TemplateResult | string {
+    const raw = status?.state && status.state !== "unknown" ? status.state : "—";
     const key = status?.attributes?.reason_key as string | undefined;
     if (!key) return raw;
     const fullKey = `reason.${key}`;
-    const params = (status?.attributes?.reason_params ?? {}) as Record<
-      string,
-      string
-    >;
+    const params = (status?.attributes?.reason_params ?? {}) as Record<string, string>;
     const localized = this._t(fullKey, this._localizeNumbers(params));
     return localized === fullKey ? raw : localized;
   }
 
-  /**
-   * Re-render the reason params in the viewer's locale. The engine emits them as
-   * machine-formatted strings (`.` decimal, no separators); we parse those back
-   * and reformat with `Intl.NumberFormat` so a German user sees `0,250` and
-   * `1.500`, keeping the engine's decimal precision (incl. trailing zeros).
-   * Non-numeric values pass through untouched.
-   */
-  private _localizeNumbers(
-    params: Record<string, string>,
-  ): Record<string, string> {
+  private _localizeNumbers(params: Record<string, string>): Record<string, string> {
     const lang = (this.hass?.locale?.language || this.hass?.language || "en")
       .toLowerCase()
       .split("-")[0];
@@ -195,208 +764,7 @@ export class GoeSteveCard extends LitElement {
     return out;
   }
 
-  // --- Live energy-flow diagram ------------------------------------------------
-  private _renderFlow(ent: ResolvedEntities): TemplateResult {
-    const flow = this._stateObj(ent.power_flow);
-    const a = flow?.attributes ?? {};
-    const pv = Number(a.pv_w ?? NaN);
-    const grid = Number(a.grid_w ?? NaN);
-    const battery = a.battery_w === null || a.battery_w === undefined ? null : Number(a.battery_w);
-    const car = Number(a.car_w ?? (flow ? flow.state : NaN));
-    const house = Number(a.house_w ?? NaN);
-    const soc = a.battery_soc;
-    const connected = a.car_connected;
-
-    // Edge "active" thresholds (W) — ignore sensor noise.
-    const TH = 50;
-    const node = (
-      x: number,
-      y: number,
-      icon: string,
-      label: string,
-      value: string,
-      extra = "",
-    ) => svg`
-      <g class="node" transform="translate(${x},${y})">
-        <circle r="26"></circle>
-        <foreignObject x="-13" y="-20" width="26" height="26">
-          <ha-icon icon="${icon}"></ha-icon>
-        </foreignObject>
-        <text class="node-val" y="14">${value}</text>
-        <text class="node-lbl" y="42">${label}${extra}</text>
-      </g>`;
-
-    const edge = (d: string, active: boolean, reverse: boolean, mag: number) => {
-      const dur = active ? Math.max(0.6, 3 - Math.min(mag, 9000) / 3000) : 0;
-      return svg`
-        <path class="edge" d="${d}"></path>
-        <path
-          class="edge-flow ${active ? "active" : ""} ${reverse ? "rev" : ""}"
-          d="${d}"
-          style="${active ? `animation-duration:${dur}s` : ""}"
-        ></path>`;
-    };
-
-    return html`<div class="flow">
-      <svg viewBox="0 0 320 336" preserveAspectRatio="xMidYMid meet">
-        ${edge("M160,66 L160,134", pv > TH, false, pv)}
-        ${edge("M76,160 L134,160", Number.isNaN(grid) ? false : Math.abs(grid) > TH, grid < 0, Math.abs(grid))}
-        ${battery !== null
-          ? edge("M244,160 L186,160", Math.abs(battery) > TH, battery > 0, Math.abs(battery))
-          : nothing}
-        ${edge("M160,186 L160,244", car > TH, false, car)}
-
-        ${node(160, 40, "mdi:solar-power", this._t("flow.solar"), fmtPower(pv))}
-        ${node(40, 160, "mdi:transmission-tower", grid < 0 ? this._t("flow.export") : this._t("flow.grid"), fmtPower(Math.abs(grid)))}
-        ${battery !== null
-          ? node(280, 160, "mdi:home-battery", this._t("flow.battery"), fmtPower(Math.abs(battery)), soc != null ? ` ${Math.round(Number(soc))}%` : "")
-          : nothing}
-        ${node(160, 160, "mdi:home", this._t("flow.home"), fmtPower(house))}
-        ${node(160, 280, connected === false ? "mdi:car-off" : "mdi:car-electric", connected === false ? this._t("flow.no_car") : this._t("flow.car"), fmtPower(car))}
-      </svg>
-    </div>`;
-  }
-
-  // --- Live telemetry ----------------------------------------------------------
-  /**
-   * A compact stat strip shown while the brain is actively controlling: the
-   * target current it's driving the charger at, plus the solar surplus it has to
-   * work with in the PV-aware modes. Both come from goe_steve sensors that the
-   * card otherwise never surfaces; the flow diagram already shows actual power.
-   */
-  private _renderLive(ent: ResolvedEntities): TemplateResult | typeof nothing {
-    if (!this._isOn(ent.controlling)) return nothing;
-    const targetCurrent = this._stateObj(ent.target_current);
-    const surplus = this._stateObj(ent.surplus);
-    const mode = this._stateObj(ent.charging_mode)?.state ?? "";
-    const showSurplus =
-      !!surplus && ["smart", "solar", "solar_min"].includes(mode);
-    const validTarget =
-      !!targetCurrent &&
-      !["unknown", "unavailable", ""].includes(targetCurrent.state);
-    if (!validTarget && !showSurplus) return nothing;
-    return html`<div class="live">
-      ${validTarget
-        ? this._stat(this._t("live.target"), this._fmtState(targetCurrent!))
-        : nothing}
-      ${showSurplus
-        ? this._stat(this._t("live.surplus"), this._fmtState(surplus!))
-        : nothing}
-    </div>`;
-  }
-
-  private _stat(label: string, value: string): TemplateResult {
-    return html`<div class="stat">
-      <span class="stat-label">${label}</span>
-      <span class="stat-val">${value}</span>
-    </div>`;
-  }
-
-  // --- Inline controls ---------------------------------------------------------
-  private _renderControls(ent: ResolvedEntities): TemplateResult {
-    const mode = this._stateObj(ent.charging_mode);
-    const smart = this._stateObj(ent.smart_control);
-
-    // One battery control: the reserve line. Below it the battery comes first;
-    // above it the battery may back the car down to it (100 % = never).
-    const reserve = this._stateObj(ent.battery_reserve_soc);
-    const target = this._stateObj(ent.target_energy);
-    const modeState = mode?.state;
-
-    // Manual mode turns the card into the cockpit: the user sets start/stop,
-    // current and phases here directly — no go-e app needed. The reserve line
-    // below still applies, so it's surfaced in every mode.
-    const isManual = modeState === "manual";
-    const manualCharge = this._stateObj(ent.manual_charge);
-    const manualCurrent = this._stateObj(ent.manual_current);
-    const manualPhases = this._stateObj(ent.manual_phases);
-
-    // Deadline picker pairs with target energy in Smart (the deadline-aware
-    // mode); the remaining tunables surface only where they actually bite.
-    const departure = this._stateObj(ent.departure);
-    const maxCurrent = this._stateObj(ent.max_current);
-    const minCurrent = this._stateObj(ent.min_current);
-
-    return html`<div class="controls">
-      ${mode
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.mode")}</span>
-            ${this._renderSelect(mode)}
-          </div>`
-        : nothing}
-      ${isManual && manualCharge
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.manual_charge")}</span>
-            <ha-switch
-              .checked=${this._isOn(ent.manual_charge)}
-              @change=${(e: Event) => this._toggle(ent.manual_charge, e)}
-            ></ha-switch>
-          </div>`
-        : nothing}
-      ${isManual && manualCurrent
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.manual_current")}</span>
-            ${this._renderNumber(manualCurrent)}
-          </div>`
-        : nothing}
-      ${isManual && manualPhases
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.manual_phases")}</span>
-            ${this._renderSelect(manualPhases)}
-          </div>`
-        : nothing}
-      ${reserve
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.battery_reserve")}</span>
-            ${this._renderNumber(reserve)}
-          </div>`
-        : nothing}
-      ${target && modeState === "smart"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.target_energy")}</span>
-            ${this._renderNumber(target)}
-          </div>`
-        : nothing}
-      ${departure && modeState === "smart"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.departure")}</span>
-            ${this._renderDateTime(departure)}
-          </div>`
-        : nothing}
-      ${minCurrent && modeState === "solar_min"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.min_current")}</span>
-            ${this._renderNumber(minCurrent)}
-          </div>`
-        : nothing}
-      ${maxCurrent && modeState === "fast"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.max_current")}</span>
-            ${this._renderNumber(maxCurrent)}
-          </div>`
-        : nothing}
-      ${smart
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.smart_control")}</span>
-            <ha-switch
-              .checked=${this._isOn(ent.smart_control)}
-              @change=${(e: Event) => this._toggle(ent.smart_control, e)}
-            ></ha-switch>
-          </div>`
-        : nothing}
-      ${ent.auto_phase && !isManual
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.auto_phase")}</span>
-            <ha-switch
-              .checked=${this._isOn(ent.auto_phase)}
-              @change=${(e: Event) => this._toggle(ent.auto_phase, e)}
-            ></ha-switch>
-          </div>`
-        : nothing}
-    </div>`;
-  }
-
-  /** Native number input bound to a `number` entity (min/max/step from attrs). */
+  // --- control primitives ------------------------------------------------------
   private _renderNumber(stateObj: HassEntity): TemplateResult {
     const a = stateObj.attributes;
     const unit = a.unit_of_measurement ?? "";
@@ -408,34 +776,27 @@ export class GoeSteveCard extends LitElement {
         min=${a.min ?? nothing}
         max=${a.max ?? nothing}
         step=${a.step ?? nothing}
-        @change=${(e: Event) =>
-          this._setNumber(stateObj, (e.target as HTMLInputElement).value)}
+        @change=${(e: Event) => this._setNumber(stateObj, (e.target as HTMLInputElement).value)}
       />
       ${unit ? html`<span class="ctl-unit">${unit}</span>` : nothing}
     </span>`;
   }
 
   private _setNumber(stateObj: HassEntity, value: string): void {
-    const num = Number(value);
-    if (Number.isNaN(num) || String(num) === stateObj.state) return;
-    this.hass.callService("number", "set_value", {
-      entity_id: stateObj.entity_id,
-      value: num,
-    });
+    const n = Number(value);
+    if (Number.isNaN(n) || String(n) === stateObj.state) return;
+    this.hass.callService("number", "set_value", { entity_id: stateObj.entity_id, value: n });
   }
 
-  /** Native datetime-local input bound to a `datetime` entity (UTC ISO state). */
   private _renderDateTime(stateObj: HassEntity): TemplateResult {
     return html`<input
       class="ctl-datetime"
       type="datetime-local"
       .value=${this._toLocalInput(stateObj.state)}
-      @change=${(e: Event) =>
-        this._setDateTime(stateObj, (e.target as HTMLInputElement).value)}
+      @change=${(e: Event) => this._setDateTime(stateObj, (e.target as HTMLInputElement).value)}
     />`;
   }
 
-  /** UTC ISO → the `YYYY-MM-DDTHH:mm` local string a datetime-local expects. */
   private _toLocalInput(iso: string): string {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
@@ -445,7 +806,7 @@ export class GoeSteveCard extends LitElement {
 
   private _setDateTime(stateObj: HassEntity, value: string): void {
     if (!value) return;
-    const d = new Date(value); // parsed in the browser's local zone
+    const d = new Date(value);
     if (Number.isNaN(d.getTime())) return;
     this.hass.callService("datetime", "set_value", {
       entity_id: stateObj.entity_id,
@@ -455,148 +816,117 @@ export class GoeSteveCard extends LitElement {
 
   private _renderSelect(stateObj: HassEntity): TemplateResult {
     const options: string[] = stateObj.attributes.options ?? [];
-    // A native <select> rather than HA's ha-select (mwc-select): the latter is
-    // lazy-loaded, its popup menu is clipped by ha-card's `overflow: hidden`,
-    // and its selected-text sync is unreliable inside a card — all of which made
-    // the dropdown effectively unusable. The native control always opens (in the
-    // browser's own layer, so it can't be clipped) and its change always fires.
     return html`<select
       class="ctl-select"
-      @change=${(e: Event) =>
-        this._selectOption(stateObj, (e.target as HTMLSelectElement).value)}
+      @change=${(e: Event) => this._selectOption(stateObj, (e.target as HTMLSelectElement).value)}
     >
       ${options.map(
-        (opt) =>
-          html`<option .value=${opt} ?selected=${opt === stateObj.state}>
-            ${this._localizeOption(stateObj, opt)}
-          </option>`,
+        (opt) => html`<option .value=${opt} ?selected=${opt === stateObj.state}>
+          ${this._localizeOption(stateObj, opt)}
+        </option>`,
       )}
     </select>`;
   }
 
-  // --- Charging sessions / per-RFID energy -------------------------------------
-  private _renderSessions(ent: ResolvedEntities): TemplateResult | typeof nothing {
-    const active = this._stateObj(ent.active_transaction);
-    const picker = this._stateObj(ent.selected_tag);
-
-    if (!active && !picker) return nothing;
-
-    // A session is "authorized/running" when SteVe reports an active transaction.
-    // The picker's action zone keys off this: authorize/start when idle, stop when
-    // charging — the two are mutually exclusive so the same buttons morph.
-    const hasActive =
-      !!active &&
-      !["idle", "unknown", "unavailable", ""].includes(active.state);
-
-    // Live readout for the running session. SteVe has no live meter value, so we
-    // pair the session's elapsed time with the actual car power from flow, plus
-    // the energy charged so far from the go-e session-energy entity (when mapped).
-    const flow = this._stateObj(ent.power_flow)?.attributes;
-    const carW = Number(flow?.car_w ?? NaN);
-    const energyKwh = Number(flow?.session_energy_kwh ?? NaN);
-    const meta = hasActive ? this._sessionMeta(active!, carW, energyKwh) : "";
-
-    return html`<div class="sessions">
-      ${this._renderTagPicker(picker, hasActive)}
-      ${active
-        ? html`<div class="session-row">
-            <ha-icon icon="mdi:card-account-details"></ha-icon>
-            <span
-              >${active.state === "idle"
-                ? this._t("session.none")
-                : this._t("session.charging", {
-                    state: (active.attributes.name as string) ?? active.state,
-                  })}${meta ? html`<span class="session-meta"> · ${meta}</span>` : nothing}</span
-            >
-          </div>`
-        : nothing}
-    </div>`;
-  }
-
-  /**
-   * Tag picker (authorized SteVe tags) + a state-driven action zone.
-   *
-   * While a session is running there is nothing to start: the tag dropdown is
-   * hidden (Stop ignores it anyway) and the zone collapses to a single Stop
-   * button that ends the active transaction. Back to idle the dropdown returns
-   * and offers Start on the picked tag. The Start button acts on the "Selected
-   * tag" select (the service defaults id_tag to it), so no UID is typed, and
-   * Stop targets the lone active transaction (remote_stop's default).
-   *
-   * There is deliberately no Authorize button: the picker only ever lists
-   * already-authorized (non-blocked) tags, so authorizing the selection would
-   * always be a no-op.
-   */
-  private _renderTagPicker(
-    picker: HassEntity | undefined,
-    hasActive: boolean,
-  ): TemplateResult | typeof nothing {
-    if (!picker) return nothing;
-    const options: string[] = picker.attributes.options ?? [];
-    if (options.length === 0) return nothing;
-    const hasSelection = options.includes(picker.state);
-    return html`<div class="tag-picker">
-      ${hasActive
-        ? nothing
-        : html`<div class="control">
-            <span class="ctl-label">${this._t("control.tag")}</span>
-            ${this._renderSelect(picker)}
-          </div>`}
-      <div class="tag-actions">
-        ${hasActive
-          ? html`<button
-              class="tag-btn stop"
-              @click=${() => this._confirmStop()}
-            >
-              <ha-icon icon="mdi:stop"></ha-icon>${this._t("action.stop")}
-            </button>`
-          : html`<button
-                class="tag-btn"
-                ?disabled=${!hasSelection}
-                @click=${() => this._callTagService("remote_start")}
-              >
-                <ha-icon icon="mdi:play"></ha-icon>${this._t("action.start")}
-              </button>`}
-      </div>
-    </div>`;
-  }
-
-  /** Call a SteVe tag service with no id_tag — it falls back to the selection. */
+  // --- SteVe session actions ---------------------------------------------------
   private _callTagService(service: string): void {
     this.hass.callService(PLATFORM, service, {});
   }
-
-  /** Stopping ends a live charging session, so confirm before doing it. */
   private _confirmStop(): void {
-    if (window.confirm(this._t("action.stop_confirm"))) {
-      this._callTagService("remote_stop");
-    }
+    if (window.confirm(this._t("action.stop_confirm"))) this._callTagService("remote_stop");
+  }
+  private _toggleManualCharge(ent: ResolvedEntities, charging: boolean): void {
+    if (!ent.manual_charge) return;
+    this.hass.callService("switch", charging ? "turn_off" : "turn_on", {
+      entity_id: ent.manual_charge,
+    });
   }
 
-  /**
-   * "1h 23m · 8.3 kW · 11.4 kWh" for a running session — elapsed time, live car
-   * power, and the energy charged so far (when the go-e session-energy entity is
-   * mapped; omitted otherwise).
-   */
-  private _sessionMeta(active: HassEntity, carW: number, energyKwh: number): string {
-    const parts: string[] = [];
-    const dur = this._fmtDuration(active.attributes.started as string | undefined);
-    if (dur) parts.push(dur);
-    if (!Number.isNaN(carW) && carW > 50) parts.push(fmtPower(carW));
-    if (!Number.isNaN(energyKwh) && energyKwh > 0)
-      parts.push(`${energyKwh.toFixed(2)} kWh`);
-    return parts.join(" · ");
+  // --- data / source helpers ---------------------------------------------------
+  private _sourceShares(flow: Record<string, any>): {
+    solar: number;
+    battery: number;
+    grid: number;
+    total: number;
+  } {
+    const s = flow.sources ?? {};
+    const solar = Math.max(0, num(s.solar_w) || 0);
+    const battery = Math.max(0, num(s.battery_w) || 0);
+    const grid = Math.max(0, num(s.grid_w) || 0);
+    return { solar, battery, grid, total: solar + battery + grid };
   }
 
-  /** Elapsed time since an ISO timestamp as a compact "1h 23m" / "5m" string. */
-  private _fmtDuration(started: string | undefined): string {
+  /** The active cheap-price target, following an in-progress drag. */
+  private _cheapTarget(ent: ResolvedEntities): number {
+    if (this._dragTarget !== null) return this._dragTarget;
+    const price = this._stateObj(ent.price_forecast);
+    const fromAttr = num(price?.attributes?.cheap_price);
+    if (!Number.isNaN(fromAttr)) return fromAttr;
+    return num(this._stateObj(ent.cheap_price)?.state);
+  }
+
+  /** True when the home battery is currently held (from status or the sensor). */
+  private _holdActive(ent: ResolvedEntities): boolean {
+    const fromStatus = (this._stateObj(ent.status)?.attributes ?? {}).hold_battery;
+    if (typeof fromStatus === "boolean") return fromStatus;
+    return this._isOn(ent.battery_hold);
+  }
+
+  /** Seconds remaining until an ISO deadline, or null when past/absent. */
+  private _countdown(iso: unknown): number | null {
+    if (typeof iso !== "string") return null;
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) return null;
+    const secs = (ms - this._now) / 1000;
+    return secs > 0 ? secs : null;
+  }
+
+  private _ageSeconds(stateObj: HassEntity | undefined): number | null {
+    if (!stateObj?.last_updated) return null;
+    const ms = Date.parse(stateObj.last_updated);
+    if (Number.isNaN(ms)) return null;
+    return Math.max(0, (this._now - ms) / 1000);
+  }
+  private _fmtAgo(secs: number): string {
+    if (secs < 90) return `${Math.round(secs)} s`;
+    return `${Math.round(secs / 60)} min`;
+  }
+
+  private _liveDuration(started: string | undefined): string {
     if (!started) return "";
-    const start = new Date(started).getTime();
+    const start = Date.parse(started);
     if (Number.isNaN(start)) return "";
-    const mins = Math.max(0, Math.round((Date.now() - start) / 60000));
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    return fmtClock((this._now - start) / 1000);
+  }
+
+  private _fmtPriceNum(v: number): string {
+    if (Number.isNaN(v)) return "—";
+    // Whole numbers (ct/kWh) stay tidy; fractional (€/kWh) keep 2 decimals.
+    return Number.isInteger(v) ? String(v) : v.toFixed(v < 1 ? 2 : 1);
+  }
+
+  // --- optimistic control state ------------------------------------------------
+  /** Reflect a select's state, trusting a recent tap until the entity confirms. */
+  private _effectiveState(id: string | undefined): string | undefined {
+    const real = this._stateObj(id)?.state;
+    if (!id) return real;
+    const opt = this._optimistic.get(id);
+    if (!opt) return real;
+    // Confirmed, or timed out after 4 s → drop the optimistic value.
+    if (real === opt.value || Date.now() - opt.at > 4000) {
+      this._optimistic.delete(id);
+      return real;
+    }
+    return opt.value;
+  }
+  private _selectOptimistic(stateObj: HassEntity, option: string): void {
+    if (option === stateObj.state) return;
+    this._optimistic.set(stateObj.entity_id, { value: option, at: Date.now() });
+    this.requestUpdate();
+    this.hass.callService("select", "select_option", {
+      entity_id: stateObj.entity_id,
+      option,
+    });
   }
 
   // --- hass helpers ------------------------------------------------------------
@@ -606,22 +936,7 @@ export class GoeSteveCard extends LitElement {
   private _isOn(id?: string): boolean {
     return this._stateObj(id)?.state === "on";
   }
-  private _displayState(id?: string): string | null {
-    const s = this._stateObj(id);
-    return s ? this._fmtState(s) : null;
-  }
-  private _fmtState(s: HassEntity): string {
-    return this.hass.formatEntityState ? this.hass.formatEntityState(s) : s.state;
-  }
-  /**
-   * Localize a select option in the user's language via HA's own
-   * `formatEntityState`, which reads the integration's entity-state
-   * translations. Falls back to the raw option value.
-   */
   private _localizeOption(s: HassEntity, opt: string): string {
-    // Primary path: look up the integration's own state translation directly.
-    // This is the reliable route — it works regardless of HA version quirks in
-    // `formatEntityState` and matches what HA shows elsewhere in the UI.
     const tk = this.hass.entities?.[s.entity_id]?.translation_key;
     if (tk) {
       const key = `component.${PLATFORM}.entity.select.${tk}.state.${opt}`;
@@ -638,13 +953,9 @@ export class GoeSteveCard extends LitElement {
     const d = this.hass.devices[deviceId];
     return d?.name_by_user || d?.name || null;
   }
-
   private _selectOption(stateObj: HassEntity, option: string): void {
     if (option === stateObj.state) return;
-    this.hass.callService("select", "select_option", {
-      entity_id: stateObj.entity_id,
-      option,
-    });
+    this.hass.callService("select", "select_option", { entity_id: stateObj.entity_id, option });
   }
   private _toggle(id: string | undefined, e: Event): void {
     if (!id) return;
@@ -653,6 +964,13 @@ export class GoeSteveCard extends LitElement {
   }
 
   static styles = css`
+    :host {
+      --goe-solar: #dd9a16;
+      --goe-battery: var(--success-color, #3f9e68);
+      --goe-grid: #67789c;
+      --goe-accent: var(--primary-color);
+      --goe-chip: var(--secondary-background-color);
+    }
     ha-card {
       overflow: hidden;
     }
@@ -669,135 +987,443 @@ export class GoeSteveCard extends LitElement {
       --mdc-icon-size: 40px;
       color: var(--disabled-text-color);
     }
-    .header {
-      padding: 16px 16px 8px;
+    .mono {
+      font-variant-numeric: tabular-nums;
     }
-    .title-row {
+    .hacard {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 14px 16px 16px;
+    }
+
+    /* Header */
+    .c-head {
       display: flex;
       align-items: center;
       gap: 8px;
     }
-    .title {
-      font-size: 1.25rem;
-      font-weight: 500;
+    .c-title {
+      font-weight: 600;
+      font-size: 1.05rem;
     }
     .brain {
+      color: var(--goe-accent);
+    }
+    .brain.off {
       color: var(--disabled-text-color);
-      transition: color 0.3s ease;
     }
-    .brain.active {
-      color: var(--primary-color);
-    }
-    .reason {
-      margin-top: 4px;
+    .livedot {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.72rem;
       color: var(--secondary-text-color);
-      font-size: 0.95rem;
+    }
+    .livedot i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--goe-battery);
+    }
+    .livedot.stale i {
+      background: var(--disabled-text-color);
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .livedot:not(.stale) i {
+        animation: pulse 2s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.35;
+        }
+      }
+    }
+
+    /* Hero */
+    .c-hero {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .ring {
+      width: 92px;
+      height: 92px;
+      flex: none;
+      position: relative;
+    }
+    .ring svg {
+      width: 100%;
+      height: 100%;
+      transform: rotate(-90deg);
+    }
+    .ring .track {
+      stroke: var(--divider-color);
+    }
+    .ring circle {
+      transition: stroke-dasharray 0.5s ease, stroke-dashoffset 0.5s ease;
+    }
+    .caric {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+    }
+    .caric ha-icon {
+      --mdc-icon-size: 34px;
+      color: var(--secondary-text-color);
+    }
+    .ring.on .caric ha-icon {
+      color: var(--primary-text-color);
+    }
+    .power {
+      font-size: 2.1rem;
+      font-weight: 600;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .power small {
+      font-size: 1.05rem;
+      font-weight: 500;
+      color: var(--secondary-text-color);
+    }
+    .herosub {
+      color: var(--secondary-text-color);
+      font-size: 0.85rem;
+      margin-top: 5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .why {
+      font-size: 0.9rem;
+      color: var(--primary-text-color);
       min-height: 1.2em;
     }
+    .why b {
+      color: var(--goe-accent);
+    }
+
+    /* Source bar + balance */
+    .splitbar {
+      display: flex;
+      height: 26px;
+      border-radius: 8px;
+      overflow: hidden;
+      gap: 2px;
+      background: var(--goe-chip);
+    }
+    .seg-src {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 600;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      border: 0;
+      cursor: pointer;
+      padding: 0;
+      font-family: inherit;
+      transition: flex-grow 0.6s ease;
+    }
+    .seg-src.solar {
+      background: var(--goe-solar);
+    }
+    .seg-src.battery {
+      background: var(--goe-battery);
+    }
+    .seg-src.grid {
+      background: var(--goe-grid);
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .splitbar.flowing .seg-src {
+        background-image: linear-gradient(
+          100deg,
+          rgba(255, 255, 255, 0) 40%,
+          rgba(255, 255, 255, 0.28) 50%,
+          rgba(255, 255, 255, 0) 60%
+        );
+        background-size: 220% 100%;
+        animation: sheen 2.6s linear infinite;
+      }
+      @keyframes sheen {
+        from {
+          background-position: 130% 0;
+        }
+        to {
+          background-position: -90% 0;
+        }
+      }
+    }
+    .splitnote {
+      font-size: 0.74rem;
+      color: var(--secondary-text-color);
+      margin-top: 6px;
+      min-height: 1.1em;
+      font-variant-numeric: tabular-nums;
+    }
+    .balance {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      margin-top: 4px;
+      font-size: 0.78rem;
+      color: var(--secondary-text-color);
+      font-variant-numeric: tabular-nums;
+    }
+    .balance b {
+      color: var(--primary-text-color);
+    }
+    .balance .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 3px;
+      display: inline-block;
+      margin-right: 5px;
+    }
+
+    /* Chips */
     .chips {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      margin-top: 10px;
     }
-    .chip {
+    .chipx {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      padding: 3px 10px;
-      border-radius: 14px;
-      background: var(--secondary-background-color);
-      font-size: 0.8rem;
+      gap: 6px;
+      background: var(--goe-chip);
+      border-radius: 999px;
+      padding: 4px 11px;
+      font-size: 0.76rem;
+      font-weight: 500;
       color: var(--primary-text-color);
+      border: 1px solid transparent;
+      font-variant-numeric: tabular-nums;
     }
-    .chip ha-icon {
+    .chipx ha-icon {
       --mdc-icon-size: 15px;
-      color: var(--primary-color);
+      color: var(--secondary-text-color);
     }
-    .content {
-      padding: 0 8px 8px;
+    .chipx.hold {
+      border-color: var(--warning-color, #c05252);
+      color: var(--warning-color, #c05252);
+    }
+    .chipx.hold ha-icon {
+      color: var(--warning-color, #c05252);
+    }
+    .chipx.cheap {
+      border-color: var(--goe-battery);
+    }
+    .chipx.cheap ha-icon {
+      color: var(--goe-battery);
     }
 
-    /* Flow diagram */
-    .flow svg {
-      width: 100%;
-      height: auto;
-      max-height: 336px;
+    /* Plan strip */
+    .planbars {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 76px;
+      position: relative;
+      touch-action: pan-y;
     }
-    .node circle {
-      fill: var(--card-background-color);
-      stroke: var(--divider-color);
-      stroke-width: 1.5;
+    .pb {
+      flex: 1;
+      border-radius: 3px 3px 0 0;
+      background: var(--goe-chip);
+      position: relative;
     }
-    .node ha-icon {
-      --mdc-icon-size: 22px;
-      color: var(--primary-color);
+    .pb.cheap {
+      background: color-mix(in srgb, var(--goe-accent) 30%, var(--goe-chip));
     }
-    .node-val {
-      text-anchor: middle;
-      font-size: 11px;
+    .pb.win {
+      background: var(--goe-accent);
+    }
+    .pb.now::after {
+      content: "";
+      position: absolute;
+      inset: -3px auto -3px 50%;
+      border-left: 2px solid var(--primary-text-color);
+      opacity: 0.7;
+    }
+    .thline {
+      position: absolute;
+      left: 0;
+      right: 0;
+      border-top: 1.5px dashed var(--goe-accent);
+      pointer-events: none;
+    }
+    .thhandle {
+      position: absolute;
+      right: 0;
+      bottom: 2px;
+      pointer-events: auto;
+      font-size: 0.66rem;
       font-weight: 600;
-      fill: var(--primary-text-color);
+      color: var(--goe-accent);
+      background: var(--card-background-color);
+      border: 1px solid var(--goe-accent);
+      border-radius: 999px;
+      padding: 3px 10px;
+      cursor: ns-resize;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      touch-action: none;
+      font-family: inherit;
     }
-    .node-lbl {
-      text-anchor: middle;
-      font-size: 10px;
-      fill: var(--secondary-text-color);
+    .planaxis {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.68rem;
+      color: var(--secondary-text-color);
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
     }
-    .edge {
-      fill: none;
-      stroke: var(--divider-color);
-      stroke-width: 2;
+    .planhint {
+      font-size: 0.68rem;
+      color: var(--secondary-text-color);
+      margin-top: 4px;
+      font-style: italic;
     }
-    .edge-flow {
-      fill: none;
-      stroke: var(--primary-color);
-      stroke-width: 3;
-      stroke-linecap: round;
-      stroke-dasharray: 4 10;
-      opacity: 0;
+    .planline {
+      font-size: 0.78rem;
+      color: var(--secondary-text-color);
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
     }
-    .edge-flow.active {
-      opacity: 0.9;
-      animation-name: dash;
-      animation-timing-function: linear;
-      animation-iteration-count: infinite;
+    .planline b {
+      color: var(--primary-text-color);
     }
-    .edge-flow.active.rev {
-      animation-name: dash-rev;
+    .progress {
+      height: 5px;
+      border-radius: 999px;
+      background: var(--goe-chip);
+      margin-top: 6px;
+      overflow: hidden;
     }
-    @keyframes dash {
-      to {
-        stroke-dashoffset: -14;
-      }
-    }
-    @keyframes dash-rev {
-      to {
-        stroke-dashoffset: 14;
-      }
+    .progress i {
+      display: block;
+      height: 100%;
+      background: var(--goe-accent);
+      border-radius: 999px;
+      transition: width 0.5s ease;
     }
 
     /* Controls */
     .controls {
+      border-top: 1px solid var(--divider-color);
+      padding-top: 12px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      padding: 4px 8px 8px;
+      gap: 12px;
     }
-    .control {
+    .ctxctl {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .seg {
+      display: flex;
+      background: var(--goe-chip);
+      border-radius: 12px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .seg button {
+      flex: 1;
+      border: 0;
+      background: transparent;
+      border-radius: 9px;
+      padding: 7px 2px 5px;
+      cursor: pointer;
+      color: var(--secondary-text-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      font-family: inherit;
+      font-size: 0.64rem;
+      font-weight: 600;
+    }
+    .seg button ha-icon {
+      --mdc-icon-size: 17px;
+    }
+    .seg button.on {
+      background: var(--card-background-color);
+      color: var(--goe-accent);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+    .ctlrow {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
     }
-    .ctl-label {
+    .ctlrow label {
+      font-size: 0.85rem;
       color: var(--secondary-text-color);
-      font-size: 0.9rem;
       white-space: nowrap;
     }
-    .ctl-select {
-      min-width: 180px;
-      flex: 1;
+    .minisg {
+      display: inline-flex;
+      background: var(--goe-chip);
+      border-radius: 10px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .minisg button {
+      border: 0;
+      background: transparent;
+      border-radius: 8px;
+      padding: 5px 13px;
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--secondary-text-color);
+      cursor: pointer;
+    }
+    .minisg button.on {
+      background: var(--card-background-color);
+      color: var(--goe-accent);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+    .bigbtn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px;
+      width: 100%;
+      font: inherit;
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--goe-accent);
+      color: var(--text-primary-color, #fff);
+    }
+    .bigbtn ha-icon {
+      --mdc-icon-size: 18px;
+    }
+    .bigbtn.stop {
+      background: color-mix(in srgb, var(--error-color, #db4437) 14%, var(--card-background-color));
+      color: var(--error-color, #db4437);
+      border: 1px solid var(--error-color, #db4437);
+    }
+    .bigbtn[disabled] {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    /* Inputs */
+    .ctl-select,
+    .ctl-datetime {
+      min-width: 150px;
       max-width: 60%;
       padding: 8px 10px;
       border-radius: 8px;
@@ -805,19 +1431,19 @@ export class GoeSteveCard extends LitElement {
       background: var(--card-background-color, var(--ha-card-background));
       color: var(--primary-text-color);
       font-family: inherit;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
       cursor: pointer;
     }
-    .ctl-select:focus {
+    .ctl-select:focus,
+    .ctl-datetime:focus,
+    .ctl-number:focus {
       outline: none;
-      border-color: var(--primary-color);
+      border-color: var(--goe-accent);
     }
     .ctl-number-wrap {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      flex: 1;
-      max-width: 60%;
       justify-content: flex-end;
     }
     .ctl-number {
@@ -828,174 +1454,47 @@ export class GoeSteveCard extends LitElement {
       background: var(--card-background-color, var(--ha-card-background));
       color: var(--primary-text-color);
       font-family: inherit;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
       text-align: right;
-    }
-    .ctl-number:focus {
-      outline: none;
-      border-color: var(--primary-color);
     }
     .ctl-unit {
       color: var(--secondary-text-color);
       font-size: 0.85rem;
       white-space: nowrap;
     }
-    .ctl-datetime {
-      flex: 1;
-      max-width: 60%;
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: 1px solid var(--divider-color);
-      background: var(--card-background-color, var(--ha-card-background));
-      color: var(--primary-text-color);
-      font-family: inherit;
-      font-size: 0.95rem;
-    }
-    .ctl-datetime:focus {
-      outline: none;
-      border-color: var(--primary-color);
-    }
 
-    /* Live telemetry strip */
-    .live {
-      display: flex;
-      gap: 8px;
-      padding: 0 8px 8px;
-    }
-    .stat {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding: 8px 10px;
-      border-radius: 8px;
-      background: var(--secondary-background-color);
-    }
-    .stat-label {
-      font-size: 0.75rem;
-      color: var(--secondary-text-color);
-    }
-    .stat-val {
-      font-size: 1.05rem;
-      font-weight: 600;
-      color: var(--primary-text-color);
-    }
-
-    /* Sessions */
-    .sessions {
+    /* Session */
+    .session {
       border-top: 1px solid var(--divider-color);
-      margin: 4px 8px 0;
-      padding-top: 8px;
+      padding-top: 10px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
     }
     .session-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       color: var(--primary-text-color);
+      font-variant-numeric: tabular-nums;
     }
     .session-row ha-icon {
-      --mdc-icon-size: 18px;
+      --mdc-icon-size: 16px;
       color: var(--secondary-text-color);
-    }
-    .session-meta {
-      color: var(--secondary-text-color);
-    }
-    .history {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      margin: 2px 0 0 26px;
-    }
-    .hist-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      font-size: 0.82rem;
-      color: var(--secondary-text-color);
-    }
-    .hist-name {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .hist-meta {
-      display: inline-flex;
-      gap: 6px;
-      white-space: nowrap;
-    }
-    .hist-date {
-      opacity: 0.7;
-    }
-    .tags {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-top: 2px;
-    }
-    .tag {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.85rem;
-      padding: 2px 0;
     }
     .tag-picker {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      padding-bottom: 4px;
     }
     .tag-actions {
       display: flex;
       gap: 8px;
     }
-    .tag-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      flex: 1;
-      justify-content: center;
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: 1px solid var(--divider-color);
-      background: var(--card-background-color, var(--ha-card-background));
-      color: var(--primary-text-color);
-      font-family: inherit;
-      font-size: 0.9rem;
-      cursor: pointer;
-    }
-    .tag-btn ha-icon {
-      --mdc-icon-size: 18px;
-      color: var(--primary-color);
-    }
-    .tag-btn:hover:not([disabled]) {
-      border-color: var(--primary-color);
-    }
-    .tag-btn[disabled] {
-      opacity: 0.5;
-      cursor: default;
-    }
-    .tag-btn.stop {
-      color: var(--error-color, #db4437);
-    }
-    .tag-btn.stop ha-icon {
-      color: var(--error-color, #db4437);
-    }
-    .tag-btn.stop:hover:not([disabled]) {
-      border-color: var(--error-color, #db4437);
-    }
-    .tag-id {
-      color: var(--secondary-text-color);
-    }
-    .tag-kwh {
-      font-weight: 600;
-    }
-    .tag-kwh.blocked {
-      color: var(--error-color, #db4437);
-      font-weight: 500;
+    :focus-visible {
+      outline: 2px solid var(--goe-accent);
+      outline-offset: 2px;
     }
   `;
 }
@@ -1006,7 +1505,7 @@ export class GoeSteveCard extends LitElement {
   type: "goe-steve-card",
   name: "go-e + SteVe Smart Charging",
   description:
-    "Live energy flow, charging mode & battery policy with the brain's reasoning, inline controls and per-RFID energy.",
+    "Live source split, the brain's reasoning, plan strip and inline controls for smart EV charging.",
   preview: true,
   documentationURL: "https://github.com/JustChr/HAgoe_steve",
 });

@@ -133,6 +133,11 @@ class EngineConfig:
     cheap_price: float = 0.15  # ≤ this (currency/kWh) counts as "cheap grid"
     target_energy_kwh: float = 0.0  # 0 disables deadline planning
     departure: datetime | None = None  # deadline for the departure plan
+    # Home-battery discharge override, driven by the card's three-way control:
+    # "auto" lets the arbiter decide (hold while grid-charging), "hold" always
+    # blocks discharge into the car, "free" never does. See the override at the
+    # end of ``decide``/``_decide_manual``.
+    battery_hold_mode: str = "auto"
     # Manual mode: the user is the brain. Start/stop, current and phase count
     # come straight from these; the battery is held while grid-assisted.
     manual_charge: bool = False
@@ -207,6 +212,21 @@ class Decision:
     # blocked from discharging into the car (driven onto a user-mapped hold
     # switch by the coordinator).
     hold_battery: bool = False
+    # Whether the hold above was chosen by the arbiter ("auto") or forced by the
+    # user's three-way control ("hold"/"free"). Surfaced so the card can label the
+    # shield chip "held (manual)" vs the brain's live choice.
+    hold_source: str = "auto"
+    # The booked cheap-charge windows (ISO slot starts) the departure plan would
+    # charge in — recomputed every cycle and, until now, discarded. Feeds the
+    # card's plan strip. Empty when no deadline plan is active.
+    plan: list[str] = field(default_factory=list)
+    # Dwell/countdown deadlines the card ticks down, or None when not armed:
+    #  * resume_not_before — a solar start is confirming; charging resumes at this time
+    #  * pause_not_before  — riding out a surplus dip; a clean stop happens at this time
+    #  * phase_locked_until — the 1↔3 contactor is in its dwell window until this time
+    resume_not_before: datetime | None = None
+    pause_not_before: datetime | None = None
+    phase_locked_until: datetime | None = None
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
@@ -260,6 +280,38 @@ def compute_power_flow(inp: ChargerInputs) -> PowerFlow:
         car_w=car,
         house_w=house,
     )
+
+
+@dataclass(slots=True)
+class SourceSplit:
+    """How the car's charging power is currently sourced (W), summing to ``car_w``.
+
+    The card renders this as the source bar + the ring around the car: it answers
+    the one question the old node diagram couldn't — *how much of the charge is
+    free right now?*
+    """
+
+    solar_w: float
+    battery_w: float
+    grid_w: float
+
+
+def compute_car_sources(flow: PowerFlow) -> SourceSplit:
+    """Allocate the car's power across solar, home battery and grid.
+
+    A priority allocation, cheapest source first: the car is fed by leftover PV
+    (production beyond the house), then any home-battery discharge, then the grid
+    covers whatever remains. The three shares always sum to ``car_w``, so the bar
+    and the balance line below it stay consistent.
+    """
+    car = max(0.0, flow.car_w)
+    solar_spare = max(0.0, flow.pv_w - flow.house_w)
+    solar = min(car, solar_spare)
+    remaining = car - solar
+    battery_discharge = max(0.0, -(flow.battery_w or 0.0))
+    battery = min(remaining, battery_discharge)
+    grid = remaining - battery
+    return SourceSplit(solar_w=solar, battery_w=battery, grid_w=grid)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -434,21 +486,31 @@ def _plan_remaining_kwh(inp: ChargerInputs, cfg: EngineConfig) -> float | None:
     return cfg.target_energy_kwh - (inp.session_delivered_kwh or 0.0)
 
 
-def _deadline_now(
+@dataclass(slots=True)
+class _Plan:
+    """The greedy departure plan for one cycle (see :func:`_compute_plan`)."""
+
+    urgent: bool  # every remaining hour is needed → charge regardless of price
+    remaining_kwh: float
+    chosen: set[int]  # forecast indices booked to cover ``remaining_kwh``
+    current_index: int | None  # the forecast slot covering "now"
+
+
+def _compute_plan(
     inp: ChargerInputs, cfg: EngineConfig, phases: int
-) -> tuple[str, dict[str, str]] | None:
-    """Should the departure plan grid-charge *right now*? Returns (reason_key, params).
+) -> _Plan | None:
+    """Greedy cheapest-slots departure plan, or None when not planning.
 
-    Greedy cheapest-slots plan over the forecast, recomputed every cycle so it
-    self-corrects as prices update and energy is delivered. ``phases`` is the
-    phase count grid charging would actually use, so the per-slot capacity is
-    realistic (a 1φ-locked wallbox books three times the hours).
+    Recomputed every cycle so it self-corrects as prices update and energy is
+    delivered. ``phases`` is the phase count grid charging would actually use, so
+    the per-slot capacity is realistic (a 1φ-locked wallbox books three times the
+    hours).
 
-    The target is a **hard guarantee**: the plan simply keeps booking the
+    The target is a **hard guarantee**: the plan keeps booking the
     least-expensive remaining slots until their capacity covers the remaining
     energy, whether or not they are "cheap" — and if the remaining time barely
     covers the remaining energy at full power, it charges regardless of the
-    forecast (``deadline_urgent``).
+    forecast (``urgent``).
     """
     remaining = _plan_remaining_kwh(inp, cfg)
     if remaining is None or remaining <= 0:
@@ -464,7 +526,7 @@ def _deadline_now(
     # hour is needed to make the target, price no longer matters.
     hours_left = (cfg.departure - inp.now).total_seconds() / 3600.0
     if hours_left * max_power_kw <= remaining:
-        return "deadline_urgent", {"remaining": f"{max(0.0, remaining):.0f}"}
+        return _Plan(True, remaining, set(), None)
 
     if not inp.price_forecast:
         return None
@@ -491,11 +553,31 @@ def _deadline_now(
         (i for i, s in upcoming if s.start <= inp.now),
         default=upcoming[0][0],
     )
-    if current_index in chosen:
-        price = inp.price_forecast[current_index].price
+    return _Plan(False, remaining, chosen, current_index)
+
+
+def _plan_window_starts(inp: ChargerInputs, plan: _Plan | None) -> list[str]:
+    """ISO starts of the booked cheap-charge windows, for the card's plan strip."""
+    if plan is None or not inp.price_forecast:
+        return []
+    return [
+        inp.price_forecast[i].start.isoformat()
+        for i in sorted(plan.chosen)
+        if i < len(inp.price_forecast)
+    ]
+
+
+def _deadline_now(plan: _Plan | None, inp: ChargerInputs) -> tuple[str, dict[str, str]] | None:
+    """Should the departure plan grid-charge *right now*? Returns (reason_key, params)."""
+    if plan is None:
+        return None
+    if plan.urgent:
+        return "deadline_urgent", {"remaining": f"{max(0.0, plan.remaining_kwh):.0f}"}
+    if plan.current_index is not None and plan.current_index in plan.chosen:
+        price = inp.price_forecast[plan.current_index].price
         return "deadline_plan", {
             "price": f"{price:.3f}",
-            "remaining": f"{remaining:.0f}",
+            "remaining": f"{plan.remaining_kwh:.0f}",
         }
     return None
 
@@ -626,6 +708,7 @@ def _collect_proposals(
     inp: ChargerInputs,
     cfg: EngineConfig,
     avail: Availability,
+    plan: _Plan | None,
     *,
     grid_phases: int,
     floor_phases: int,
@@ -655,9 +738,9 @@ def _collect_proposals(
                     },
                 )
             )
-        plan = _deadline_now(inp, cfg, grid_phases)
-        if plan is not None:
-            key, params = plan
+        now = _deadline_now(plan, inp)
+        if now is not None:
+            key, params = now
             proposals.append(
                 _Proposal("urgent" if key == "deadline_urgent" else "plan",
                           "grid", max_grid_w, params)
@@ -760,10 +843,17 @@ def _decide_manual(
         )
 
     # Charging: grid-assisted (requested power above the surplus) holds the home
-    # battery; the guard trims as the fallback when no hold switch is mapped.
+    # battery; the guard trims as the fallback when no hold switch is mapped. The
+    # Auto/Hold/Free override wins over the auto grid-assist test (the finalizer
+    # sets the same hold on the switch); "free" also disables the guard trim.
     avail = compute_availability(inp, cfg, state)
     requested_w = _current_to_power(cfg.manual_current_a, phases, inp.voltage_v)
-    hold = requested_w > avail.power_w + _MANUAL_GRID_MARGIN_W
+    if cfg.battery_hold_mode == "hold":
+        hold = True
+    elif cfg.battery_hold_mode == "free":
+        hold = False
+    else:
+        hold = requested_w > avail.power_w + _MANUAL_GRID_MARGIN_W
     current, guarded = _battery_guard_current(
         cfg.manual_current_a, phases, inp, cfg, hold=hold
     )
@@ -802,10 +892,69 @@ def decide(
 
     ``state`` carries smoothing/dwell memory between cycles; a fresh one is used
     when omitted (e.g. one-shot reasoning or tests that don't exercise timers).
+
+    The departure plan is computed once here so its booked windows can be both
+    used by the arbiter *and* surfaced on the decision (the card's plan strip),
+    and a final pass applies the home-battery override and the countdown
+    deadlines that were previously private to :class:`EngineState`.
     """
     if state is None:
         state = EngineState()
 
+    plan: _Plan | None = None
+    if cfg.smart_enabled and cfg.mode is ChargingMode.SMART and inp.car_connected:
+        grid_phases = cfg.max_phases if cfg.auto_phase else max(1, inp.phases)
+        plan = _compute_plan(inp, cfg, grid_phases)
+
+    decision = _decide(inp, cfg, state, plan)
+    return _finalize(decision, inp, cfg, state, plan)
+
+
+def _finalize(
+    decision: Decision,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    plan: _Plan | None,
+) -> Decision:
+    """Apply the home-battery override + surface the plan and countdown deadlines.
+
+    The Auto/Hold/Free control only overrides while the brain is actually driving
+    the charger (``control=True``); a hands-off decision leaves the battery alone.
+    """
+    if decision.control:
+        if cfg.battery_hold_mode == "hold":
+            decision.hold_battery = True
+            decision.hold_source = "hold"
+        elif cfg.battery_hold_mode == "free":
+            decision.hold_battery = False
+            decision.hold_source = "free"
+        else:
+            decision.hold_source = "auto"
+
+    decision.plan = _plan_window_starts(inp, plan)
+
+    # Countdown deadlines the card ticks down (all None unless the relevant timer
+    # is armed this cycle). Resume only makes sense while we are *not* charging.
+    if not decision.should_charge and state.surplus_ok_since is not None:
+        decision.resume_not_before = state.surplus_ok_since + timedelta(
+            seconds=cfg.start_confirm_s
+        )
+    if state.ride_out_since is not None:
+        decision.pause_not_before = state.ride_out_since + timedelta(
+            seconds=cfg.stop_ride_out_s
+        )
+    if state.phase_changed_at is not None:
+        decision.phase_locked_until = state.phase_changed_at + timedelta(
+            seconds=cfg.phase_dwell_s
+        )
+    return decision
+
+
+def _decide(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState, plan: _Plan | None
+) -> Decision:
+    """The core arbiter — see :func:`decide` for the public wrapper."""
     # --- Master gates ------------------------------------------------------------
     if not cfg.smart_enabled:
         reason, rkey, rparams = _reason("smart_disabled")
@@ -833,7 +982,7 @@ def decide(
     min_solar_w = _current_to_power(cfg.min_current_a, floor_phases, inp.voltage_v)
 
     proposals = _collect_proposals(
-        inp, cfg, avail, grid_phases=grid_phases, floor_phases=floor_phases
+        inp, cfg, avail, plan, grid_phases=grid_phases, floor_phases=floor_phases
     )
 
     winner: _Proposal | None = None
@@ -926,8 +1075,12 @@ def decide(
         else:
             phases = grid_phases
             base_amps = cfg.max_current_a
+        # "free" lets the home battery feed the car, so the fallback guard must
+        # not trim; the finalizer then leaves the hold switch off. Auto/Hold both
+        # protect the battery during a deliberate grid charge.
+        hold = cfg.battery_hold_mode != "free"
         amps, guarded = _battery_guard_current(
-            base_amps, phases, inp, cfg, hold=True
+            base_amps, phases, inp, cfg, hold=hold
         )
         params = dict(winner.params)
         if winner.kind == "cheap":
@@ -954,7 +1107,7 @@ def decide(
             target_current_a=amps,
             target_phases=phases,
             surplus_w=avail.power_w,
-            hold_battery=True,
+            hold_battery=hold,
             reason=reason,
             reason_key=rkey,
             reason_params=rparams,

@@ -23,6 +23,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     entities: list[SelectEntity] = [
         ChargingModeSelect(coordinator),
+        BatteryHoldModeSelect(coordinator),
     ]
     # Manual phase choice only makes sense when a phase-switch entity is mapped.
     if coordinator.has_phase_control:
@@ -63,6 +64,43 @@ class ChargingModeSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
         # Switching into Manual should not disturb the charger: stay passive until
         # the user touches a manual control. Picking any other mode drives at once.
         self.coordinator.set_manual_passive(mode is ChargingMode.MANUAL)
+        self.async_write_ha_state()
+        self.coordinator.request_apply()
+
+
+class BatteryHoldModeSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
+    """The home-battery three-way: let the brain decide, or override it.
+
+    * **Auto** — the arbiter holds the battery while it deliberately grid-charges
+      (cheap hours, the departure plan, Fast) and lets it buffer during solar; the
+      battery-hold sensor shows the brain's live choice.
+    * **Hold** — always block discharge into the car, whatever the mode.
+    * **Free** — never block; the battery may feed the car.
+
+    Maps to ``RuntimeSettings.battery_hold_mode`` (the engine's finalizer applies
+    it). Mirrors the Manual-phase select's restore/apply shape.
+    """
+
+    _attr_icon = "mdi:home-battery"
+    _attr_options = ["auto", "hold", "free"]
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "battery_hold_mode")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state in self._attr_options:
+                self.coordinator.settings.battery_hold_mode = last.state
+
+    @property
+    def current_option(self) -> str:
+        return self.coordinator.settings.battery_hold_mode
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        self.coordinator.settings.battery_hold_mode = option
         self.async_write_ha_state()
         self.coordinator.request_apply()
 

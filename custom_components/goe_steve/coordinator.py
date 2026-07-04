@@ -157,6 +157,10 @@ class RuntimeSettings:
     cheap_price: float = DEFAULT_CHEAP_PRICE
     target_energy_kwh: float = DEFAULT_TARGET_ENERGY_KWH
     departure: datetime | None = None
+    # Home-battery discharge override (the card's Auto/Hold/Free three-way): "auto"
+    # lets the brain decide, "hold" always blocks discharge into the car, "free"
+    # never does. See the engine's finalizer.
+    battery_hold_mode: str = "auto"
     auto_phase: bool = DEFAULT_AUTO_PHASE
     # Manual mode (mode == OFF) cockpit: start/stop, current and phase count.
     manual_charge: bool = False
@@ -176,6 +180,14 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             name=DOMAIN,
             update_interval=DEFAULT_SCAN_INTERVAL,
             config_entry=entry,
+            # Replace the coordinator's default 10 s request-refresh cooldown with a
+            # short one: an input-triggered engine run (a passing cloud, a switched
+            # appliance) then reaches the loop in ~1.5 s instead of up to 10 s, so
+            # the card's live numbers track reality. Charger *writes* stay throttled
+            # by MIN_UPDATE_INTERVAL_S in _apply, so hardware churn is unaffected.
+            request_refresh_debouncer=Debouncer(
+                hass, _LOGGER, cooldown=1.5, immediate=True
+            ),
         )
         self._cfg = dict(entry.data)
         self.settings = RuntimeSettings()
@@ -231,6 +243,15 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
     def has_phase_control(self) -> bool:
         """True when a go-e phase-switch entity is mapped (1↔3 selectable)."""
         return bool(self._cfg.get(CONF_GOE_PHASE))
+
+    @property
+    def last_written_force(self) -> bool | None:
+        """The force-state the brain last wrote: True=charge, False=don't, None=released.
+
+        Surfaced on the status sensor so the card can explain "why is the box off
+        although the app says ready" — a forced-off state the user didn't set.
+        """
+        return self._last_written_force
 
     # --- State reading helpers --------------------------------------------------
     def _get_float(self, conf_key: str) -> float | None:
@@ -431,6 +452,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             cheap_price=self.settings.cheap_price,
             target_energy_kwh=self.settings.target_energy_kwh,
             departure=self.settings.departure,
+            battery_hold_mode=self.settings.battery_hold_mode,
             auto_phase=self.settings.auto_phase,
             manual_charge=self.settings.manual_charge,
             manual_current_a=self.settings.manual_current_a,

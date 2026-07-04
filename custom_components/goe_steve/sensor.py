@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoeSteveConfigEntry
 from .coordinator import SteVeCoordinator
-from .engine import compute_power_flow
+from .engine import compute_car_sources, compute_power_flow
 from .entity import GoeSteveEntity, SteVeEntity
 from .steve_api import recent_completed
 
@@ -88,6 +88,10 @@ class StatusSensor(GoeSteveEntity, SensorEntity):
         settings = self.coordinator.settings
         if decision is None:
             return {}
+
+        def _iso(value):
+            return value.isoformat() if value is not None else None
+
         return {
             "mode": settings.mode.value,
             "battery_reserve_soc": settings.battery_reserve_soc,
@@ -99,6 +103,18 @@ class StatusSensor(GoeSteveEntity, SensorEntity):
             # sensor state itself stays the English ``reason`` text.
             "reason_key": decision.reason_key,
             "reason_params": decision.reason_params,
+            # Previously invisible engine state, now surfaced for the card:
+            # the home-battery hold (the missing piece), its source (brain vs the
+            # user's Auto/Hold/Free control), the booked cheap-charge windows, the
+            # countdown deadlines and the force-state written to the go-e.
+            "hold_battery": decision.hold_battery,
+            "hold_source": decision.hold_source,
+            "battery_hold_mode": settings.battery_hold_mode,
+            "plan": decision.plan,
+            "resume_not_before": _iso(decision.resume_not_before),
+            "pause_not_before": _iso(decision.pause_not_before),
+            "phase_locked_until": _iso(decision.phase_locked_until),
+            "forced": self.coordinator.last_written_force,
         }
 
 
@@ -169,6 +185,7 @@ class PowerFlowSensor(GoeSteveEntity, SensorEntity):
         if inputs is None:
             return {}
         flow = compute_power_flow(inputs)
+        sources = compute_car_sources(flow)
         return {
             "pv_w": round(flow.pv_w),
             "grid_w": round(flow.grid_w),
@@ -176,6 +193,14 @@ class PowerFlowSensor(GoeSteveEntity, SensorEntity):
             "battery_soc": flow.battery_soc,
             "car_w": round(flow.car_w),
             "house_w": round(flow.house_w),
+            # How the car's power is currently sourced (W), summing to car_w — the
+            # card's source bar + the ring around the car. Answers "how much of the
+            # charge is free right now?" that the old node diagram couldn't.
+            "sources": {
+                "solar_w": round(sources.solar_w),
+                "battery_w": round(sources.battery_w),
+                "grid_w": round(sources.grid_w),
+            },
             "car_connected": inputs.car_connected,
             "phases": inputs.phases,
             # Live "charged so far" for the running session (kWh), when the go-e

@@ -17,6 +17,7 @@ interface GoeSteveCardConfig {
   show_flow?: boolean;
   show_controls?: boolean;
   show_sessions?: boolean;
+  compact?: boolean;
 }
 
 /**
@@ -45,6 +46,7 @@ export class GoeSteveCardEditor extends LitElement {
         { name: "show_flow", selector: { boolean: {} } },
         { name: "show_controls", selector: { boolean: {} } },
         { name: "show_sessions", selector: { boolean: {} } },
+        { name: "compact", selector: { boolean: {} } },
       ],
     },
   ];
@@ -61,6 +63,8 @@ export class GoeSteveCardEditor extends LitElement {
         return localize(this.hass, "editor.show_controls");
       case "show_sessions":
         return localize(this.hass, "editor.show_sessions");
+      case "compact":
+        return localize(this.hass, "editor.compact");
       default:
         return schema.name;
     }

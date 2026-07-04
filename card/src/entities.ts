@@ -21,7 +21,9 @@ export interface ResolvedEntities {
   surplus?: string;
   target_current?: string;
   controlling?: string;
+  battery_hold?: string;
   charging_mode?: string;
+  battery_hold_mode?: string;
   smart_control?: string;
   auto_phase?: string;
   manual_charge?: string;
@@ -88,7 +90,9 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.surplus = find("surplus_for_car");
   result.target_current = find("target_current");
   result.controlling = find("controlling");
+  result.battery_hold = find("battery_hold");
   result.charging_mode = find("charging_mode");
+  result.battery_hold_mode = find("battery_hold_mode");
   result.smart_control = find("smart_control");
   result.auto_phase = find("auto_phase");
   result.manual_charge = find("manual_charge");

@@ -83,6 +83,18 @@ concept document; this file is the actionable to-do list.
       capacity, and hard-guarantees the target (urgency fallback without a forecast).
       Time-based smoothing replaces `SMOOTHING_SAMPLES` (the follow-up below). `min_grid_floor`
       removed (floor = min current); dead `goe_charging` config input dropped from the flow.
+- [x] **v4.0 — card redesign + exposing the brain's hidden state.** The five-node flow diagram
+      is replaced outright by an *answer strip*: a hero (live kW + a ring/source bar splitting the
+      car's power into solar/battery/grid, from a new `compute_car_sources` + `sources` attribute),
+      a one-line balance, the reason, and chips for state the engine computed but never showed —
+      the **battery-hold shield** (new `binary_sensor.battery_hold` + `hold_battery`/`hold_source`
+      on status), the price verdict, live dwell countdowns (new `resume/pause_not_before`,
+      `phase_locked_until`) and the phase count. A **plan strip** surfaces the booked cheap windows
+      (new `plan` attribute; `_deadline_now` refactored into a reusable `_compute_plan`) with a
+      draggable price target writing `number.cheap_price`. New **Auto / Hold / Free** home-battery
+      three-way (`select.battery_hold_mode` → engine finalizer). Freshness: a ~1.5 s
+      `request_refresh_debouncer` replaces HA's 10 s default, plus a 1 s card-side ticker and
+      optimistic controls. Card is now EN/DE and theme-aware.
 - [ ] PV/price forecast-aware planning (solar forecast feeding the departure plan).
 - [ ] Diagnostics: data-source health/staleness, last-decision timestamp, dashboards.
 

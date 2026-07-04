@@ -18,15 +18,17 @@ limits**.
   Solar only, Solar + minimum, Fast, and Manual.
 - **One home-battery rule:** *"Keep home battery above X %"* — below the line the battery
   comes first; at/above it it buffers surplus fluctuations for the car, and deliberate grid
-  charging never drains it (100 % = always protect).
+  charging never drains it (100 % = always protect). An **Auto / Hold / Free** control lets you
+  override the brain's discharge decision when you want to.
 - **Automatic 1↔3 phase switching** with anti-flap hysteresis and dwell timers.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).
 - **SteVe metering & control:** per-RFID kWh, session sensors, and services to authorize/block
   tags and remote start/stop charging.
-- **Two bundled Lovelace cards** — a *Smart Charging* card (live energy-flow, plain-language
-  reason, inline mode/reserve/smart-control controls, per-RFID energy) and a *Price* card
-  (electricity-price forecast with a draggable "cheap" threshold). Both are **auto-registered**
-  on install: just add them from the dashboard card picker.
+- **Two bundled Lovelace cards** — a *Smart Charging* card (a live **answer strip**: how much of
+  the charge is solar/battery/grid right now, the brain's reason, chips for the battery-hold
+  shield and price/dwell state, a plan strip with a draggable price target, and inline controls)
+  and a *Price* card (electricity-price forecast with a draggable "cheap" threshold). Both are
+  **auto-registered** on install: just add them from the dashboard card picker.
 
 After installing, restart Home Assistant and add the integration via
 *Settings → Devices & Services*.

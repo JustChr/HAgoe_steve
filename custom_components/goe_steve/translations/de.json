@@ -141,6 +141,14 @@
           "3": "Dreiphasig"
         }
       },
+      "battery_hold_mode": {
+        "name": "Hausbatterie",
+        "state": {
+          "auto": "Auto",
+          "hold": "Halten",
+          "free": "Frei"
+        }
+      },
       "selected_tag": {
         "name": "Ausgewählter Tag"
       }
@@ -173,7 +181,8 @@
     },
     "binary_sensor": {
       "controlling": { "name": "Steuerung aktiv" },
-      "charging_requested": { "name": "Laden angefordert" }
+      "charging_requested": { "name": "Laden angefordert" },
+      "battery_hold": { "name": "Hausbatterie gehalten" }
     }
   },
   "services": {

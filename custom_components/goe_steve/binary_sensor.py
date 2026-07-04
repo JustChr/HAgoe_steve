@@ -20,6 +20,7 @@ async def async_setup_entry(
         [
             ControllingBinarySensor(coordinator),
             ChargingRequestedBinarySensor(coordinator),
+            BatteryHoldBinarySensor(coordinator),
         ]
     )
 
@@ -48,3 +49,29 @@ class ChargingRequestedBinarySensor(GoeSteveEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return bool(self.coordinator.data and self.coordinator.data.should_charge)
+
+
+class BatteryHoldBinarySensor(GoeSteveEntity, BinarySensorEntity):
+    """True while the home battery is held from discharging into the car.
+
+    The engine computes this every cycle (``Decision.hold_battery``) but it used
+    to live nowhere: the biggest of the "state the brain knows but never shows".
+    On the card it becomes the shield chip ("Battery discharge blocked").
+    """
+
+    _attr_icon = "mdi:home-battery-outline"
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "battery_hold")
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.coordinator.data and self.coordinator.data.hold_battery)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None:
+            return {}
+        # "auto" = the brain's live choice; "hold"/"free" = the user's override.
+        return {"source": data.hold_source}

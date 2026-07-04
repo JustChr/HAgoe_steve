@@ -658,3 +658,117 @@ def test_power_flow_balances_the_home():
     assert flow.grid_w == -2000.0
     assert flow.car_w == 3000.0
     assert flow.house_w == pytest.approx(1500.0)  # 8000 − 2000 − 1500 − 3000
+
+
+# --- Car source split (the card's source bar + ring) ---------------------------------
+
+compute_car_sources = engine.compute_car_sources
+
+
+def _sources(**kw):
+    return compute_car_sources(compute_power_flow(_inputs(**kw)))
+
+
+def test_sources_all_solar_when_pv_covers_car_and_house():
+    # 6.2 kW PV, ~0.9 kW house, 5 kW car → the car is entirely solar-fed.
+    s = _sources(pv_power_w=6200.0, grid_power_w=-300.0, car_actual_power_w=5000.0)
+    assert s.solar_w == pytest.approx(5000.0)
+    assert s.battery_w == 0.0
+    assert s.grid_w == 0.0
+
+
+def test_sources_priority_solar_then_battery_then_grid():
+    # pv 3 kW, grid +3 kW, battery −1 kW, car 5 kW → house eats 2 kW of PV, so the
+    # car is fed 1 kW solar spare, then 1 kW battery, then 3 kW grid (cheapest first).
+    s = _sources(
+        pv_power_w=3000.0,
+        grid_power_w=3000.0,
+        battery_power_w=-1000.0,
+        car_actual_power_w=5000.0,
+    )
+    assert s.solar_w == pytest.approx(1000.0)
+    assert s.battery_w == pytest.approx(1000.0)
+    assert s.grid_w == pytest.approx(3000.0)
+
+
+def test_sources_always_sum_to_car_power():
+    s = _sources(
+        pv_power_w=1000.0, grid_power_w=9000.0, battery_power_w=0.0,
+        car_actual_power_w=10000.0,
+    )
+    assert s.solar_w + s.battery_w + s.grid_w == pytest.approx(10000.0)
+
+
+# --- Home-battery three-way override (Auto / Hold / Free) -----------------------------
+
+def _cheap_grid(**cfg_kw):
+    return decide(
+        _inputs(
+            price_now=0.10,
+            grid_power_w=8000.0,
+            battery_power_w=-500.0,  # would drain into the car without a hold
+            battery_soc=64.0,
+            now=T0,
+        ),
+        _cfg(mode=ChargingMode.SMART, cheap_price=0.15, **cfg_kw),
+    )
+
+
+def test_hold_mode_auto_holds_during_cheap_grid():
+    d = _cheap_grid(battery_hold_mode="auto")
+    assert d.hold_battery is True
+    assert d.hold_source == "auto"
+
+
+def test_hold_mode_free_releases_the_battery_and_skips_the_guard():
+    # Free lets the battery feed the car: no hold, and the fallback guard must not
+    # trim the current down to the surplus.
+    d = _cheap_grid(battery_hold_mode="free")
+    assert d.hold_battery is False
+    assert d.hold_source == "free"
+    assert d.target_current_a == pytest.approx(16.0)
+
+
+def test_hold_mode_hold_blocks_discharge_even_in_solar():
+    # Plain solar charging never holds on its own; "hold" forces it on.
+    d = decide(
+        _inputs(grid_power_w=-6000.0, battery_soc=90.0, now=T0),
+        _cfg(battery_hold_mode="hold"),
+    )
+    assert d.hold_battery is True
+    assert d.hold_source == "hold"
+
+
+# --- Plan windows + countdown deadlines exposed on the decision -----------------------
+
+def test_decision_exposes_booked_plan_windows():
+    fc = _forecast([0.30, 0.30, 0.10, 0.10, 0.30], T0)
+    d = decide(
+        _inputs(price_now=0.30, price_forecast=fc, now=T0 + timedelta(minutes=5)),
+        _cfg(
+            mode=ChargingMode.SMART,
+            cheap_price=0.0,
+            target_energy_kwh=8.0,
+            departure=T0 + timedelta(hours=5),
+        ),
+    )
+    # 8 kWh ≈ one 3φ slot → the single cheapest hour (index 2) is booked.
+    assert d.plan == [fc[2].start.isoformat()]
+
+
+def test_decision_exposes_resume_countdown_while_confirming():
+    # Surplus just crossed the minimum, so a solar start is confirming: the
+    # resume deadline is start_confirm_s ahead, and we are not charging yet.
+    state = EngineState()
+    d = decide(
+        _inputs(grid_power_w=-4200.0, battery_soc=90.0, now=T0),
+        _cfg(),
+        state,
+    )
+    assert d.should_charge is False
+    assert d.resume_not_before == T0 + timedelta(seconds=engine.EngineConfig().start_confirm_s)
+
+
+def test_plan_is_empty_outside_smart_mode():
+    d = decide(_inputs(grid_power_w=-6000.0, battery_soc=90.0, now=T0), _cfg())
+    assert d.plan == []
