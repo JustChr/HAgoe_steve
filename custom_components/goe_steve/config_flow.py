@@ -254,7 +254,9 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
 class GoeSteveConfigFlow(ConfigFlow, domain=DOMAIN):
     """Two-step setup: energy sources, then the charger."""
 
-    VERSION = 1
+    # v2: Protect/Share/Assist + battery floor collapsed into the single
+    # home-battery reserve line (see async_migrate_entry).
+    VERSION = 2
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}

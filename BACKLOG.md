@@ -62,6 +62,13 @@ concept document; this file is the actionable to-do list.
 - [x] Event-driven regulation: re-evaluate surplus the moment grid/PV/battery power changes,
       not just on the 30 s poll (debounced refresh; writes still throttled; poll kept as a
       safety net for time-based triggers). (v1.0.1)
+- [x] **v2.0 — the home-battery reserve line.** Protect/Share/Assist and the reserve+floor pair
+      collapsed into one number ("Keep home battery above X %"): below it the battery comes
+      first (car gets no solar surplus), above it the battery actively backs the car down to
+      the line; cheap grid always holds regardless. Config entry v1→v2 migration maps the old
+      policy (protect→100, share→old reserve, assist→old floor) and removes the orphaned
+      entities. Intentionally dropped: Share's middle ground (intercept battery-bound solar
+      without ever discharging) — raise the line instead.
 - [ ] PV/price forecast-aware planning.
 - [ ] Diagnostics: data-source health/staleness, last-decision timestamp, dashboards.
 

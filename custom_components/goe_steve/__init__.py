@@ -8,8 +8,10 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import restore_state
 
-from .const import DOMAIN
+from .const import CONF_BATTERY_RESERVE_SEED, DOMAIN
 from .coordinator import GoeSteveCoordinator, SteVeCoordinator
 from .services import async_setup_services, async_unload_services
 
@@ -57,7 +59,73 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> 
     entry.async_on_unload(coordinator.async_setup_input_triggers())
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # The v1→v2 reserve seed has been applied by the reserve number's restore
+    # above — drop it so it can never override a later user choice. Done before
+    # the update listener is registered, so this write does not trigger a reload.
+    if CONF_BATTERY_RESERVE_SEED in entry.data:
+        data = dict(entry.data)
+        data.pop(CONF_BATTERY_RESERVE_SEED)
+        hass.config_entries.async_update_entry(entry, data=data)
+
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old config entries to the current schema.
+
+    v1 → v2: the Protect/Share/Assist battery policy and the Assist floor
+    collapse into the single home-battery reserve line. The stored policy maps
+    onto a one-shot reserve seed (applied by the reserve number instead of its
+    own restored state, then removed from the entry):
+
+    * ``protect`` → 100 % — the battery never powers the car.
+    * ``share``   → no seed — the line stays at the restored reserve.
+    * ``assist``  → the old floor — the battery backs the car down to it.
+    """
+    if entry.version > 2:
+        return False  # future schema from a newer install — don't guess
+
+    if entry.version == 1:
+        registry = er.async_get(hass)
+        data = dict(entry.data)
+        policy_id = registry.async_get_entity_id(
+            "select", DOMAIN, f"{entry.entry_id}_battery_policy"
+        )
+        floor_id = registry.async_get_entity_id(
+            "number", DOMAIN, f"{entry.entry_id}_battery_floor_soc"
+        )
+        try:
+            last_states = restore_state.async_get(hass).last_states
+            policy = (
+                last_states[policy_id].state.state
+                if policy_id and policy_id in last_states
+                else None
+            )
+            if policy == "protect":
+                data[CONF_BATTERY_RESERVE_SEED] = 100.0
+            elif policy == "assist":
+                floor = 20.0
+                if floor_id and floor_id in last_states:
+                    try:
+                        floor = float(last_states[floor_id].state.state)
+                    except (TypeError, ValueError):
+                        pass
+                data[CONF_BATTERY_RESERVE_SEED] = floor
+        except Exception:  # noqa: BLE001 - a failed mapping must never block setup
+            _LOGGER.warning(
+                "Could not map the old battery policy onto the reserve line; "
+                "keeping the restored reserve value"
+            )
+        # The policy select and floor number no longer exist — drop their
+        # registry entries so they don't linger as unavailable ghosts.
+        for entity_id in (policy_id, floor_id):
+            if entity_id:
+                registry.async_remove(entity_id)
+        hass.config_entries.async_update_entry(entry, data=data, version=2)
+        _LOGGER.info("Migrated config entry to v2 (home-battery reserve line)")
+
     return True
 
 

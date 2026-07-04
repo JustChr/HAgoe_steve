@@ -104,18 +104,6 @@ NUMBERS: tuple[GoeNumberDescription, ...] = (
         setter=lambda s, v: setattr(s, "cheap_price", v),
     ),
     GoeNumberDescription(
-        key="battery_floor_soc",
-        attr="battery_floor_soc",
-        icon="mdi:battery-low",
-        native_min_value=0,
-        native_max_value=100,
-        native_step=1,
-        native_unit_of_measurement=PERCENTAGE,
-        entity_category=EntityCategory.CONFIG,
-        getter=lambda s: s.battery_floor_soc,
-        setter=lambda s, v: setattr(s, "battery_floor_soc", v),
-    ),
-    GoeNumberDescription(
         key="target_energy",
         attr="target_energy_kwh",
         icon="mdi:battery-charging",
@@ -150,6 +138,13 @@ class GoeNumber(GoeSteveEntity, RestoreEntity, NumberEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        # The v1→v2 migration seed (old battery policy mapped onto the reserve
+        # line) wins over this entity's own restored state, exactly once.
+        if self.entity_description.key == "battery_reserve_soc":
+            seed = self.coordinator.consume_reserve_seed()
+            if seed is not None:
+                self.entity_description.setter(self.coordinator.settings, seed)
+                return
         last = await self.async_get_last_state()
         if last is not None and last.state not in (None, "unknown", "unavailable"):
             try:

@@ -18,7 +18,8 @@ CONF_BATTERY_SOC: Final = "battery_soc_entity"
 CONF_BATTERY_POWER: Final = "battery_power_entity"
 # Switch/input_boolean that, when on, stops the home battery from discharging
 # (e.g. Victron "disable discharge"). The brain turns it on while grid-charging
-# so the car draws from the grid, not the battery. Battery-system agnostic.
+# whenever the battery is at/below its reserve line (and always during cheap
+# hours) so the car draws from the grid, not the battery. Battery-system agnostic.
 CONF_BATTERY_HOLD: Final = "battery_hold_entity"
 CONF_PRICE: Final = "price_entity"
 CONF_PRICE_FORECAST_ATTR: Final = "price_forecast_attr"
@@ -53,15 +54,22 @@ DEFAULT_PRICE_FORECAST_ATTR: Final = "raw_today"
 CONF_VOLTAGE: Final = "voltage"
 CONF_PHASES: Final = "phases"
 
+# Transient key written by the v1→v2 migration: the old battery policy mapped
+# onto a reserve-line value. The reserve number applies it once (instead of its
+# own restored state) and setup removes it again. Never set by the config flow.
+CONF_BATTERY_RESERVE_SEED: Final = "battery_reserve_seed"
+
 # --- Defaults for runtime-adjustable tunables (exposed as number/select entities) --
 DEFAULT_MIN_CURRENT: Final = 6.0  # A — EV hardware floor
 DEFAULT_MAX_CURRENT: Final = 16.0  # A
 DEFAULT_VOLTAGE: Final = 230.0  # V per phase
 DEFAULT_PHASES: Final = 3
-DEFAULT_BATTERY_RESERVE_SOC: Final = 80.0  # % — Protect: car waits until home battery reaches this
+# % — the home-battery reserve line: below it the battery comes first (car gets
+# no solar surplus), above it the battery may back the car down to the line.
+# 100 = the battery never powers the car (the conservative default).
+DEFAULT_BATTERY_RESERVE_SOC: Final = 100.0
 DEFAULT_MIN_GRID_FLOOR_W: Final = 1400.0  # W — PV+minimum: always charge at least this
 DEFAULT_CHEAP_PRICE: Final = 0.15  # currency/kWh — at/below this, grid is "cheap"
-DEFAULT_BATTERY_FLOOR_SOC: Final = 20.0  # % — Assist: stop draining the home battery here
 DEFAULT_TARGET_ENERGY_KWH: Final = 0.0  # kWh — 0 disables deadline planning
 
 # --- Phase switching & anti-flap (static engine behaviour) ------------------------

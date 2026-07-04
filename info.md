@@ -16,14 +16,14 @@ limits**.
 
 - **Charging modes:** Off, Solar surplus, Solar + minimum, Solar + cheap grid, Price-optimized
   (cheapest hours to a departure deadline), Combined, and Fast.
-- **Battery policies:** Protect (home battery first), Share, Assist (battery may back the car
-  down to a floor SoC).
+- **One home-battery rule:** *"Keep home battery above X %"* — below the line the battery
+  comes first, above it it actively backs the car down to the line (100 % = never).
 - **Automatic 1↔3 phase switching** with anti-flap hysteresis and dwell timers.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).
 - **SteVe metering & control:** per-RFID kWh, session sensors, and services to authorize/block
   tags and remote start/stop charging.
 - **Two bundled Lovelace cards** — a *Smart Charging* card (live energy-flow, plain-language
-  reason, inline mode/policy/smart-control controls, per-RFID energy) and a *Price* card
+  reason, inline mode/reserve/smart-control controls, per-RFID energy) and a *Price* card
   (electricity-price forecast with a draggable "cheap" threshold). Both are **auto-registered**
   on install: just add them from the dashboard card picker.
 

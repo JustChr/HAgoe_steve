@@ -22,6 +22,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
+    CONF_BATTERY_RESERVE_SEED,
     CONF_BATTERY_SOC,
     CONF_GOE_CHARGING,
     CONF_GOE_CONNECTED,
@@ -40,7 +41,6 @@ from .const import (
     CONF_STEVE_USERNAME,
     CONF_VOLTAGE,
     DEFAULT_AUTO_PHASE,
-    DEFAULT_BATTERY_FLOOR_SOC,
     DEFAULT_BATTERY_RESERVE_SOC,
     DEFAULT_CHEAP_PRICE,
     DEFAULT_MAX_CURRENT,
@@ -62,7 +62,6 @@ from .const import (
     STEVE_SCAN_INTERVAL,
 )
 from .engine import (
-    BatteryPolicy,
     ChargerInputs,
     ChargingMode,
     Decision,
@@ -152,14 +151,12 @@ class RuntimeSettings:
     """
 
     mode: ChargingMode = ChargingMode.OFF
-    battery_policy: BatteryPolicy = BatteryPolicy.PROTECT
     smart_enabled: bool = True
     min_current_a: float = DEFAULT_MIN_CURRENT
     max_current_a: float = DEFAULT_MAX_CURRENT
     battery_reserve_soc: float = DEFAULT_BATTERY_RESERVE_SOC
     min_grid_floor_w: float = DEFAULT_MIN_GRID_FLOOR_W
     cheap_price: float = DEFAULT_CHEAP_PRICE
-    battery_floor_soc: float = DEFAULT_BATTERY_FLOOR_SOC
     target_energy_kwh: float = DEFAULT_TARGET_ENERGY_KWH
     departure: datetime | None = None
     auto_phase: bool = DEFAULT_AUTO_PHASE
@@ -184,6 +181,13 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         )
         self._cfg = dict(entry.data)
         self.settings = RuntimeSettings()
+        # One-shot v1→v2 migration seed: the old battery policy mapped onto the
+        # reserve line. Applied immediately (so the first engine cycles use it)
+        # and consumed by the reserve number instead of its own restored state.
+        seed = self._cfg.get(CONF_BATTERY_RESERVE_SEED)
+        self._reserve_seed: float | None = float(seed) if seed is not None else None
+        if self._reserve_seed is not None:
+            self.settings.battery_reserve_soc = self._reserve_seed
         # Optional SteVe metering/authorization coordinator (None when unconfigured).
         self.steve: "SteVeCoordinator | None" = None
         # Latest world snapshot, retained so the power-flow sensor (and card) can
@@ -217,6 +221,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # Rolling-average buffers for input smoothing.
         self._pv_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
         self._grid_samples: deque[float] = deque(maxlen=SMOOTHING_SAMPLES)
+
+    def consume_reserve_seed(self) -> float | None:
+        """Hand the v1→v2 reserve seed to the reserve number, at most once."""
+        seed, self._reserve_seed = self._reserve_seed, None
+        return seed
 
     @property
     def has_phase_control(self) -> bool:
@@ -399,14 +408,12 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self.last_inputs = inputs
         cfg = EngineConfig(
             mode=self.settings.mode,
-            battery_policy=self.settings.battery_policy,
             smart_enabled=self.settings.smart_enabled,
             min_current_a=self.settings.min_current_a,
             max_current_a=self.settings.max_current_a,
             battery_reserve_soc=self.settings.battery_reserve_soc,
             min_grid_floor_w=self.settings.min_grid_floor_w,
             cheap_price=self.settings.cheap_price,
-            battery_floor_soc=self.settings.battery_floor_soc,
             target_energy_kwh=self.settings.target_energy_kwh,
             departure=self.settings.departure,
             auto_phase=self.settings.auto_phase,

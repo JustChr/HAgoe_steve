@@ -4,7 +4,7 @@ What the brain does in every situation — by mode, price, and home-battery stat
 the regulation engine ([`engine.py`](../custom_components/goe_steve/engine.py), `decide()`).
 
 Defaults (all runtime-adjustable): **6 A min / 16 A max**, cheap grid **≤ 0.15 /kWh**,
-home-battery **reserve 80 %** (Protect), **floor 20 %** (Assist), PV+minimum floor **1400 W**.
+home-battery **reserve line 100 %**, PV+minimum floor **1400 W**.
 
 ---
 
@@ -13,7 +13,7 @@ home-battery **reserve 80 %** (Protect), **floor 20 %** (Assist), PV+minimum flo
 | You choose… | Answers | Options |
 |---|---|---|
 | **Mode** | Where the energy comes from | Off · Solar only · Solar + minimum · Solar + cheap grid · Price-optimized · Combined · Fast |
-| **Battery policy** | How the home battery may help the car | Protect · Share · Assist |
+| **Home-battery reserve** | How full the battery must be before the car may use it | one number, 0–100 % |
 
 **Modes in one line each:**
 
@@ -29,16 +29,37 @@ home-battery **reserve 80 %** (Protect), **floor 20 %** (Assist), PV+minimum flo
 
 ---
 
-## How your home battery behaves (read this once)
+## The home-battery reserve line (read this once)
 
-A typical home battery **regulates the grid to ~0**: solar feeds **all loads first** (house +
-car), leftover charges the battery, and any shortfall is covered by **discharging the
-battery**. So **charging the car drains the battery by default** — the only thing that makes
-the car pull from the *grid* instead is the **hold switch** (blocks discharge / raises the
-grid setpoint).
+One number — **"Keep home battery above X %"** — answers the only battery question there is:
+*may my home battery power the car, and down to what level?*
 
-Whether the brain protects the battery during a grid charge is decided by your **battery
-policy** — using the battery is fine when the policy allows it. See [the hold switch](#the-hold-switch--when-it-kicks-in).
+```
+100 % ┤
+      │   ABOVE the line — the car comes first:
+      │   • the car takes solar surplus, including solar headed for the battery
+      │   • the battery actively backs the car, down to the line
+      │   • the hold switch stays OFF during grid charging
+  X % ┤◄══ your reserve line ══════════════════════════════════════════
+      │   BELOW the line — the battery comes first:
+      │   • the car gets no solar surplus (all solar fills the battery)
+      │   • only real grid charging runs: cheap hours, Fast, the deadline plan
+      │   • the hold switch is ON whenever the brain grid-charges
+  0 % ┤
+```
+
+- **At exactly the line** the reserve is satisfied: the car takes the solar that would push the
+  battery higher, but any discharge is subtracted — the battery is never pulled below the line.
+- **100 % = the battery never powers the car** (the conservative default). The car still
+  charges on real solar excess once the battery is full.
+- **SoC unavailable?** The car rides genuine solar excess only and the battery is always held
+  during grid charging — never silently drained.
+
+**One exception, and it's in your favor: cheap grid always wins.** Whenever the price is
+at/below your cheap threshold, the car runs purely on the grid and the battery is held
+**regardless of the line** — a stored kWh is worth the expensive-hour price it will offset
+later, so burning it against cheap grid would be backwards. Solar still tops the battery up
+during cheap hours.
 
 ---
 
@@ -55,13 +76,13 @@ flowchart TD
     C -- No --> D{Car plugged in?}
     D -- No --> I[Idle]
     D -- Yes --> E{Mode = Fast?}
-    E -- Yes --> MAX[Charge at MAX]
+    E -- Yes --> MAX[Charge at MAX<br/>hold: cheap price or per the line]
     E -- No --> G{Grid cheap now, or a planned cheap hour?}
-    G -- Yes --> GRID[Charge at MAX from grid<br/>cheap: always hold · deadline: per policy]
-    G -- No --> J{Enough solar surplus?}
-    J -- Yes --> SUN[Charge on solar]
+    G -- Yes --> GRID[Charge at MAX from grid<br/>hold: cheap price or per the line]
+    G -- No --> J{Battery above the line, or enough solar surplus?}
+    J -- Yes --> SUN[Charge on solar — battery backs the car above the line]
     J -- No --> K{Solar + minimum?}
-    K -- Yes --> FLOOR[Top up to the floor from grid<br/>hold per policy]
+    K -- Yes --> FLOOR[Top up to the floor from grid<br/>hold per the line]
     K -- No --> W[Wait]
 ```
 
@@ -79,69 +100,47 @@ charger's current phase count (see [Phases](#phases)).
 | Mode | Charges when… | Current | From |
 |---|---|---|---|
 | **Off** | — | — | manual |
-| **Fast** | car connected | MAX | grid (+ battery per policy) |
-| **Solar only** | surplus ≥ MIN | surplus, clamped MIN…MAX | solar |
+| **Fast** | car connected | MAX | grid (+ battery above the line) |
+| **Solar only** | surplus ≥ MIN, or battery above the line | surplus, clamped MIN…MAX (MAX above the line) | solar (+ battery above the line) |
 | **Solar + minimum** | always | max(surplus, floor) | solar; **grid top-up** below the floor |
-| **Solar + cheap grid** | price ≤ cheap **or** surplus ≥ MIN | MAX when cheap, else surplus | grid when cheap, else solar |
+| **Solar + cheap grid** | price ≤ cheap **or** solar branch above | MAX when cheap, else as Solar only | grid when cheap, else solar |
 | **Price-optimized** | now is a planned cheap hour | MAX | grid |
-| **Combined** | price ≤ cheap **or** planned hour **or** surplus ≥ MIN | MAX when grid-charging, else surplus | grid / solar |
+| **Combined** | price ≤ cheap **or** planned hour **or** solar branch | MAX when grid-charging, else surplus | grid / solar |
 
 When not charging you'll see a reason like *Waiting for surplus*, *Waiting for a cheaper
-price window*, or *Waiting — home battery {soc}% < reserve {reserve}%* (Protect).
-
----
-
-## Battery policy — what the car may take from solar
-
-Surplus = **solar minus all other loads**, then adjusted per policy:
-
-| Policy | Below its threshold | Above its threshold |
-|---|---|---|
-| **Protect** | surplus = **0** — car waits, battery fills to the **reserve** first | real surplus only (battery discharge subtracted, never sized onto the battery) |
-| **Share** | car gets the solar that would have charged the battery (discharge subtracted) | same |
-| **Assist** | reclaims battery-charge solar | above the **floor**, surplus is lifted to **MAX** so the **battery actively backs the car** |
+price window*, or *Waiting — home battery {soc}% < reserve {reserve}%*.
 
 ---
 
 ## The hold switch — when it kicks in
 
-The hold switch (block battery discharge / raise the grid setpoint) is driven **only while the
-brain is grid-charging**. There are two cases:
+Background: a Victron-style system **always balances the grid to ~0**, covering any shortfall
+from the battery — so during a grid charge the battery *would* silently supply the car. The
+hold switch is the one lever that changes that. The brain drives it **only while it is
+actively grid-charging** (Fast, cheap hour, deadline hour, Manual charging, PV+minimum
+top-up), by one rule:
 
-**1. Cheap grid → always hold (grid only, never the battery).** Whenever the price is at/below
-your cheap threshold (Solar + cheap grid, or the cheap branch of Combined), the hold is **ON
-regardless of policy or SoC** — the stored battery energy is worth more than the cheap grid
-you'd otherwise skip, so the car runs purely on the grid. Solar still tops the battery up.
+> **Hold is ON when the price is cheap (any mode), or the battery is at/below the reserve
+> line, or its SoC is unknown. Otherwise the battery deliberately backs the car.**
 
-**2. Fast / deadline plan / PV+minimum grid top-up → hold per battery policy.** These charge
-from the grid for reasons other than a cheap price (charge now / hit a departure / guarantee a
-floor), so the battery *may* help if the policy allows it:
+- The cheap-price part is mode-independent: even a Fast or Manual charge during a cheap hour
+  runs on the grid, never the battery.
+- A deadline-plan hour that is *not* actually cheap follows the line — above it the battery
+  may help hit the departure.
 
-| Policy | Hold turns **ON** when… | Hold stays **OFF** when… |
-|---|---|---|
-| **Protect** | always (any SoC) | — |
-| **Share** | SoC **≤ reserve** (80 %) | SoC **> reserve** → battery may help the car at full power |
-| **Assist** | SoC **≤ floor** (20 %) | SoC **> floor** → battery backs the car at full power |
-| SoC unknown | Protect & Share hold (safe default) | Assist doesn't (can't prove it's above the floor) |
-
-**Always OFF** when: not charging, or doing pure **solar-surplus** charging (so solar still
-fills the battery, and Assist can back the car). This keeps the battery system within its own
-boundaries whenever the brain isn't grid-charging. The same decision (cheap-grid or policy)
+**Always OFF** when: not charging, or charging on solar/battery surplus (so solar still fills
+the battery below the line, and the battery may back the car above it). The same decision
 drives both the hold switch **and** the current-trim fallback, so they never disagree.
 
-**No hold switch mapped?** When the policy *would* hold, the brain instead **trims the car's
-current down to your solar surplus** (never below MIN) so it doesn't drain the battery — i.e.
-a protecting policy quietly falls back to solar-only during grid windows. Map a hold entity if
-you want true full-power grid charging that spares the battery.
+**Side effect worth knowing:** while hold is ON, the battery can't discharge for *anything* —
+your house loads run on grid too, not just the car. During cheap hours that's what you want;
+during a Fast charge below the line it's the price of protecting the reserve. The hold is
+released the moment the grid charge ends.
 
-```
- 100% ┤ full
-      │   PROTECT: hold ON whenever grid-charging (any SoC)
-  80% ┤◄ reserve — SHARE: hold ON at/below; above, battery helps
-      │
-  20% ┤◄ floor   — ASSIST: hold ON at/below; above, battery backs the car
-   0% ┤
-```
+**No hold switch mapped?** When the brain *would* hold, it instead **trims the car's current
+down to the genuine solar surplus** (never below MIN) so the battery isn't drained — i.e. a
+grid window quietly falls back to solar-only. Map a hold entity if you want true full-power
+grid charging that spares the battery.
 
 ---
 
@@ -163,7 +162,7 @@ Hysteresis: up at `MIN × 3φ`, down at `MAX × 1φ`; a 300 s dwell caps how oft
 |---|---|
 | Grid / PV / battery power changed | ~0.75 s debounce, then evaluate |
 | Periodic safety poll | every 30 s |
-| Setting changed (mode, policy, any number) | immediate |
+| Setting changed (mode, reserve, any number) | immediate |
 | SteVe metering (never drives charging) | every 60 s |
 
 Write shaping: PV/grid are **3-sample averaged**; current writes are throttled to **5 s**
@@ -178,3 +177,20 @@ first**, then start/stop, then the throttled current/phase.
 - Smart control off / Mode Off → brain hands off (manual). Car unplugged → idle.
 - Stale or missing grid/charger data → hands off rather than acting on bad numbers.
 - On hand-off the brain **releases** the force-state and turns the **hold switch off**.
+
+---
+
+## Migrating from v1 (Protect / Share / Assist)
+
+The old battery policy and its two thresholds collapsed into the reserve line. On first start
+after the update your setting is mapped automatically:
+
+| Old policy | New reserve line | Behaves like |
+|---|---|---|
+| **Protect** | **100 %** | battery never powers the car; it fills first |
+| **Share** | your old **reserve** (e.g. 80 %) | car yields below it; above it the battery now *backs* the car down to it |
+| **Assist** | your old **floor** (e.g. 20 %) | battery backs the car down to the floor, as before |
+
+The one capability that no longer exists is Share's middle ground ("car may intercept
+battery-bound solar, but the battery never discharges"): above the line the battery now
+actively helps. If you don't want that, raise the line.

@@ -32,7 +32,6 @@ ChargerInputs = engine.ChargerInputs
 EngineConfig = engine.EngineConfig
 EngineState = engine.EngineState
 ChargingMode = engine.ChargingMode
-BatteryPolicy = engine.BatteryPolicy
 PriceSlot = engine.PriceSlot
 decide = engine.decide
 compute_power_flow = engine.compute_power_flow
@@ -47,7 +46,6 @@ def _inputs(**kw) -> "engine.ChargerInputs":
 def _cfg(**kw) -> "engine.EngineConfig":
     base = dict(
         mode=ChargingMode.PV_ONLY,
-        battery_policy=BatteryPolicy.PROTECT,
         smart_enabled=True,
         min_current_a=6.0,
         max_current_a=16.0,
@@ -111,9 +109,9 @@ def test_manual_mode_no_car_holds_off():
     assert d.should_charge is False
 
 
-def test_manual_mode_protect_trims_current_when_battery_discharges():
-    # PROTECT holds the home battery: with no hold switch the guard trims the
-    # car's current down by the battery discharge (fallback path).
+def test_manual_mode_trims_current_when_battery_discharges_below_line():
+    # Below the reserve line the home battery is held: with no hold switch the
+    # guard trims the car's current down by the battery discharge (fallback path).
     d = decide(
         _inputs(battery_soc=50.0, battery_power_w=-2300.0, voltage_v=230.0),
         _cfg(
@@ -121,7 +119,7 @@ def test_manual_mode_protect_trims_current_when_battery_discharges():
             manual_charge=True,
             manual_current_a=16.0,
             manual_phases=1,
-            battery_policy=BatteryPolicy.PROTECT,
+            battery_reserve_soc=80.0,
         ),
     )
     assert d.should_charge is True
@@ -170,8 +168,8 @@ def test_pv_only_clamps_to_max_current():
     assert d.target_current_a == 16.0
 
 
-def test_protect_holds_car_until_battery_reserve():
-    # Big surplus, but home battery at 50% < reserve 80% → car waits
+def test_car_waits_below_reserve_line():
+    # Big surplus, but home battery at 50% < line 80% → battery first, car waits.
     d = decide(
         _inputs(grid_power_w=-6000.0, battery_soc=50.0),
         _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=80.0),
@@ -180,28 +178,46 @@ def test_protect_holds_car_until_battery_reserve():
     assert "battery" in d.reason.lower()
 
 
-def test_protect_releases_above_reserve():
+def test_battery_backs_car_above_reserve_line():
+    # Above the line the car comes first: availability is lifted to MAX so the
+    # battery actively backs the car down to the line.
     d = decide(
         _inputs(grid_power_w=-6000.0, battery_soc=85.0),
         _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=80.0),
     )
     assert d.should_charge is True
+    assert d.target_current_a == 16.0
 
 
-def test_protect_does_not_run_car_on_battery_discharge():
+def test_at_the_line_car_does_not_run_on_battery_discharge():
     # Solar has dropped to ~0 but the inverter is discharging the home battery
     # (3400 W) to cover the car (2600 W) while a little still exports (240 W).
-    # PROTECT must not count the car's draw as solar surplus here — subtracting
-    # the discharge leaves no real surplus, so the car holds. (Regression for the
-    # "charging the car from the house battery in pv_only/protect" report.)
+    # At the line the discharge is subtracted so the car's own draw can't
+    # masquerade as solar — no real surplus, the car holds and the battery stays
+    # at its reserve. (Regression for the "charging the car from the house
+    # battery on solar-only" report, now anchored at the line.)
     d = decide(
         _inputs(
             grid_power_w=-240.0,
             car_actual_power_w=2600.0,
             battery_power_w=-3400.0,
-            battery_soc=84.0,
+            battery_soc=80.0,
         ),
         _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=80.0),
+    )
+    assert d.surplus_w == pytest.approx(0.0, abs=1.0)
+    assert d.should_charge is False
+
+
+def test_unknown_soc_car_does_not_run_on_battery_discharge():
+    # Same guard with the SoC unavailable: never silently drain the battery.
+    d = decide(
+        _inputs(
+            grid_power_w=-240.0,
+            car_actual_power_w=2600.0,
+            battery_power_w=-3400.0,
+        ),
+        _cfg(mode=ChargingMode.PV_ONLY),
     )
     assert d.surplus_w == pytest.approx(0.0, abs=1.0)
     assert d.should_charge is False
@@ -217,50 +233,51 @@ def test_pv_minimum_tops_up_from_grid():
     assert d.target_current_a >= 6.0
 
 
-# --- Phase 2: battery policies --------------------------------------------------
+# --- The home-battery reserve line ------------------------------------------------
 
-def test_share_reclaims_battery_charge_power():
-    # Grid balanced, but 5000 W is flowing into the home battery → Share lets the
-    # car take it (above the 4140 W three-phase floor) instead of holding.
+def test_at_the_line_car_takes_battery_bound_solar():
+    # Grid balanced, battery exactly at its line, 5000 W flowing into it → the
+    # reserve is satisfied, so the car takes that solar instead of waiting.
     d = decide(
-        _inputs(grid_power_w=0.0, battery_power_w=5000.0, battery_soc=50.0),
-        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.SHARE),
+        _inputs(grid_power_w=0.0, battery_power_w=5000.0, battery_soc=80.0),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=80.0),
     )
     assert d.should_charge is True
     assert d.surplus_w == pytest.approx(5000.0, abs=1.0)
 
 
-def test_share_does_not_hold_below_reserve():
-    d = decide(
-        _inputs(grid_power_w=-6000.0, battery_soc=30.0),
-        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.SHARE),
-    )
-    assert d.should_charge is True
-
-
-def test_assist_charges_from_battery_above_floor():
-    # No surplus at all, but battery is well above the floor → Assist still charges.
+def test_battery_backs_car_with_no_solar_above_line():
+    # No surplus at all, but the battery is well above a low line → it carries
+    # the car on its own.
     d = decide(
         _inputs(grid_power_w=0.0, battery_soc=60.0),
-        _cfg(
-            mode=ChargingMode.PV_ONLY,
-            battery_policy=BatteryPolicy.ASSIST,
-            battery_floor_soc=20.0,
-        ),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=20.0),
     )
     assert d.should_charge is True
 
 
-def test_assist_stops_at_floor():
+def test_battery_stops_backing_at_the_line():
     d = decide(
         _inputs(grid_power_w=0.0, battery_soc=15.0),
-        _cfg(
-            mode=ChargingMode.PV_ONLY,
-            battery_policy=BatteryPolicy.ASSIST,
-            battery_floor_soc=20.0,
-        ),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=20.0),
     )
     assert d.should_charge is False
+
+
+def test_reserve_100_battery_never_powers_the_car():
+    # Line at 100 %: with the battery full the car may still ride real solar
+    # surplus, but the battery is always held during grid charging.
+    solar = decide(
+        _inputs(grid_power_w=-6000.0, battery_soc=100.0),
+        _cfg(mode=ChargingMode.PV_ONLY, battery_reserve_soc=100.0),
+    )
+    assert solar.should_charge is True
+    assert solar.hold_battery is False  # pure solar never holds
+    fast = decide(
+        _inputs(battery_soc=100.0),
+        _cfg(mode=ChargingMode.FAST, battery_reserve_soc=100.0),
+    )
+    assert fast.hold_battery is True
 
 
 # --- Phase 2: price modes -------------------------------------------------------
@@ -285,51 +302,36 @@ def test_pv_price_falls_back_to_solar_when_expensive():
     assert "Waiting" in d.reason
 
 
-def test_cheap_grid_protect_trims_to_avoid_battery_drain():
+def test_cheap_grid_trims_to_avoid_battery_drain():
     # Cheap grid wants full 16 A, but the home battery is discharging 3000 W to
-    # cover the car → PROTECT trims that off so the grid carries it instead.
+    # cover the car → the guard trims that off so the grid carries it instead.
     # 3000 W / (3·230) ≈ 4.35 A trimmed from 16 A → ~11.65 A.
     d = decide(
         _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15),
     )
     assert d.should_charge is True
     assert d.target_current_a == pytest.approx(16.0 - 3000 / (3 * 230), abs=0.1)
     assert "battery" in d.reason.lower()
 
 
-def test_cheap_grid_share_also_protects_battery():
-    d = decide(
-        _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-2000.0),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.SHARE),
-    )
-    assert d.target_current_a < 16.0
-
-
-def test_cheap_grid_always_holds_regardless_of_policy():
-    # Cheap grid → grid only, never the battery: hold ON even for ASSIST above its
-    # floor and SHARE above its reserve. With a discharging battery and no hold
-    # switch, the guard also trims the current.
-    for policy, soc in (
-        (BatteryPolicy.ASSIST, 50.0),
-        (BatteryPolicy.SHARE, 90.0),
-        (BatteryPolicy.PROTECT, 90.0),
-    ):
+def test_cheap_grid_always_holds_regardless_of_reserve_line():
+    # Cheap grid → grid only, never the battery: hold ON even well above the
+    # line. With a discharging battery and no hold switch, the guard also trims.
+    for soc in (50.0, 90.0):
         d = decide(
             _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-3000.0, battery_soc=soc),
-            _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=policy,
-                 battery_reserve_soc=80.0, battery_floor_soc=20.0),
+            _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_reserve_soc=80.0),
         )
-        assert d.hold_battery is True, policy
-        assert d.target_current_a < 16.0, policy  # guard trims the discharge
+        assert d.hold_battery is True, soc
+        assert d.target_current_a < 16.0, soc  # guard trims the discharge
 
 
 def test_cheap_grid_holds_even_with_no_battery_discharge():
     # No discharge to trim, but cheap grid still holds so the battery can't kick in.
     d = decide(
         _inputs(grid_power_w=0.0, price_now=0.05, battery_soc=90.0),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.ASSIST,
-             battery_floor_soc=20.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_reserve_soc=80.0),
     )
     assert d.hold_battery is True
     assert d.target_current_a == 16.0
@@ -339,7 +341,7 @@ def test_cheap_grid_ignores_small_battery_noise():
     # A trickle of discharge (≤ tolerance) should not trim the current.
     d = decide(
         _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-50.0),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15),
     )
     assert d.target_current_a == 16.0
 
@@ -348,7 +350,7 @@ def test_cheap_grid_guard_floors_at_min_current():
     # Huge discharge would trim below the EV floor → clamp to min_current_a.
     d = decide(
         _inputs(grid_power_w=0.0, price_now=0.05, battery_power_w=-15000.0),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15),
     )
     assert d.target_current_a == 6.0
 
@@ -359,83 +361,84 @@ def test_hold_off_when_not_grid_charging():
     # PV-only surplus charging never holds — surplus should still fill the battery.
     d = decide(
         _inputs(grid_power_w=-5000.0),
-        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_ONLY),
     )
     assert d.should_charge is True
     assert d.hold_battery is False
 
 
-def test_hold_on_fast_protect():
-    d = decide(_inputs(), _cfg(mode=ChargingMode.FAST, battery_policy=BatteryPolicy.PROTECT))
-    assert d.hold_battery is True
-
-
-def test_hold_on_cheap_grid_protect():
+def test_hold_on_cheap_grid():
     d = decide(
         _inputs(grid_power_w=0.0, price_now=0.05),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15),
     )
     assert d.should_charge is True
     assert d.hold_battery is True
 
 
-# These probe the policy-based hold via FAST (a grid charge that is NOT price-gated,
-# so the policy decides). Cheap grid is a separate, always-hold path tested above.
-def test_hold_protect_holds_even_with_unknown_soc():
-    d = decide(
-        _inputs(battery_soc=None),
-        _cfg(mode=ChargingMode.FAST, battery_policy=BatteryPolicy.PROTECT),
-    )
-    assert d.hold_battery is True
-
-
-def test_hold_share_only_at_or_below_reserve():
-    # SHARE: above reserve there's plenty to spare → let the battery help (no hold).
+# These probe the reserve-line hold via FAST (a grid charge that is NOT price-gated,
+# so the line decides). Cheap grid is a separate, always-hold path tested above.
+def test_hold_only_at_or_below_the_line():
+    # Above the line the battery may help the car at full power (no hold).
     above = decide(
         _inputs(battery_soc=90.0),
-        _cfg(mode=ChargingMode.FAST,
-             battery_policy=BatteryPolicy.SHARE, battery_reserve_soc=80.0),
+        _cfg(mode=ChargingMode.FAST, battery_reserve_soc=80.0),
     )
     assert above.hold_battery is False
-    # At/below reserve → hold to refill from the grid instead of draining.
+    # At/below the line → hold so the grid carries the car instead.
     below = decide(
         _inputs(battery_soc=70.0),
-        _cfg(mode=ChargingMode.FAST,
-             battery_policy=BatteryPolicy.SHARE, battery_reserve_soc=80.0),
+        _cfg(mode=ChargingMode.FAST, battery_reserve_soc=80.0),
     )
     assert below.hold_battery is True
 
 
-def test_hold_share_holds_when_soc_unknown():
+def test_hold_when_soc_unknown():
+    # Can't place the battery against the line → never silently drain it.
     d = decide(
         _inputs(battery_soc=None),
-        _cfg(mode=ChargingMode.FAST, battery_policy=BatteryPolicy.SHARE),
+        _cfg(mode=ChargingMode.FAST),
     )
     assert d.hold_battery is True
 
 
-def test_hold_assist_only_at_or_below_floor():
-    # ASSIST: above floor it backs the car (no hold); at/below floor protect it.
-    above = decide(
-        _inputs(battery_soc=50.0),
-        _cfg(mode=ChargingMode.FAST,
-             battery_policy=BatteryPolicy.ASSIST, battery_floor_soc=20.0),
+def test_cheap_price_holds_in_any_grid_charge_mode():
+    # "Cheap grid, never the battery" is not tied to the price-aware modes: any
+    # grid charge during a cheap price holds, even well above the line — Fast,
+    # Manual, and a Price-mode planned hour alike.
+    fast = decide(
+        _inputs(battery_soc=90.0, price_now=0.05),
+        _cfg(mode=ChargingMode.FAST, cheap_price=0.15, battery_reserve_soc=80.0),
     )
-    assert above.hold_battery is False
-    below = decide(
-        _inputs(battery_soc=15.0),
-        _cfg(mode=ChargingMode.FAST,
-             battery_policy=BatteryPolicy.ASSIST, battery_floor_soc=20.0),
+    assert fast.hold_battery is True
+    manual = decide(
+        _inputs(battery_soc=90.0, price_now=0.05),
+        _cfg(mode=ChargingMode.OFF, manual_charge=True, cheap_price=0.15,
+             battery_reserve_soc=80.0),
     )
-    assert below.hold_battery is True
+    assert manual.hold_battery is True
+    now = datetime(2026, 6, 14, 20, 0, tzinfo=timezone.utc)
+    fc = _forecast(now, [0.05, 0.30, 0.30, 0.30])
+    price = decide(
+        _inputs(now=now, price_forecast=fc, price_now=0.05, battery_soc=90.0),
+        _cfg(mode=ChargingMode.PRICE, cheap_price=0.15, battery_reserve_soc=80.0,
+             target_energy_kwh=5.0, departure=now + timedelta(hours=4)),
+    )
+    assert price.should_charge is True
+    assert price.hold_battery is True
 
 
-def test_hold_assist_unknown_soc_does_not_hold():
-    # Can't prove it's below floor → ASSIST stays opted out.
+def test_deadline_hour_above_line_lets_battery_help_when_not_cheap():
+    # A planned hour that is NOT actually cheap follows the line: above it the
+    # battery may back the car toward the departure target.
+    now = datetime(2026, 6, 14, 20, 0, tzinfo=timezone.utc)
+    fc = _forecast(now, [0.20, 0.30, 0.30, 0.30])
     d = decide(
-        _inputs(battery_soc=None),
-        _cfg(mode=ChargingMode.FAST, battery_policy=BatteryPolicy.ASSIST),
+        _inputs(now=now, price_forecast=fc, price_now=0.20, battery_soc=90.0),
+        _cfg(mode=ChargingMode.PRICE, cheap_price=0.15, battery_reserve_soc=80.0,
+             target_energy_kwh=5.0, departure=now + timedelta(hours=4)),
     )
+    assert d.should_charge is True
     assert d.hold_battery is False
 
 
@@ -443,7 +446,7 @@ def test_hold_off_when_waiting_not_charging():
     # Not charging (no surplus) → never hold, so the battery system runs normally.
     d = decide(
         _inputs(grid_power_w=200.0),  # importing, no surplus
-        _cfg(mode=ChargingMode.PV_ONLY, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_ONLY),
     )
     assert d.should_charge is False
     assert d.hold_battery is False
@@ -455,20 +458,19 @@ def test_hold_off_when_cheap_window_paused_by_dwell():
     state = EngineState(charging=False, charge_changed_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
     d = decide(
         _inputs(price_now=0.05, now=datetime(2025, 1, 1, 0, 0, 30, tzinfo=timezone.utc)),
-        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, battery_policy=BatteryPolicy.PROTECT,
-             min_off_dwell_s=120.0),
+        _cfg(mode=ChargingMode.PV_PRICE, cheap_price=0.15, min_off_dwell_s=120.0),
         state,
     )
     assert d.should_charge is False
     assert d.hold_battery is False
 
 
-def test_pv_minimum_grid_topup_holds_per_policy():
+def test_pv_minimum_grid_topup_holds_below_line():
     # PV+minimum tops up from the grid when solar is short. With the grid at 0 the
-    # battery would supply the floor, so PROTECT must hold it.
+    # battery would supply the floor, so below the line it must be held.
     d = decide(
         _inputs(grid_power_w=0.0, pv_power_w=0.0, battery_soc=50.0),
-        _cfg(mode=ChargingMode.PV_MINIMUM, battery_policy=BatteryPolicy.PROTECT,
+        _cfg(mode=ChargingMode.PV_MINIMUM, battery_reserve_soc=80.0,
              min_grid_floor_w=1400.0),
     )
     assert d.should_charge is True
@@ -476,12 +478,13 @@ def test_pv_minimum_grid_topup_holds_per_policy():
     assert d.hold_battery is True
 
 
-def test_pv_minimum_grid_topup_assist_above_floor_does_not_hold():
-    # ASSIST above its floor lets the battery supply the floor → no hold.
+def test_pv_minimum_battery_backs_car_above_line():
+    # Above the line the battery backs the car outright — the lift covers the
+    # floor, so this is solar/battery charging, not a grid top-up, and no hold.
     d = decide(
         _inputs(grid_power_w=0.0, pv_power_w=0.0, battery_soc=50.0),
-        _cfg(mode=ChargingMode.PV_MINIMUM, battery_policy=BatteryPolicy.ASSIST,
-             battery_floor_soc=20.0, min_grid_floor_w=1400.0),
+        _cfg(mode=ChargingMode.PV_MINIMUM, battery_reserve_soc=20.0,
+             min_grid_floor_w=1400.0),
     )
     assert d.should_charge is True
     assert d.hold_battery is False
@@ -491,7 +494,7 @@ def test_pv_minimum_real_surplus_does_not_hold():
     # Genuine solar surplus above the floor is not grid charging → never hold.
     d = decide(
         _inputs(grid_power_w=-5000.0),
-        _cfg(mode=ChargingMode.PV_MINIMUM, battery_policy=BatteryPolicy.PROTECT),
+        _cfg(mode=ChargingMode.PV_MINIMUM),
     )
     assert d.should_charge is True
     assert "surplus" in d.reason.lower()  # solar-surplus branch, not the grid top-up

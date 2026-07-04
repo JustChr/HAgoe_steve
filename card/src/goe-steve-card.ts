@@ -119,13 +119,19 @@ export class GoeSteveCard extends LitElement {
     return html`${before}<b>${INTEGRATION_NAME}</b>${after ?? ""}`;
   }
 
-  // --- Header: status reason + mode/policy chips --------------------------------
+  // --- Header: status reason + mode/battery-reserve chips -----------------------
   private _renderHeader(ent: ResolvedEntities, title: string): TemplateResult {
     const status = this._stateObj(ent.status);
     const reason = this._statusReason(status);
     const controlling = this._isOn(ent.controlling);
     const mode = this._displayState(ent.charging_mode);
-    const policy = this._displayState(ent.battery_policy);
+    // The home-battery reserve line at a glance: "≥ 80 %" = the battery is kept
+    // above 80 % and may back the car down to it (100 % = never used for the car).
+    const reserve = this._stateObj(ent.battery_reserve_soc);
+    const reserveChip =
+      reserve && !["unknown", "unavailable", ""].includes(reserve.state)
+        ? `≥ ${Math.round(Number(reserve.state))} %`
+        : undefined;
 
     return html`<div class="header">
       <div class="title-row">
@@ -135,7 +141,7 @@ export class GoeSteveCard extends LitElement {
       <div class="reason">${reason}</div>
       <div class="chips">
         ${mode ? html`<span class="chip"><ha-icon icon="mdi:ev-station"></ha-icon>${mode}</span>` : nothing}
-        ${policy ? html`<span class="chip"><ha-icon icon="mdi:home-battery"></ha-icon>${policy}</span>` : nothing}
+        ${reserveChip ? html`<span class="chip"><ha-icon icon="mdi:home-battery"></ha-icon>${reserveChip}</span>` : nothing}
       </div>
     </div>`;
   }
@@ -290,23 +296,17 @@ export class GoeSteveCard extends LitElement {
   // --- Inline controls ---------------------------------------------------------
   private _renderControls(ent: ResolvedEntities): TemplateResult {
     const mode = this._stateObj(ent.charging_mode);
-    const policy = this._stateObj(ent.battery_policy);
     const smart = this._stateObj(ent.smart_control);
 
-    // Battery-level inputs are shown only where they affect the active policy:
-    // reserve under Protect and Share, floor under Assist, target energy under
-    // the deadline-aware price modes. The reserve/floor each gate whether the
-    // battery-hold switch engages during grid charging (Share holds ≤ reserve,
-    // Assist holds ≤ floor), so each is surfaced wherever it's in play.
+    // One battery control: the reserve line. Below it the battery comes first;
+    // above it the battery may back the car down to it (100 % = never).
     const reserve = this._stateObj(ent.battery_reserve_soc);
-    const floor = this._stateObj(ent.battery_floor_soc);
     const target = this._stateObj(ent.target_energy);
-    const policyState = policy?.state;
     const modeState = mode?.state;
 
     // Manual mode (charging-mode "off") turns the card into the cockpit: the user
     // sets start/stop, current and phases here directly — no go-e app needed. The
-    // battery policy below still applies, so it's surfaced in both modes.
+    // reserve line below still applies, so it's surfaced in both modes.
     const isManual = modeState === "off";
     const manualCharge = this._stateObj(ent.manual_charge);
     const manualCurrent = this._stateObj(ent.manual_current);
@@ -346,28 +346,10 @@ export class GoeSteveCard extends LitElement {
             ${this._renderSelect(manualPhases)}
           </div>`
         : nothing}
-      ${policy
+      ${reserve
         ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.battery")}</span>
-            ${this._renderSelect(policy)}
-          </div>`
-        : nothing}
-      ${reserve && policyState === "protect"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.battery_fill_to")}</span>
+            <span class="ctl-label">${this._t("control.battery_reserve")}</span>
             ${this._renderNumber(reserve)}
-          </div>`
-        : nothing}
-      ${reserve && policyState === "share"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.battery_use_to")}</span>
-            ${this._renderNumber(reserve)}
-          </div>`
-        : nothing}
-      ${floor && policyState === "assist"
-        ? html`<div class="control">
-            <span class="ctl-label">${this._t("control.battery_use_to")}</span>
-            ${this._renderNumber(floor)}
           </div>`
         : nothing}
       ${target && (modeState === "price" || modeState === "combined")

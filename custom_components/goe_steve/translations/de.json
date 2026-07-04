@@ -18,7 +18,7 @@
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
-          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Ob er greift, richtet sich nach deiner Batterie-Strategie und ihren Ladezustands-Schwellen.",
+          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Er greift, solange die Batterie auf/unter ihrer Reservelinie ist – und bei günstigem Netzpreis immer.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen)."
         }
@@ -102,7 +102,7 @@
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
-          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Ob er greift, richtet sich nach deiner Batterie-Strategie und ihren Ladezustands-Schwellen.",
+          "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn beim Laden aus dem Netz ein (günstiger Preis / Schnellladen), damit das Auto aus dem Netz lädt und nicht aus der Batterie. Solarüberschuss lädt die Batterie weiterhin. Er greift, solange die Batterie auf/unter ihrer Reservelinie ist – und bei günstigem Netzpreis immer.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
@@ -140,14 +140,6 @@
           "fast": "Schnell"
         }
       },
-      "battery_policy": {
-        "name": "Batterie-Strategie",
-        "state": {
-          "protect": "Schützen (Batterie zuerst)",
-          "share": "Teilen (Auto darf Ladeleistung nutzen)",
-          "assist": "Unterstützen (Batterie hilft dem Auto)"
-        }
-      },
       "manual_phases": {
         "name": "Manuelle Phasen",
         "state": {
@@ -168,10 +160,9 @@
       "manual_current": { "name": "Manueller Strom" },
       "min_current": { "name": "Mindeststrom" },
       "max_current": { "name": "Maximalstrom" },
-      "battery_reserve_soc": { "name": "Reserve Hausbatterie" },
+      "battery_reserve_soc": { "name": "Hausbatterie halten über" },
       "min_grid_floor": { "name": "Mindest-Ladeleistung" },
       "cheap_price": { "name": "Schwelle günstiger Preis" },
-      "battery_floor_soc": { "name": "Batterie-Untergrenze (Unterstützen)" },
       "target_energy": { "name": "Zielenergie bis Abfahrt" }
     },
     "datetime": {

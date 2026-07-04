@@ -12,8 +12,8 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 *"may it charge / how much did it charge"*. They coexist because the go-e applies the
 **minimum of all active current limits**. See [`docs/concept`](#concept) for the full design.
 
-> **Status: v1.3 — early days, actively tested.** All charging modes (solar, price-aware,
-> combined), automatic phase switching and the Protect/Share/Assist battery policies are in
+> **Status: early days, actively tested.** All charging modes (solar, price-aware,
+> combined), automatic phase switching and the single home-battery reserve line are in
 > place, plus SteVe metering (per-RFID kWh, sessions), authorization/remote-control services, and
 > **two bundled Lovelace cards** (energy-flow + price-forecast). It works on the author's own
 > setup, but it's still young and not every wallbox/inverter/price-provider combination has been
@@ -28,21 +28,25 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
   current-control `number` entity (writes are throttled so it doesn't chase noise).
 - **Modes:** Off (manual), Solar surplus only, Solar + minimum, Solar + cheap grid,
   Price-optimized (cheapest hours to a departure deadline), Combined, and Fast.
-- **Battery policies:** Protect (home battery first, to a reserve SoC), Share (car may take what
-  would charge the battery), Assist (battery may back the car down to a floor SoC).
+- **One home-battery rule — the reserve line:** a single *"Keep home battery above X %"*
+  number. Below the line the battery comes first (all solar fills it); above the line the car
+  comes first and the battery actively backs it down to the line. 100 % = the battery never
+  powers the car.
 - **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
-  helper) and the brain flips it on while pulling cheap grid / Fast power, so the car draws from
-  the grid instead of draining your home battery. Solar surplus still charges the battery.
+  helper) and the brain flips it on while grid-charging with the battery at/below its reserve
+  line — and always during cheap hours, when grid power is worth less than stored energy — so
+  the car draws from the grid instead of draining your home battery. Solar surplus still
+  charges the battery.
 - **Mode-aware 1↔3 phase switching** with anti-flap hysteresis and dwell timers: power modes
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
   prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch
   *and* map a go-e phase-control entity during setup — without a mapped phase entity there is
   nothing to switch.
 - **Two Lovelace cards:** a main card with the live PV → house / battery / car / grid energy
-  flow, the brain's plain-language reason, inline controls (charging mode, battery policy, smart
-  control, auto-phase, and the relevant battery level for the active mode — home reserve/floor
-  SoC or car target energy) and per-RFID energy; plus a price-forecast card that plots upcoming
-  electricity prices with a **draggable "cheap" threshold** you set right on the chart.
+  flow, the brain's plain-language reason, inline controls (charging mode, the home-battery
+  reserve line, smart control, auto-phase, and the mode's own tunables like car target energy)
+  and per-RFID energy; plus a price-forecast card that plots upcoming electricity prices with a
+  **draggable "cheap" threshold** you set right on the chart.
 - Safety: if the car isn't connected or required data is stale, the brain keeps its hands off;
   turning **Smart control** off returns full manual control.
 
@@ -82,9 +86,9 @@ them from the card picker (both show a preview). With one Smart Charging device 
 all entities; if you run more than one, pick the device in the card's visual editor.
 
 **1. Smart Charging card** (`custom:goe-steve-card`) — the main card. A live energy-flow diagram
-(PV → house / battery / car / grid), the brain's current reason and mode/policy chips, inline
-controls (charging mode, battery policy, smart-control toggle, the active mode's battery level)
-and per-RFID energy.
+(PV → house / battery / car / grid), the brain's current reason and mode/reserve chips, inline
+controls (charging mode, the home-battery reserve line, smart-control toggle, the active mode's
+tunables) and per-RFID energy.
 
 ```yaml
 type: custom:goe-steve-card
@@ -115,17 +119,15 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | Entity | Purpose |
 |--------|---------|
 | `select` Charging mode | Off / Solar surplus / Solar+minimum / Solar+cheap-grid / Price-optimized / Combined / Fast |
-| `select` Battery policy | Protect / Share / Assist |
 | `switch` Smart control | Master enable — off = manual |
 | `switch` Auto phase | Enable mode-aware 1↔3 phase switching (needs a mapped go-e phase entity) |
 | `number` Min/Max current | Charge current bounds |
-| `number` Home battery reserve | Protect threshold (SoC %) |
-| `number` Home battery floor | Assist drain limit (SoC %) |
+| `number` Keep home battery above | The reserve line (SoC %) — below it the battery comes first, above it it backs the car; 100 = never |
 | `number` Car target energy | kWh to deliver by departure (Price / Combined) |
 | `number` Minimum charge power | Floor for *Solar + minimum* |
 | `number` Cheap price | At/below this price/kWh, grid counts as cheap |
 | `sensor` Status | **Plain-language reason** for the current decision |
-| `sensor` Surplus for car | Power available under the battery policy |
+| `sensor` Surplus for car | Power available under the reserve line |
 | `sensor` Target current | What the brain is asking for |
 | `sensor` Power flow | Live PV/grid/battery/house/car balance (attributes) — drives the card |
 | `binary_sensor` Brain controlling / Charging requested | Brain state |
@@ -166,8 +168,8 @@ pytest tests/     # engine + SteVe parsing; no Home Assistant install required
 
 ## Concept
 
-The full theoretical design (architecture, energy-flow model, battery policies, all charging
-modes, SteVe linkage, Lovelace card, roadmap) is documented in the project plan.
+The full theoretical design (architecture, energy-flow model, the home-battery reserve line,
+all charging modes, SteVe linkage, Lovelace card, roadmap) is documented in the project plan.
 
 ## Feedback
 
@@ -187,3 +189,7 @@ inverter/battery, price provider), what you tried, and anything that surprised y
 - **Phase 5 🚧** Forecast-aware planning & polish — price-forecast card with a draggable cheap
   threshold and a battery-hold switch for grid charging are in; smarter forecast-based planning
   is next.
+- **v2.0** The Protect/Share/Assist battery policies and their two thresholds collapsed into a
+  single **home-battery reserve line** ("Keep home battery above X %"); existing settings are
+  migrated automatically (see the
+  [behavior matrix](docs/charging-behavior-matrix.md#migrating-from-v1-protect--share--assist)).

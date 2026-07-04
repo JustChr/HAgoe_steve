@@ -9,11 +9,12 @@ cycles) and gets back a single :class:`Decision` describing what the charger
 should do and, crucially, *why* — the human-readable ``reason`` is surfaced in
 the UI.
 
-Phase 2 scope (this file): price-aware modes (PV+price / Price-optimized /
-Combined), the Share and Assist battery policies, automatic 1↔3-phase switching
-with hysteresis + a dwell timer, and a minimum on/off dwell to stop the charger
-flapping. Everything time-dependent receives ``now`` explicitly so the logic
-stays deterministic and testable.
+Scope (this file): price-aware modes (PV+price / Price-optimized / Combined),
+the home-battery reserve line (one SoC threshold deciding whether the battery
+or the car comes first — see :func:`compute_surplus`), automatic 1↔3-phase
+switching with hysteresis + a dwell timer, and a minimum on/off dwell to stop
+the charger flapping. Everything time-dependent receives ``now`` explicitly so
+the logic stays deterministic and testable.
 """
 
 from __future__ import annotations
@@ -55,14 +56,6 @@ PHASE1_MODES: tuple[ChargingMode, ...] = (
 )
 
 
-class BatteryPolicy(StrEnum):
-    """How home-battery energy may participate in car charging."""
-
-    PROTECT = "protect"  # battery first; never reduced/discharged for the car
-    SHARE = "share"  # car may take power that would otherwise charge the battery
-    ASSIST = "assist"  # battery may discharge into the car, down to a floor SoC
-
-
 @dataclass(slots=True)
 class PriceSlot:
     """One forecast slot: a price valid from ``start`` until the next slot."""
@@ -98,19 +91,18 @@ class EngineConfig:
     """Current settings — mostly runtime-adjustable via number/select entities."""
 
     mode: ChargingMode = ChargingMode.OFF
-    battery_policy: BatteryPolicy = BatteryPolicy.PROTECT
     smart_enabled: bool = True
     min_current_a: float = 6.0
     max_current_a: float = 16.0
-    battery_reserve_soc: float = 80.0
+    # The home-battery reserve line (% SoC): below it the battery comes first,
+    # above it the car may run on the battery down to the line. 100 = never.
+    battery_reserve_soc: float = 100.0
     min_grid_floor_w: float = 1400.0
-    # Phase 2 tunables.
     cheap_price: float = 0.15  # ≤ this (currency/kWh) counts as "cheap grid"
-    battery_floor_soc: float = 20.0  # Assist: stop discharging the battery here
     target_energy_kwh: float = 0.0  # 0 disables deadline planning
     departure: datetime | None = None  # deadline for Price / Combined modes
     # Manual mode (mode == OFF): the user is the brain. Start/stop, current and
-    # phase count come straight from these; the battery policy still applies.
+    # phase count come straight from these; the reserve line still applies.
     manual_charge: bool = False
     manual_current_a: float = 16.0
     manual_phases: int = 3
@@ -234,60 +226,51 @@ def _current_to_power(current_a: float, phases: int, voltage_v: float) -> float:
 
 
 def compute_surplus(inp: ChargerInputs, cfg: EngineConfig) -> float:
-    """Power (W) available to the car under the active battery policy.
+    """Power (W) available to the car, governed by the home-battery reserve line.
 
     Base headroom is grid export plus the car's own current draw (the car's draw
     suppresses export, so it must be added back).
 
-    * ``PROTECT`` — while the home battery is below its reserve SoC the car gets
-      nothing, so the battery fills first. Above the reserve the car may take
-      genuine solar surplus, but any battery *discharge* is subtracted so the car
-      never runs on the battery (e.g. solar has dropped but the inverter is
-      covering the car from the battery).
-    * ``SHARE`` — power that is currently charging the home battery is reclaimed
-      for the car; the battery yields but is never actively drained, so discharge
-      is likewise subtracted.
-    * ``ASSIST`` — Share behaviour, and while the battery is above its floor SoC
-      it may actively back the car: availability is lifted to the configured
-      maximum so charging never stalls on solar alone (the battery and the grid
-      floor make up the difference). Set the floor to bound how far it drains.
+    One rule — the reserve line (``battery_reserve_soc``):
+
+    * **Below the line** the battery comes first: the car gets nothing, so all
+      solar fills the battery up to the reserve. (Grid charging — cheap hours,
+      Fast, the deadline plan — doesn't ride on surplus and still runs.)
+    * **At the line** the reserve is satisfied: the car takes the solar that
+      would push the battery further, but any discharge is subtracted so the
+      battery is never pulled below the line.
+    * **Above the line** the car comes first: availability is lifted to the
+      configured maximum, so the battery actively backs the car down to the
+      line and charging never stalls on solar alone.
+
+    With the SoC unknown we can't place the battery against the line, so the
+    car rides genuine solar excess only (discharge subtracted, nothing
+    reclaimed) — the battery is never silently drained.
     """
     export_w = max(0.0, -inp.grid_power_w)
     surplus = export_w + max(0.0, inp.car_actual_power_w)
 
-    policy = cfg.battery_policy
+    soc = inp.battery_soc
+    if soc is None:
+        if inp.battery_power_w is not None:
+            surplus -= max(0.0, -inp.battery_power_w)
+        return max(0.0, surplus)
 
-    # PROTECT below reserve: hold the car entirely so the battery fills first.
-    if (
-        inp.battery_soc is not None
-        and policy is BatteryPolicy.PROTECT
-        and inp.battery_soc < cfg.battery_reserve_soc
-    ):
+    if soc < cfg.battery_reserve_soc:
         return 0.0
 
-    if inp.battery_power_w is not None and policy in (
-        BatteryPolicy.SHARE,
-        BatteryPolicy.ASSIST,
-    ):
-        # Reclaim whatever is currently flowing *into* the home battery.
+    if inp.battery_power_w is not None:
+        # Reclaim solar flowing into the battery (it's above/at its reserve), and
+        # discount any discharge so the car's own draw (added back above) can't
+        # masquerade as solar and drag the battery below the line.
         surplus += max(0.0, inp.battery_power_w)
-
-    if inp.battery_power_w is not None and policy in (
-        BatteryPolicy.PROTECT,
-        BatteryPolicy.SHARE,
-    ):
-        # Never let the car run on the battery: discount any discharge so the
-        # surplus reflects real PV excess only. Without this, the car's own draw
-        # (added back above) masks the fact that the battery — not the sun — is
-        # supplying it, and PROTECT/SHARE would silently drain the battery.
         surplus -= max(0.0, -inp.battery_power_w)
 
-    if policy is BatteryPolicy.ASSIST and inp.battery_soc is not None:
-        if inp.battery_soc > cfg.battery_floor_soc:
-            assist_ceiling = _current_to_power(
-                cfg.max_current_a, max(1, inp.phases), inp.voltage_v
-            )
-            surplus = max(surplus, assist_ceiling)
+    if soc > cfg.battery_reserve_soc:
+        ceiling = _current_to_power(
+            cfg.max_current_a, max(1, inp.phases), inp.voltage_v
+        )
+        surplus = max(surplus, ceiling)
 
     return max(0.0, surplus)
 
@@ -301,29 +284,23 @@ def _hold_battery(inp: ChargerInputs, cfg: EngineConfig) -> bool:
     the grid setpoint) so the grid supplies the car instead; and as a fallback when
     no hold switch is mapped, :func:`_battery_guard_current` trims the car's current.
     When it returns False the battery is *deliberately* allowed to help the car
-    (and the guard leaves the current alone) — this is fine, and exactly what the
-    Share/Assist policies are for.
+    (and the guard leaves the current alone) — that's the reserve line at work.
 
-    The same battery policy that governs solar-surplus sharing decides it, so users
-    learn one concept:
+    One rule for every grid-charge path (Fast, cheap hour, deadline hour,
+    Manual, PV+minimum top-up):
 
-    * ``PROTECT`` — the battery never powers the car: always hold.
-    * ``SHARE``   — hold once at/below the reserve SoC; above it there is plenty to
-      spare, so let the battery help.
-    * ``ASSIST``  — hold once at/below the floor SoC; above it the battery is meant
-      to assist the car.
-
-    With SoC unknown, PROTECT/SHARE still hold (the safe default — never silently
-    drain); ASSIST can't prove it is above its floor, so it does not hold.
+    * **Price at/below the cheap threshold → always hold**, regardless of the
+      line: a stored kWh is worth the expensive-hour price it will offset
+      later, so burning it against cheap grid would be backwards.
+    * Otherwise the reserve line decides: at/below the line (or with the SoC
+      unknown) the battery is held; strictly above it the battery may back the
+      car down to the line.
     """
-    policy = cfg.battery_policy
-    if policy is BatteryPolicy.PROTECT:
+    if inp.price_now is not None and inp.price_now <= cfg.cheap_price:
         return True
     if inp.battery_soc is None:
-        return policy is BatteryPolicy.SHARE
-    if policy is BatteryPolicy.SHARE:
-        return inp.battery_soc <= cfg.battery_reserve_soc
-    return inp.battery_soc <= cfg.battery_floor_soc  # ASSIST
+        return True
+    return inp.battery_soc <= cfg.battery_reserve_soc
 
 
 def _battery_guard_current(
@@ -346,11 +323,10 @@ def _battery_guard_current(
     the car back down to the genuine solar surplus (never below the EV's minimum
     current), which is the best we can do without a hold switch.
 
-    Driven by the *same* policy decision as the hold switch (``hold``): we trim only
-    when the policy wants the battery protected. When the policy is deliberately
-    letting the battery help the car (Share above reserve, Assist above floor), we
-    leave the current alone so it can. Re-evaluated each cycle, so it converges as
-    the inverter responds.
+    Driven by the *same* decision as the hold switch (``hold``): we trim only when
+    the battery is at/below its reserve line. Above the line the battery is
+    deliberately backing the car, so we leave the current alone. Re-evaluated each
+    cycle, so it converges as the inverter responds.
 
     Returns ``(current, guarded)`` where ``guarded`` flags that we trimmed.
     """
@@ -365,10 +341,9 @@ def _battery_guard_current(
 
 
 def _battery_held(inp: ChargerInputs, cfg: EngineConfig) -> bool:
-    """True when PROTECT is parking the car until the home battery fills."""
+    """True when the car is parked so the home battery fills to the reserve."""
     return (
         inp.battery_soc is not None
-        and cfg.battery_policy is BatteryPolicy.PROTECT
         and inp.battery_soc < cfg.battery_reserve_soc
     )
 
@@ -607,7 +582,7 @@ def _decide_manual(
     """Manual mode (``ChargingMode.OFF``): the user is the brain.
 
     Start/stop, charging current and phase count come straight from the manual
-    controls; the battery policy still governs whether the home battery is held
+    controls; the reserve line still governs whether the home battery is held
     back from the car (and trims the current as a fallback when no hold switch is
     mapped), exactly as in the smart modes — so users learn one battery concept.
 
@@ -655,8 +630,8 @@ def _decide_manual(
             reason_params=rparams,
         )
 
-    # Charging: hold the home battery per policy and trim as the fallback, then
-    # drive the user's requested current.
+    # Charging: hold the home battery per the reserve line and trim as the
+    # fallback, then drive the user's requested current.
     hold = _hold_battery(inp, cfg)
     current, guarded = _battery_guard_current(
         cfg.manual_current_a, phases, inp, cfg, hold=hold
@@ -725,8 +700,8 @@ def decide(
         )
 
     # --- Cheap-grid charging (price-aware modes) --------------------------------
-    # Grid charging draws from the grid, not the home battery, so the PROTECT
-    # reserve hold does not apply here.
+    # Grid charging draws from the grid, not the home battery, so the reserve
+    # wait (battery filling to its line) does not apply here.
     cheap_now = (
         inp.price_now is not None
         and inp.price_now <= cfg.cheap_price
@@ -738,13 +713,12 @@ def decide(
 
     if cheap_now or deadline_now:
         phases = _phases_for(cfg.mode, 0.0, inp, cfg, state, grid_charging=True)
-        # Cheap grid → use the grid, never the home battery: the stored energy is
-        # worth more than the cheap grid we'd otherwise pass up, so always hold,
-        # regardless of battery policy. The deadline plan can charge at
-        # not-actually-cheap hours to hit departure, so it stays policy-based (the
-        # battery may help there). One decision drives both the hold switch and the
-        # current-trim fallback, so they stay consistent.
-        hold = True if cheap_now else _hold_battery(inp, cfg)
+        # One decision drives both the hold switch and the current-trim fallback,
+        # so they stay consistent. _hold_battery already covers both cases here:
+        # a cheap price always holds (grid, never the battery), and a deadline
+        # hour that is *not* actually cheap follows the reserve line (above it
+        # the battery may help hit the departure).
+        hold = _hold_battery(inp, cfg)
         current, guarded = _battery_guard_current(
             cfg.max_current_a, phases, inp, cfg, hold=hold
         )
@@ -822,9 +796,9 @@ def decide(
         )
 
     # Pure solar charging rides on real surplus, so it never holds the battery
-    # (and Assist may back the car here). The exception is the PV+minimum grid
-    # top-up below: that draws above solar, so — with the grid pinned at 0 — the
-    # battery would supply the floor unless we hold it per policy.
+    # (above the line the battery may back the car here). The exception is the
+    # PV+minimum grid top-up below: that draws above solar, so — with the grid
+    # pinned at 0 — the battery would supply the floor unless the line holds it.
     hold = False
     if guarantees_floor:
         floor_current = max(

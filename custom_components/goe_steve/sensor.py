@@ -90,7 +90,7 @@ class StatusSensor(GoeSteveEntity, SensorEntity):
             return {}
         return {
             "mode": settings.mode.value,
-            "battery_policy": settings.battery_policy.value,
+            "battery_reserve_soc": settings.battery_reserve_soc,
             "controlling": decision.control,
             "charging": decision.should_charge,
             "target_current_a": round(decision.target_current_a, 1),
@@ -103,7 +103,7 @@ class StatusSensor(GoeSteveEntity, SensorEntity):
 
 
 class SurplusSensor(GoeSteveEntity, SensorEntity):
-    """Power currently available to the car under the active battery policy."""
+    """Power currently available to the car under the home-battery reserve line."""
 
     _attr_icon = "mdi:solar-power"
     _attr_device_class = SensorDeviceClass.POWER
