@@ -12,6 +12,7 @@ from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, Home
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -82,7 +83,7 @@ _TRUTHY = {STATE_ON, "true", "1", "connected", "charging", "car", "ready"}
 # "Force three phases"), not a 1/3 count. Map between the engine's phase count
 # and the select option by keyword, so we survive locale/firmware label changes
 # (English + German) instead of writing a literal "1"/"3" the select rejects.
-_ONE_PHASE_TOKENS = ("single", "1-phase", "1 phase", "1phase", "einphasig", "1")
+_ONE_PHASE_TOKENS = ("one", "single", "1-phase", "1 phase", "1phase", "einphasig", "1")
 _THREE_PHASE_TOKENS = ("three", "3-phase", "3 phase", "3phase", "dreiphasig", "3")
 
 
@@ -219,8 +220,14 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self._last_written_force: bool | None = None
         # Last battery-hold state we wrote: True=held (no discharge), False=off,
         # None=never touched. Skips redundant writes and releases on handoff so a
-        # switch we never set is left alone.
+        # switch we never set is left alone. Persisted across restarts (the store
+        # below): the mapped entity may gate the *whole house's* battery, so if we
+        # restart while holding it on we must still remember we own it and turn it
+        # back off — otherwise a hands-off first cycle would leave the house cut
+        # off from the battery until a car reconnects. Restored before the first
+        # refresh via async_restore_hold_state().
         self._last_written_hold: bool | None = None
+        self._hold_store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}_hold")
         # True for the window after the user switches *into* Manual mode but before
         # they touch a manual control: we leave the charger exactly as it was — no
         # writes, no releases — so entering Manual never disturbs a running session.
@@ -656,6 +663,24 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         finally:
             self._last_written_force = None
 
+    async def async_restore_hold_state(self) -> None:
+        """Restore the last battery-hold state we wrote, persisted across restarts.
+
+        Call once during setup, before the first engine run. Without it a restart
+        forgets whether *we* turned the switch on: a hands-off first cycle would
+        then leave it on (``_release_hold`` only acts on a remembered on-state),
+        cutting the whole house off from the battery until a car reconnects. We
+        still only ever release a switch we set, so one you manage yourself is
+        left alone.
+        """
+        try:
+            data = await self._hold_store.async_load()
+        except Exception as err:  # noqa: BLE001 - a bad store must never block setup
+            _LOGGER.warning("Could not restore battery-hold state: %s", err)
+            return
+        if data is not None:
+            self._last_written_hold = data.get("hold")
+
     async def _write_hold(self, hold: bool) -> None:
         """Drive the battery-hold switch so the car draws grid, not the battery.
 
@@ -677,6 +702,8 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                 domain, service, {"entity_id": hold_entity}, blocking=False
             )
             self._last_written_hold = hold
+            # Persist immediately so a restart can't forget we own an on-switch.
+            await self._hold_store.async_save({"hold": hold})
         except Exception as err:  # noqa: BLE001 - never let a write break the loop
             _LOGGER.warning("Failed to set battery-hold via %s: %s", hold_entity, err)
 
