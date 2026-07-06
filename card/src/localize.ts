@@ -46,10 +46,6 @@ const en: Dict = {
   "chip.phases": "{phases} φ",
   "chip.forced_off": "Charger forced off",
 
-  "plan.now": "now",
-  "plan.hours_ahead": "+{h} h",
-  "plan.drag_hint": "Drag the ↕ pill to set your cheap-price target.",
-  "plan.target_aria": "Cheap-price target, arrow keys to adjust",
   "plan.on_track": "on track",
   "plan.tight": "tight — few cheap hours",
 
@@ -173,10 +169,6 @@ const de: Dict = {
   "chip.phases": "{phases} φ",
   "chip.forced_off": "Wallbox zwangsweise aus",
 
-  "plan.now": "jetzt",
-  "plan.hours_ahead": "+{h} h",
-  "plan.drag_hint": "Ziehe die ↕-Pille, um deine Günstig-Schwelle zu setzen.",
-  "plan.target_aria": "Günstig-Preis-Ziel, mit Pfeiltasten anpassen",
   "plan.on_track": "im Plan",
   "plan.tight": "knapp — wenige günstige Stunden",
 

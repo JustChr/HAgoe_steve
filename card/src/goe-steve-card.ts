@@ -90,10 +90,6 @@ export class GoeSteveCard extends LitElement {
    *  is trusted until the entity confirms (or a short timeout elapses). */
   @state() private _optimistic = new Map<string, { value: string; at: number }>();
 
-  /** Live cheap-price target while the plan-strip pill is being dragged (ct or
-   *  currency/kWh, matching the number entity); null when not dragging. */
-  @state() private _dragTarget: number | null = null;
-
   public static getConfigElement(): HTMLElement {
     return document.createElement("goe-steve-card-editor");
   }
@@ -421,58 +417,19 @@ export class GoeSteveCard extends LitElement {
     return html`<span class="chipx ${cls}"><ha-icon icon="${icon}"></ha-icon>${this._t(key, params)}</span>`;
   }
 
-  // --- Plan strip: what happens next + the draggable price target --------------
+  // --- Plan strip: progress toward the target energy ---------------------------
+  // The price forecast + draggable "cheap" threshold now live in the dedicated
+  // price card, so the wallbox card keeps only the charging-progress line here.
   private _renderPlan(ent: ResolvedEntities): TemplateResult | typeof nothing {
     const mode = this._effectiveState(ent.charging_mode);
     if (mode !== "smart") return nothing;
-    const price = this._stateObj(ent.price_forecast);
-    const slots: { start: string; price: number }[] = price?.attributes?.slots ?? [];
-    if (slots.length < 2) return nothing;
 
     const status = this._stateObj(ent.status)?.attributes ?? {};
     const bookedStarts = new Set<string>(status.plan ?? []);
-    const target = this._dragTarget ?? this._cheapTarget(ent);
-    const prices = slots.map((s) => s.price);
-    const lo = Math.min(...prices, target);
-    const hi = Math.max(...prices, target);
-    const range = hi - lo || 1;
-    const yFor = (p: number) => 8 + ((p - lo) / range) * 68; // px from baseline
-    const nowMs = this._now;
-    const nowIdx = this._nowSlotIndex(slots, nowMs);
-
-    const bars = slots.map((s, i) => {
-      const booked = bookedStarts.has(s.start);
-      const cheap = s.price <= target;
-      const cls = "pb" + (i === nowIdx ? " now" : "") + (booked ? " win" : cheap ? " cheap" : "");
-      return html`<i class="${cls}" style="height:${yFor(s.price)}px"></i>`;
-    });
-
-    const unit = price?.attributes?.unit ?? "";
-    const targetLabel = `↕ ≤ ${this._fmtPriceNum(target)} ${unit}`;
-    const axisR = this._t("plan.hours_ahead", { h: String(slots.length - 1) });
     const planLine = this._planLine(ent, bookedStarts.size);
+    if (planLine === nothing) return nothing;
 
-    return html`<div class="plan">
-      <div
-        class="planbars"
-        @pointerdown=${this._planDown}
-        @pointermove=${this._planMove}
-        @pointerup=${this._planUp}
-        @pointercancel=${this._planUp}
-      >
-        ${bars}
-        <span class="thline" style="bottom:${yFor(target)}px">
-          <button
-            class="thhandle"
-            aria-label=${this._t("plan.target_aria")}
-            @keydown=${(e: KeyboardEvent) => this._planKey(ent, e)}
-          >${targetLabel}</button>
-        </span>
-      </div>
-      <div class="planaxis"><span>${this._t("plan.now")}</span><span>${axisR}</span></div>
-      <div class="planhint">${this._t("plan.drag_hint")}</div>
-      ${planLine}
-    </div>`;
+    return html`<div class="plan">${planLine}</div>`;
   }
 
   private _planLine(
@@ -490,68 +447,6 @@ export class GoeSteveCard extends LitElement {
         <b>${done.toFixed(1)} / ${target.toFixed(0)} kWh</b> — ${track}
       </div>
       <div class="progress"><i style="width:${pct}%"></i></div>`;
-  }
-
-  private _nowSlotIndex(slots: { start: string }[], nowMs: number): number {
-    let idx = 0;
-    for (let i = 0; i < slots.length; i++) {
-      if (Date.parse(slots[i].start) <= nowMs) idx = i;
-      else break;
-    }
-    return idx;
-  }
-
-  // Drag the target: only the ↕ pill starts a drag, so the chart never hijacks
-  // page scrolling on touch. Writes number.cheap_price on release.
-  private _planDown = (e: PointerEvent): void => {
-    const target = e.target as HTMLElement;
-    if (!target.closest(".thhandle")) return;
-    e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    this._dragTarget = this._cheapTarget(this._entities!);
-  };
-  private _planMove = (e: PointerEvent): void => {
-    if (this._dragTarget === null) return;
-    const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const ent = this._entities!;
-    const price = this._stateObj(ent.price_forecast);
-    const slots: { price: number }[] = price?.attributes?.slots ?? [];
-    const prices = slots.map((s) => s.price);
-    const lo = Math.min(...prices, this._dragTarget);
-    const hi = Math.max(...prices, this._dragTarget);
-    const range = hi - lo || 1;
-    const fromBottom = box.bottom - e.clientY;
-    const value = lo + ((fromBottom - 8) / 68) * range;
-    this._dragTarget = this._clampTarget(ent, value);
-  };
-  private _planUp = (): void => {
-    if (this._dragTarget === null) return;
-    const ent = this._entities!;
-    const cheap = this._stateObj(ent.cheap_price);
-    if (cheap) this._setNumber(cheap, String(this._roundTarget(ent, this._dragTarget)));
-    this._dragTarget = null;
-  };
-  private _planKey(ent: ResolvedEntities, e: KeyboardEvent): void {
-    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-    e.preventDefault();
-    const cheap = this._stateObj(ent.cheap_price);
-    if (!cheap) return;
-    const step = num(cheap.attributes.step) || 0.01;
-    const cur = this._cheapTarget(ent);
-    const next = this._clampTarget(ent, cur + (e.key === "ArrowUp" ? step : -step));
-    this._setNumber(cheap, String(this._roundTarget(ent, next)));
-  }
-  private _clampTarget(ent: ResolvedEntities, v: number): number {
-    const cheap = this._stateObj(ent.cheap_price);
-    const min = num(cheap?.attributes.min);
-    const max = num(cheap?.attributes.max);
-    if (!Number.isNaN(min)) v = Math.max(min, v);
-    if (!Number.isNaN(max)) v = Math.min(max, v);
-    return v;
-  }
-  private _roundTarget(ent: ResolvedEntities, v: number): number {
-    const step = num(this._stateObj(ent.cheap_price)?.attributes.step) || 0.01;
-    return Math.round(v / step) * step;
   }
 
   // --- Controls: segmented mode + contextual tunables + battery three-way ------
@@ -856,9 +751,8 @@ export class GoeSteveCard extends LitElement {
     return { solar, battery, grid, total: solar + battery + grid };
   }
 
-  /** The active cheap-price target, following an in-progress drag. */
+  /** The active cheap-price target (from the forecast attr or the number entity). */
   private _cheapTarget(ent: ResolvedEntities): number {
-    if (this._dragTarget !== null) return this._dragTarget;
     const price = this._stateObj(ent.price_forecast);
     const fromAttr = num(price?.attributes?.cheap_price);
     if (!Number.isNaN(fromAttr)) return fromAttr;
@@ -1222,73 +1116,7 @@ export class GoeSteveCard extends LitElement {
       color: var(--goe-battery);
     }
 
-    /* Plan strip */
-    .planbars {
-      display: flex;
-      align-items: flex-end;
-      gap: 2px;
-      height: 76px;
-      position: relative;
-      touch-action: pan-y;
-    }
-    .pb {
-      flex: 1;
-      border-radius: 3px 3px 0 0;
-      background: var(--goe-chip);
-      position: relative;
-    }
-    .pb.cheap {
-      background: color-mix(in srgb, var(--goe-accent) 30%, var(--goe-chip));
-    }
-    .pb.win {
-      background: var(--goe-accent);
-    }
-    .pb.now::after {
-      content: "";
-      position: absolute;
-      inset: -3px auto -3px 50%;
-      border-left: 2px solid var(--primary-text-color);
-      opacity: 0.7;
-    }
-    .thline {
-      position: absolute;
-      left: 0;
-      right: 0;
-      border-top: 1.5px dashed var(--goe-accent);
-      pointer-events: none;
-    }
-    .thhandle {
-      position: absolute;
-      right: 0;
-      bottom: 2px;
-      pointer-events: auto;
-      font-size: 0.66rem;
-      font-weight: 600;
-      color: var(--goe-accent);
-      background: var(--card-background-color);
-      border: 1px solid var(--goe-accent);
-      border-radius: 999px;
-      padding: 3px 10px;
-      cursor: ns-resize;
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-      touch-action: none;
-      font-family: inherit;
-    }
-    .planaxis {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.68rem;
-      color: var(--secondary-text-color);
-      margin-top: 4px;
-      font-variant-numeric: tabular-nums;
-    }
-    .planhint {
-      font-size: 0.68rem;
-      color: var(--secondary-text-color);
-      margin-top: 4px;
-      font-style: italic;
-    }
+    /* Plan strip: charging-progress line */
     .planline {
       font-size: 0.78rem;
       color: var(--secondary-text-color);
