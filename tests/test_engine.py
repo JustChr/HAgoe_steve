@@ -270,6 +270,55 @@ def test_sustained_discharge_eases_off():
     assert d.surplus_w == pytest.approx(5000.0)  # 2000 + 4000 − 1000 raw
 
 
+def test_surplus_tracks_a_drop_quickly():
+    # A fading surplus is followed within tens of seconds, not two minutes: the
+    # asymmetric filter uses its short downward time constant, so the tracked value
+    # falls well past the plain average of the two readings.
+    cfg = _cfg()
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
+    decide(
+        _inputs(grid_power_w=-6000.0, battery_soc=90.0, phases=1, now=T0), cfg, state
+    )
+    d = decide(
+        _inputs(
+            grid_power_w=-1000.0,
+            battery_soc=90.0,
+            phases=1,
+            now=T0 + timedelta(seconds=30),
+        ),
+        cfg,
+        state,
+    )
+    # 20 s tau, 30 s step: 6000 + (1-e^-1.5)(1000-6000) ≈ 2116 W — below the 3500 W
+    # a symmetric 2-sample average would still be sitting at.
+    assert d.surplus_w == pytest.approx(2116.0, abs=5.0)
+    assert d.surplus_w < 3500.0
+
+
+def test_surplus_climbs_gently_on_a_rise():
+    # A surplus jump is eased in over the long upward time constant, so a brief
+    # bright patch can't slam the current up and straight back down.
+    cfg = _cfg()
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
+    decide(
+        _inputs(grid_power_w=-2000.0, battery_soc=90.0, phases=1, now=T0), cfg, state
+    )
+    d = decide(
+        _inputs(
+            grid_power_w=-8000.0,
+            battery_soc=90.0,
+            phases=1,
+            now=T0 + timedelta(seconds=30),
+        ),
+        cfg,
+        state,
+    )
+    # 120 s tau, 30 s step: 2000 + (1-e^-0.25)(8000-2000) ≈ 3327 W — well short of
+    # both the 8000 W reading and the 5000 W a symmetric average would give.
+    assert d.surplus_w == pytest.approx(3327.0, abs=5.0)
+    assert d.surplus_w < 5000.0
+
+
 # --- Start confirmation + ride-out ---------------------------------------------------
 
 def test_solar_start_waits_for_the_confirmation_window():

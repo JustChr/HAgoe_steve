@@ -14,7 +14,9 @@ Architecture — strategies + arbiter (v3):
 Every cycle, each strategy enabled by the charging mode independently proposes
 the charging *power* it could justify right now:
 
-* **Solar surplus** — the smoothed solar power available to the car.
+* **Solar surplus** — the solar power available to the car, tracked through an
+  asymmetric filter (drops fast, rises slow) so the current follows a fading
+  surplus quickly but climbs gently.
 * **Cheap grid** — full power while the spot price is at/below the threshold.
 * **Departure plan** — full power during the cheapest forecast slots needed to
   cover the *remaining* energy (target − delivered) by departure, guaranteed.
@@ -42,6 +44,7 @@ deterministic and testable.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -152,8 +155,11 @@ class EngineConfig:
     auto_phase: bool = False
     max_phases: int = 3
     phase_dwell_s: float = 300.0  # min time between phase switches
-    # Solar smoothing + battery-buffer behaviour.
-    smooth_window_s: float = 120.0  # rolling window for the surplus average
+    # Solar smoothing + battery-buffer behaviour. The surplus is tracked by an
+    # asymmetric filter: ``smooth_window_s`` is the slow time constant for a
+    # *rising* surplus, ``surplus_drop_tau_s`` the fast one for a *falling* surplus.
+    smooth_window_s: float = 120.0  # gentle time constant when the surplus rises
+    surplus_drop_tau_s: float = 20.0  # fast time constant when the surplus falls
     discharge_tolerance_w: float = 300.0  # sustained battery→car drain above this…
     discharge_grace_s: float = 180.0  # …for this long triggers a decisive ease-off
     # Start/stop shaping ("ride out, then stop").
@@ -180,7 +186,10 @@ class EngineState:
     # Battery-buffer memory.
     discharge_high_since: datetime | None = None
     avail_zone: str | None = None  # "protect" | "buffer" the samples belong to
-    avail_samples: deque[tuple[datetime, float]] = field(default_factory=deque)
+    # Asymmetric surplus filter: the last emitted base value and when it was
+    # sampled, so the next cycle's directional EMA knows the elapsed time.
+    avail_output: float | None = None
+    avail_sample_t: datetime | None = None
     discharge_samples: deque[tuple[datetime, float]] = field(default_factory=deque)
 
 
@@ -349,6 +358,41 @@ def _smoothed(
     return sum(v for _, v in samples) / len(samples)
 
 
+def _directional(
+    prev: float | None,
+    last_t: datetime | None,
+    now: datetime | None,
+    value: float,
+    tau_up_s: float,
+    tau_down_s: float,
+) -> float:
+    """Asymmetric exponential filter: track drops fast, rises slow.
+
+    Surplus charging wants opposite speeds in the two directions: ease the current
+    *up* gently when the surplus grows (so a passing bright patch doesn't yo-yo the
+    wallbox) but follow a *falling* surplus quickly (so a cloud or a switched-on
+    appliance stops us drawing from the grid/home battery within tens of seconds,
+    not two minutes). This is an EMA whose time constant depends on the direction of
+    change: ``tau_down_s`` (short) while ``value`` is below the running output,
+    ``tau_up_s`` (long) while at/above it.
+
+    Because it is still an average, a single noisy low sample only nudges the output
+    part-way down — the current can't be slammed by one bad reading. With
+    ``now``/``prev`` unknown the value passes through raw (stateless one-shot
+    reasoning / the first sample after a reset). The blend factor is derived from the
+    *actual* elapsed time since the last sample, so irregular event-driven updates
+    are weighted correctly.
+    """
+    if prev is None or now is None or last_t is None:
+        return value
+    dt = max(0.0, (now - last_t).total_seconds())
+    tau = tau_up_s if value >= prev else tau_down_s
+    if tau <= 0.0:
+        return value
+    alpha = 1.0 - math.exp(-dt / tau)
+    return prev + alpha * (value - prev)
+
+
 @dataclass(slots=True)
 class Availability:
     """Solar power available to the car right now, and how it was derived."""
@@ -381,6 +425,9 @@ def compute_availability(
       window — so the battery bridges short dips and spikes. Sustained
       discharge beyond ``discharge_tolerance_w`` for ``discharge_grace_s``
       switches to the raw deduction (a decisive ease-off).
+
+    The base surplus itself is passed through :func:`_directional`, so it climbs
+    gently but falls fast — the car sheds current promptly when the surplus fades.
     """
     export_w = max(0.0, -inp.grid_power_w)
     base = export_w + max(0.0, inp.car_actual_power_w)
@@ -389,10 +436,11 @@ def compute_availability(
     protect = soc is None or soc < cfg.battery_reserve_soc
     zone = "protect" if protect else "buffer"
 
-    # The formula changes across the reserve line; stale samples from the other
-    # zone would blend two different signals, so start the window fresh.
+    # The formula changes across the reserve line; a value carried over from the
+    # other zone would blend two different signals, so start the filter fresh.
     if zone != state.avail_zone:
-        state.avail_samples.clear()
+        state.avail_output = None
+        state.avail_sample_t = None
         state.discharge_samples.clear()
         state.discharge_high_since = None
         state.avail_zone = zone
@@ -401,7 +449,16 @@ def compute_availability(
     if not protect and batt is not None:
         base += max(0.0, batt)  # reclaim solar the battery is absorbing
 
-    base_s = _smoothed(state.avail_samples, inp.now, base, cfg.smooth_window_s)
+    base_s = _directional(
+        state.avail_output,
+        state.avail_sample_t,
+        inp.now,
+        base,
+        cfg.smooth_window_s,
+        cfg.surplus_drop_tau_s,
+    )
+    state.avail_output = base_s
+    state.avail_sample_t = inp.now
 
     if protect:
         return Availability(max(0.0, base_s - discharge_raw), zone, False)

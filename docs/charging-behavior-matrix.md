@@ -25,7 +25,7 @@ home-battery **reserve line 100 %**.
 
 | Strategy | Proposes | Active in |
 |---|---|---|
-| **Solar surplus** | the ~2-min smoothed surplus (0 if below the minimum) | Smart, Solar only, Solar + minimum |
+| **Solar surplus** | the surplus, eased up slowly but tracked down fast (0 if below the minimum) | Smart, Solar only, Solar + minimum |
 | **Cheap grid** | full power while `price ≤ cheap threshold` | Smart |
 | **Departure plan** | full power during the cheapest forecast slots that cover the **remaining** energy (target − delivered) by departure — **hard guarantee** | Smart |
 | **Minimum floor** | the minimum current, always | Solar + minimum |
@@ -56,7 +56,7 @@ One slider — **"Keep home battery above X %"** — plus one principle:
 ```
 100 % ┤
       │   AT/ABOVE the line — the battery is a fluctuation buffer:
-      │   • the car follows the ~2-minute smoothed surplus
+      │   • the car follows the surplus — eased up slowly, tracked down fast
       │   • short dips/spikes (clouds) are bridged by the battery — the car
       │     current stays calm instead of chasing every wobble
       │   • sustained discharge into the car (> 300 W for > 3 min) is corrected:
@@ -84,7 +84,7 @@ With the battery SoC unknown, the brain is conservative: genuine solar excess on
 Solar charging transitions are deliberate, not flappy:
 
 ```
-surplus ≥ min ──────► confirm ~3 min ──────► CHARGING (follows smoothed surplus)
+surplus ≥ min ──────► confirm ~3 min ──────► CHARGING (up slow, down fast)
                                                    │
                                      surplus < min │ (cloud front, evening)
                                                    ▼
@@ -132,7 +132,8 @@ what just finished (`Departure target reached`).
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `SURPLUS_SMOOTH_WINDOW_S` | 120 s | rolling window the car's target follows |
+| `SURPLUS_SMOOTH_WINDOW_S` | 120 s | slow time constant when the surplus **rises** |
+| `SURPLUS_DROP_TAU_S` | 20 s | fast time constant when the surplus **falls** |
 | `BATTERY_DISCHARGE_TOLERANCE_W` | 300 W | buffer discharge allowed before the ease-off |
 | `BATTERY_DISCHARGE_GRACE_S` | 180 s | how long it may exceed the tolerance |
 | `START_CONFIRM_S` | 180 s | surplus must hold ≥ min before a solar start |

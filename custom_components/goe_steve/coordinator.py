@@ -59,6 +59,7 @@ from .const import (
     START_CONFIRM_S,
     STEVE_SCAN_INTERVAL,
     STOP_RIDE_OUT_S,
+    SURPLUS_DROP_TAU_S,
     SURPLUS_SMOOTH_WINDOW_S,
 )
 from .engine import (
@@ -468,6 +469,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             max_phases=max(self._phases, 3),
             phase_dwell_s=PHASE_DWELL_S,
             smooth_window_s=SURPLUS_SMOOTH_WINDOW_S,
+            surplus_drop_tau_s=SURPLUS_DROP_TAU_S,
             discharge_tolerance_w=BATTERY_DISCHARGE_TOLERANCE_W,
             discharge_grace_s=BATTERY_DISCHARGE_GRACE_S,
             start_confirm_s=START_CONFIRM_S,

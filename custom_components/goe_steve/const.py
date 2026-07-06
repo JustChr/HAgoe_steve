@@ -79,10 +79,16 @@ DEFAULT_AUTO_PHASE: Final = False  # off until the user maps a phase-control ent
 PHASE_DWELL_S: Final = 300.0  # min seconds between 1↔3 phase switches
 
 # --- Solar smoothing + battery buffer ----------------------------------------------
-# The car follows a rolling time-window average of the solar surplus; the home
-# battery bridges anything shorter than the window, so the car current stays calm
-# through passing clouds instead of chasing every dip.
+# The car follows the solar surplus through an *asymmetric* filter: it eases the
+# current *up* gently over this time constant (so a passing bright patch doesn't
+# yo-yo the wallbox) but tracks a surplus *drop* far faster (see below), so a cloud
+# or a switched-on appliance stops us pulling from the grid/home battery quickly
+# instead of two minutes late.
 SURPLUS_SMOOTH_WINDOW_S: Final = 120.0
+# The fast, downward time constant of that filter. Small, so the target current
+# follows a falling surplus within tens of seconds — but still an average, not the
+# raw reading, so a single noisy low sample can't slam the current down.
+SURPLUS_DROP_TAU_S: Final = 20.0
 # Above the reserve line the battery may buffer freely — but discharge into the
 # car beyond this power, sustained for the grace time, triggers a decisive
 # ease-off so the battery never becomes the car's power source.
