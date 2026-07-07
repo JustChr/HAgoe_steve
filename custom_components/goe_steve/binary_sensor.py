@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoeSteveConfigEntry
-from .entity import GoeSteveEntity
+from .entity import GoeMqttEntity, GoeSteveEntity
 
 
 async def async_setup_entry(
@@ -21,6 +25,8 @@ async def async_setup_entry(
             ControllingBinarySensor(coordinator),
             ChargingRequestedBinarySensor(coordinator),
             BatteryHoldBinarySensor(coordinator),
+            CarConnectedBinarySensor(coordinator),
+            ChargingAllowedBinarySensor(coordinator),
         ]
     )
 
@@ -75,3 +81,30 @@ class BatteryHoldBinarySensor(GoeSteveEntity, BinarySensorEntity):
             return {}
         # "auto" = the brain's live choice; "hold"/"free" = the user's override.
         return {"source": data.hold_source}
+
+
+class CarConnectedBinarySensor(GoeMqttEntity, BinarySensorEntity):
+    """True when a car is plugged into the go-e charger (``car`` state 2/3/4)."""
+
+    _attr_device_class = BinarySensorDeviceClass.PLUG
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "car_connected")
+
+    @property
+    def is_on(self) -> bool | None:
+        return self._client.car_connected
+
+
+class ChargingAllowedBinarySensor(GoeMqttEntity, BinarySensorEntity):
+    """The charger's own "allowed to charge now" flag (``alw``)."""
+
+    _attr_icon = "mdi:lock-open-check"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charging_allowed")
+
+    @property
+    def is_on(self) -> bool | None:
+        return self._client.charging_allowed

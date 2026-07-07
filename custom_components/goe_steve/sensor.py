@@ -9,13 +9,24 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import UnitOfElectricCurrent, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoeSteveConfigEntry
 from .coordinator import SteVeCoordinator
 from .engine import compute_car_sources, compute_power_flow
-from .entity import GoeSteveEntity, SteVeEntity
+from .entity import GoeMqttEntity, GoeSteveEntity, SteVeEntity
 from .steve_api import recent_completed
+
+# go-e carState (``car``) → a stable enum slug for the status sensor.
+_CAR_STATE_SLUGS = {
+    0: "unknown",
+    1: "idle",
+    2: "charging",
+    3: "wait_car",
+    4: "complete",
+    5: "error",
+}
 
 
 async def async_setup_entry(
@@ -31,6 +42,12 @@ async def async_setup_entry(
             TargetCurrentSensor(coordinator),
             PowerFlowSensor(coordinator),
             PriceForecastSensor(coordinator),
+            # go-e charger telemetry, straight off MQTT (parity + extras).
+            ChargerStatusSensor(coordinator),
+            ChargerPowerSensor(coordinator),
+            ChargerSessionEnergySensor(coordinator),
+            ChargerTotalEnergySensor(coordinator),
+            ChargerAllowedCurrentSensor(coordinator),
         ]
     )
 
@@ -244,6 +261,109 @@ class PriceForecastSensor(GoeSteveEntity, SensorEntity):
             "cheap_price": self.coordinator.settings.cheap_price,
             "unit": self.coordinator.price_unit,
         }
+
+
+# --- go-e charger sensors (direct MQTT) --------------------------------------------
+
+
+class ChargerStatusSensor(GoeMqttEntity, SensorEntity):
+    """The charger's car state (idle / charging / waiting / complete / …)."""
+
+    _attr_icon = "mdi:ev-plug-type2"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = list(_CAR_STATE_SLUGS.values())
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_status")
+
+    @property
+    def native_value(self) -> str | None:
+        return _CAR_STATE_SLUGS.get(self._client.car_state)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        return {
+            "model_status": self._client.model_status,
+            "allowed": self._client.charging_allowed,
+            "allowed_current_a": self._client.allowed_current_a,
+            "phases": self._client.phases,
+            "cable_limit_a": self._client.cable_limit_a,
+            "firmware": self._client.firmware,
+        }
+
+
+class ChargerPowerSensor(GoeMqttEntity, SensorEntity):
+    """The charger's actual delivered power (``nrg`` total)."""
+
+    _attr_icon = "mdi:ev-station"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_power")
+
+    @property
+    def native_value(self) -> float | None:
+        return self._client.power_w
+
+
+class ChargerSessionEnergySensor(GoeMqttEntity, SensorEntity):
+    """Energy delivered since the car connected (``wh``)."""
+
+    _attr_icon = "mdi:battery-charging"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_session_energy")
+
+    @property
+    def native_value(self) -> float | None:
+        wh = self._client.session_wh
+        return wh / 1000.0 if wh is not None else None
+
+
+class ChargerTotalEnergySensor(GoeMqttEntity, SensorEntity):
+    """Lifetime energy delivered by the charger (``eto``).
+
+    A first-class sensor (not diagnostic) so it shows up in the Energy Dashboard's
+    source picker — this is the meter that replaces the old integration's total.
+    """
+
+    _attr_icon = "mdi:counter"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_total_energy")
+
+    @property
+    def native_value(self) -> float | None:
+        wh = self._client.total_energy_wh
+        return wh / 1000.0 if wh is not None else None
+
+
+class ChargerAllowedCurrentSensor(GoeMqttEntity, SensorEntity):
+    """The current the charger is actually allowing right now (``acu``)."""
+
+    _attr_icon = "mdi:current-ac"
+    _attr_device_class = SensorDeviceClass.CURRENT
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_allowed_current")
+
+    @property
+    def native_value(self) -> int | None:
+        return self._client.allowed_current_a
 
 
 # --- SteVe sensors (Phase 3) -------------------------------------------------------

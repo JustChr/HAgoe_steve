@@ -8,9 +8,10 @@ A HACS custom integration that turns Home Assistant into the **smart-charging br
 for a [go-e](https://go-e.com) wallbox, while [SteVe](https://github.com/steve-community/steve)
 runs alongside as the OCPP backend for authorization and billable metering.
 
-HA regulates charge power **directly via the go-e local API** (reliable), and SteVe owns
-*"may it charge / how much did it charge"*. They coexist because the go-e applies the
-**minimum of all active current limits**. See [`docs/concept`](#concept) for the full design.
+HA regulates charge power by talking to the go-e charger **directly over its native MQTT**
+(no separate go-e integration needed), and SteVe owns *"may it charge / how much did it
+charge"*. They coexist because the go-e applies the **minimum of all active current limits**.
+See [`docs/concept`](#concept) for the full design.
 
 > **Status: early days, actively tested.** All charging modes (solar, price-aware,
 > combined), automatic phase switching and the single home-battery reserve line are in
@@ -22,10 +23,12 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 
 ## What it does today
 
-- Reads your existing HA entities (grid power, optional PV / home-battery SoC & power, price, go-e state).
+- Reads your existing HA entities (grid power, optional PV / home-battery SoC & power, price) and
+  the **go-e charger directly over MQTT** (car state, power, phases, session energy) — it owns the
+  wallbox entities, so no separate go-e integration is required.
 - It reacts to grid/PV/battery power changes **within seconds** (event-driven, debounced), with a
-  30 s poll as a safety net, computing a target charging current and writing it back to the go-e's
-  current-control `number` entity (writes are throttled so it doesn't chase noise).
+  30 s poll as a safety net, computing a target charging current and publishing it to the go-e's
+  `amp` topic (writes are throttled so it doesn't chase noise); start/stop uses `frc`, phases `psm`.
 - **Five modes, one brain:** Smart (solar first + cheap grid + a hard departure guarantee),
   Solar only, Solar + minimum, Fast, and Manual. Under the hood each mode enables a set of
   *strategies* that bid a charging power every cycle; the highest bid drives the charger.
@@ -46,9 +49,8 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
   stop — few, deliberate transitions instead of relay flapping.
 - **Mode-aware 1↔3 phase switching** with anti-flap hysteresis and dwell timers: power modes
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
-  prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch
-  *and* map a go-e phase-control entity during setup — without a mapped phase entity there is
-  nothing to switch.
+  prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch —
+  phase control (`psm`) is always available over MQTT.
 - **Two Lovelace cards:** a main *answer-strip* card — a live charging figure with a ring + source
   bar splitting the car's power into **solar / battery / grid**, a one-line PV/house/grid/battery
   balance, the brain's plain-language reason, chips for state that used to be invisible (battery
@@ -64,10 +66,10 @@ HA regulates charge power **directly via the go-e local API** (reliable), and St
 2. Install **go-e + SteVe Smart Charging**, restart Home Assistant.
 3. *Settings → Devices & Services → Add Integration →* search for it.
 
-You need the go-e charger already available in HA (e.g. via
-[`ha-goecharger-api2`](https://github.com/marq24/ha-goecharger-api2) or
-[`openkfw/smartenergy.goecharger`](https://github.com/openkfw/smartenergy.goecharger)) exposing a
-writable current `number` entity.
+**Prerequisites:** Home Assistant's **MQTT** integration set up against your broker, and the go-e
+charger connected to that broker with **MQTT enabled and API writes allowed** (go-e app → *Internet
+→ Advanced → MQTT*; since firmware 051.5 writes are off by default). No separate go-e integration is
+needed — this integration talks to the charger directly.
 
 ## Setup
 
@@ -78,8 +80,10 @@ The config flow has three steps:
    home-battery **hold switch** (turned on to stop the battery discharging while charging the car
    from the grid). The price forecast is auto-detected from the sensor (Nordpool, EPEX Spot,
    EnergyZero, Tibber, …) — leave the override blank unless detection fails.
-2. **go-e charger** — the current-control `number`, a "car connected" status entity, optionally
-   charging status and charging power, plus grid voltage and phase count.
+2. **go-e charger** — the charger's **MQTT base topic** (e.g. `go-eCharger/123456`),
+   auto-discovered from your broker so you can pick it from a list, plus grid voltage and phase
+   count. The integration then creates the wallbox entities (current, phases, force, car state,
+   power, session/total energy, …) itself.
 3. **SteVe (optional)** — base URL, an API user + its **API password** (set under *Users* in
    SteVe, not the login password), and an optional default charge box / connector for the
    remote start/stop services. Leave the URL blank to skip — the brain works without it.
@@ -133,7 +137,7 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `select` Charging mode | Smart / Solar only / Solar+minimum / Fast / Manual |
 | `select` Home battery | Auto / Hold / Free — let the brain decide, always block discharge, or never |
 | `switch` Smart control | Master enable — off = hands off entirely |
-| `switch` Auto phase | Enable mode-aware 1↔3 phase switching (needs a mapped go-e phase entity) |
+| `switch` Auto phase | Enable mode-aware 1↔3 phase switching (phase control is always available over MQTT) |
 | `number` Min/Max current | Charge current bounds (min is also the *Solar + minimum* floor) |
 | `number` Keep home battery above | The reserve line (SoC %) — below it the battery comes first, at/above it it buffers for the car; 100 = always protect |
 | `number` Car target energy | kWh to deliver by departure (Smart) |

@@ -25,24 +25,14 @@
       },
       "charger": {
         "title": "go-e Wallbox",
-        "description": "Wähle die Entitäten, mit denen die Steuerung deine go-e Wallbox liest und steuert.",
+        "description": "Verbinde die Steuerung per MQTT mit deiner go-e Wallbox. Aktiviere zuvor in der go-e App MQTT und erlaube API-Schreibzugriff (Internet → Erweitert → MQTT).",
         "data": {
-          "goe_current_number": "Ladestrom-Steuerung (Number)",
-          "goe_phase_entity": "Phasenumschaltung (optional)",
-          "goe_force_entity": "Start/Stopp-Steuerung (empfohlen)",
-          "goe_connected_entity": "Status: Fahrzeug verbunden",
-          "goe_power_entity": "Ladeleistung (optional)",
-          "goe_energy_entity": "Sitzungsenergie (optional)",
+          "goe_base_topic": "go-e Basis-Topic",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden"
         },
         "data_description": {
-          "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
-          "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
-          "goe_force_entity": "Die go-e Force-State-Entität („Neutral / Nicht laden / Laden“, frc). Damit startet und stoppt die Steuerung das Laden tatsächlich — ohne sie kann die Wallbox ihre 6-A-Untergrenze nicht unterschreiten, ein Pausieren funktioniert also nicht.",
-          "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
-          "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
-          "goe_energy_entity": "Im aktuellen Ladevorgang abgegebene Energie der Wallbox (go-e „Energie seit Fahrzeug verbunden“). Wird live neben dem laufenden Ladevorgang auf der Karte angezeigt.",
+          "goe_base_topic": "Das MQTT-Basis-Topic deiner go-e Wallbox, z. B. go-eCharger/123456 (ein führender Schrägstrich ist ok, falls deine Wallbox einen verwendet). Aus der automatischen Erkennung wählen oder eintippen. Die Steuerung liest und steuert die Wallbox vollständig über dieses Topic — keine separate go-e Integration nötig.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }
@@ -70,8 +60,8 @@
   "options": {
     "step": {
       "init": {
-        "title": "Entitäten neu zuordnen",
-        "description": "Ändere die von der Steuerung verwendeten Sensoren oder Wallbox-Entitäten.",
+        "title": "Neu konfigurieren",
+        "description": "Ändere die von der Steuerung verwendeten Sensoren oder das MQTT-Topic der go-e Wallbox.",
         "data": {
           "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
           "pv_power_entity": "PV-Erzeugung (optional)",
@@ -80,12 +70,7 @@
           "battery_hold_entity": "Schalter „Hausbatterie halten“ (optional)",
           "price_entity": "Strompreis (optional)",
           "price_forecast_attr": "Attribut der Preisprognose (optional)",
-          "goe_current_number": "Ladestrom-Steuerung (Number)",
-          "goe_phase_entity": "Phasenumschaltung (optional)",
-          "goe_force_entity": "Start/Stopp-Steuerung (empfohlen)",
-          "goe_connected_entity": "Status: Fahrzeug verbunden",
-          "goe_power_entity": "Ladeleistung (optional)",
-          "goe_energy_entity": "Sitzungsenergie (optional)",
+          "goe_base_topic": "go-e Basis-Topic",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden",
           "steve_url": "SteVe-URL (optional)",
@@ -102,16 +87,17 @@
           "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn immer dann ein, wenn sie bewusst aus dem Netz lädt (günstige Stunden, Abfahrtsplan, Schnellladen), damit das Auto aus dem Netz lädt und nie aus der Batterie. Beim Solarladen bleibt er aus, damit die Batterie Überschuss-Schwankungen abpuffern kann.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
-          "goe_current_number": "Die Number-Entität, die den Ladestrom (A) setzt. Die Steuerung schreibt hier den Ladestrom.",
-          "goe_phase_entity": "Entität, die zwischen 1 und 3 Phasen umschaltet, falls deine Wallbox das unterstützt. Leer lassen, um die Phasen fest zu lassen.",
-          "goe_force_entity": "Die go-e Force-State-Entität („Neutral / Nicht laden / Laden“, frc). Damit startet und stoppt die Steuerung das Laden tatsächlich — ohne sie kann die Wallbox ihre 6-A-Untergrenze nicht unterschreiten, ein Pausieren funktioniert also nicht.",
-          "goe_connected_entity": "Sagt der Steuerung, ob ein Fahrzeug angesteckt ist. Geladen wird nur bei verbundenem Fahrzeug.",
-          "goe_power_entity": "Tatsächlich abgegebene Leistung der Wallbox. Wird für Rückmeldung und Statistik genutzt.",
-          "goe_energy_entity": "Im aktuellen Ladevorgang abgegebene Energie der Wallbox (go-e „Energie seit Fahrzeug verbunden“). Wird live neben dem laufenden Ladevorgang auf der Karte angezeigt.",
+          "goe_base_topic": "Das MQTT-Basis-Topic deiner go-e Wallbox, z. B. go-eCharger/123456 (ein führender Schrägstrich ist ok, falls deine Wallbox einen verwendet). Aus der automatischen Erkennung wählen oder eintippen.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
         }
       }
+    }
+  },
+  "issues": {
+    "reconfigure_topic": {
+      "title": "MQTT-Topic der go-e Wallbox festlegen",
+      "description": "Diese Version verbindet sich direkt per MQTT mit deiner go-e Wallbox statt über eine separate go-e Integration. Öffne die Optionen der Integration und lege das Basis-Topic der Wallbox fest (z. B. go-eCharger/123456), um das Update abzuschließen."
     }
   },
   "selector": {
@@ -149,6 +135,22 @@
           "free": "Frei"
         }
       },
+      "charger_phases": {
+        "name": "Wallbox-Phasen",
+        "state": {
+          "auto": "Auto",
+          "1": "Einphasig",
+          "3": "Dreiphasig"
+        }
+      },
+      "charger_force": {
+        "name": "Wallbox-Force-State",
+        "state": {
+          "neutral": "Neutral",
+          "off": "Aus",
+          "on": "An"
+        }
+      },
       "selected_tag": {
         "name": "Ausgewählter Tag"
       }
@@ -164,7 +166,8 @@
       "max_current": { "name": "Maximalstrom" },
       "battery_reserve_soc": { "name": "Hausbatterie halten über" },
       "cheap_price": { "name": "Schwelle günstiger Preis" },
-      "target_energy": { "name": "Zielenergie bis Abfahrt" }
+      "target_energy": { "name": "Zielenergie bis Abfahrt" },
+      "charger_current": { "name": "Ladestrom" }
     },
     "datetime": {
       "departure": { "name": "Abfahrtszeit" }
@@ -175,6 +178,21 @@
       "target_current": { "name": "Soll-Strom" },
       "power_flow": { "name": "Energiefluss" },
       "price_forecast": { "name": "Strompreis" },
+      "charger_status": {
+        "name": "Wallbox-Status",
+        "state": {
+          "unknown": "Unbekannt",
+          "idle": "Bereit (kein Auto)",
+          "charging": "Lädt",
+          "wait_car": "Warten aufs Auto",
+          "complete": "Abgeschlossen",
+          "error": "Fehler"
+        }
+      },
+      "charger_power": { "name": "Wallbox-Leistung" },
+      "charger_session_energy": { "name": "Wallbox-Sitzungsenergie" },
+      "charger_total_energy": { "name": "Wallbox-Gesamtenergie" },
+      "charger_allowed_current": { "name": "Wallbox erlaubter Strom" },
       "active_transaction": { "name": "Aktiver Ladevorgang" },
       "last_session_energy": { "name": "Energie letzter Ladevorgang" },
       "tag_energy": { "name": "Energie {tag}" }
@@ -182,7 +200,9 @@
     "binary_sensor": {
       "controlling": { "name": "Steuerung aktiv" },
       "charging_requested": { "name": "Laden angefordert" },
-      "battery_hold": { "name": "Hausbatterie gehalten" }
+      "battery_hold": { "name": "Hausbatterie gehalten" },
+      "car_connected": { "name": "Fahrzeug verbunden" },
+      "charging_allowed": { "name": "Laden erlaubt" }
     }
   },
   "services": {

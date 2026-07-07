@@ -3,11 +3,11 @@
   "name": "go-e + SteVe Smart Charging",
   "codeowners": ["@JustChr"],
   "config_flow": true,
-  "dependencies": ["http", "frontend"],
+  "dependencies": ["http", "frontend", "mqtt"],
   "documentation": "https://github.com/JustChr/HAgoe_steve",
   "integration_type": "hub",
-  "iot_class": "calculated",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/JustChr/HAgoe_steve/issues",
   "requirements": [],
-  "version": "4.1.0"
+  "version": "5.0.0"
 }

@@ -24,12 +24,7 @@ from .const import (
     CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
-    CONF_GOE_CONNECTED,
-    CONF_GOE_CURRENT,
-    CONF_GOE_ENERGY,
-    CONF_GOE_FORCE,
-    CONF_GOE_PHASE,
-    CONF_GOE_POWER,
+    CONF_GOE_BASE_TOPIC,
     CONF_GRID_POWER,
     CONF_PHASES,
     CONF_PRICE,
@@ -48,28 +43,17 @@ from .const import (
     DEFAULT_VOLTAGE,
     DOMAIN,
 )
+from .goe_mqtt import async_discover_chargers, normalize_base_topic
 
 _POWER_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="power")
 )
 _OPTIONAL_POWER_SENSOR = _POWER_SENSOR
-_ENERGY_SENSOR = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain="sensor", device_class="energy")
-)
 _BATTERY_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="battery")
 )
 _BATTERY_HOLD_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
-)
-_NUMBER_ENTITY = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain="number")
-)
-_PHASE_ENTITY = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain=["number", "select"])
-)
-_FORCE_ENTITY = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain=["select", "number"])
 )
 _PRICE_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["sensor", "input_number"])
@@ -77,36 +61,41 @@ _PRICE_ENTITY = selector.EntitySelector(
 _TEXT = selector.TextSelector()
 _URL = selector.TextSelector(selector.TextSelectorConfig(type="url"))
 _PASSWORD = selector.TextSelector(selector.TextSelectorConfig(type="password"))
-_STATUS_ENTITY = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
-)
 
 
-def _charger_schema(defaults: dict[str, Any]) -> vol.Schema:
+def _base_topic_selector(discovered: dict[str, dict[str, str]]) -> selector.Selector:
+    """A dropdown of discovered charger base topics that also accepts free text.
+
+    Each option's value is the base topic (leading slash preserved); the label
+    adds the serial + friendly name + firmware when the charger reported them.
+    ``custom_value`` lets the user type a topic when nothing was discovered.
+    """
+    options: list[selector.SelectOptionDict] = []
+    for base, info in sorted(discovered.items()):
+        serial = info.get("serial", base)
+        name = info.get("name")
+        fw = info.get("firmware")
+        label = base if serial in base else f"{serial} — {base}"
+        extra = " · ".join(part for part in (name, f"fw {fw}" if fw else None) if part)
+        if extra:
+            label = f"{label}  ({extra})"
+        options.append(selector.SelectOptionDict(value=base, label=label))
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options, custom_value=True, mode="dropdown"
+        )
+    )
+
+
+def _charger_schema(
+    defaults: dict[str, Any], discovered: dict[str, dict[str, str]]
+) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(
-                CONF_GOE_CURRENT, default=defaults.get(CONF_GOE_CURRENT)
-            ): _NUMBER_ENTITY,
-            vol.Optional(
-                CONF_GOE_PHASE,
-                description={"suggested_value": defaults.get(CONF_GOE_PHASE)},
-            ): _PHASE_ENTITY,
-            vol.Optional(
-                CONF_GOE_FORCE,
-                description={"suggested_value": defaults.get(CONF_GOE_FORCE)},
-            ): _FORCE_ENTITY,
-            vol.Required(
-                CONF_GOE_CONNECTED, default=defaults.get(CONF_GOE_CONNECTED)
-            ): _STATUS_ENTITY,
-            vol.Optional(
-                CONF_GOE_POWER,
-                description={"suggested_value": defaults.get(CONF_GOE_POWER)},
-            ): _OPTIONAL_POWER_SENSOR,
-            vol.Optional(
-                CONF_GOE_ENERGY,
-                description={"suggested_value": defaults.get(CONF_GOE_ENERGY)},
-            ): _ENERGY_SENSOR,
+                CONF_GOE_BASE_TOPIC,
+                default=defaults.get(CONF_GOE_BASE_TOPIC),
+            ): _base_topic_selector(discovered),
             vol.Required(
                 CONF_VOLTAGE, default=defaults.get(CONF_VOLTAGE, DEFAULT_VOLTAGE)
             ): selector.NumberSelector(
@@ -237,6 +226,8 @@ def _apply_forecast_autodetect(hass: Any, data: dict[str, Any]) -> None:
 def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     """Coerce numeric strings (phases/voltage/connector) and drop empty optionals."""
     out = {k: v for k, v in data.items() if v not in (None, "")}
+    if CONF_GOE_BASE_TOPIC in out:
+        out[CONF_GOE_BASE_TOPIC] = normalize_base_topic(out[CONF_GOE_BASE_TOPIC])
     if CONF_PHASES in out:
         out[CONF_PHASES] = int(out[CONF_PHASES])
     if CONF_VOLTAGE in out:
@@ -251,8 +242,9 @@ class GoeSteveConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # v2: Protect/Share/Assist + battery floor collapsed into the single
     # home-battery reserve line. v3: strategies + arbiter engine — mode presets,
-    # min_grid_floor removed (see async_migrate_entry).
-    VERSION = 3
+    # min_grid_floor removed. v4: charger link moved to direct go-e MQTT (base
+    # topic replaces the six mapped entities). See async_migrate_entry.
+    VERSION = 4
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -274,8 +266,10 @@ class GoeSteveConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._data.update(_normalize(user_input))
             return await self.async_step_steve()
+        # Scan the broker so the base topic can be picked, not typed.
+        discovered = await async_discover_chargers(self.hass)
         return self.async_show_form(
-            step_id="charger", data_schema=_charger_schema({})
+            step_id="charger", data_schema=_charger_schema({}, discovered)
         )
 
     async def async_step_steve(
@@ -297,7 +291,7 @@ class GoeSteveConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class GoeSteveOptionsFlow(OptionsFlow):
-    """Let the user re-map any entity after setup."""
+    """Let the user re-map any entity / re-point the charger topic after setup."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -310,9 +304,11 @@ class GoeSteveOptionsFlow(OptionsFlow):
             return self.async_create_entry(title="", data={})
 
         defaults = dict(entry.data)
+        # Offer freshly discovered chargers alongside the currently stored topic.
+        discovered = await async_discover_chargers(self.hass)
         schema = (
             _energy_schema(defaults)
-            .extend(_charger_schema(defaults).schema)
+            .extend(_charger_schema(defaults, discovered).schema)
             .extend(_steve_schema(defaults).schema)
         )
         return self.async_show_form(step_id="init", data_schema=schema)

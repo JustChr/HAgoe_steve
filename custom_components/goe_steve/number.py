@@ -18,7 +18,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import GoeSteveConfigEntry
 from .coordinator import RuntimeSettings
-from .entity import GoeSteveEntity
+from .entity import GoeMqttEntity, GoeSteveEntity
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -111,7 +111,9 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(GoeNumber(coordinator, desc) for desc in NUMBERS)
+    entities: list[NumberEntity] = [GoeNumber(coordinator, desc) for desc in NUMBERS]
+    entities.append(ChargerCurrentNumber(coordinator))
+    async_add_entities(entities)
 
 
 class GoeNumber(GoeSteveEntity, RestoreEntity, NumberEntity):
@@ -154,3 +156,28 @@ class GoeNumber(GoeSteveEntity, RestoreEntity, NumberEntity):
             self.coordinator.set_manual_passive(False)
         self.async_write_ha_state()
         self.coordinator.request_apply()
+
+
+class ChargerCurrentNumber(GoeMqttEntity, NumberEntity):
+    """The charger's requested current (``amp``), live over MQTT.
+
+    Reflects the go-e's own value and writes it back. While smart control is
+    active the brain also drives this every cycle; setting it by hand is only
+    authoritative when the brain isn't controlling (Manual / smart control off).
+    """
+
+    _attr_icon = "mdi:ev-station"
+    _attr_native_min_value = 6
+    _attr_native_max_value = 32
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_current")
+
+    @property
+    def native_value(self) -> float | None:
+        return self._client.requested_current_a
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._client.set_amp(int(value))

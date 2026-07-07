@@ -8,12 +8,37 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import restore_state
 
-from .const import CONF_BATTERY_RESERVE_SEED, DOMAIN
+from .const import (
+    CONF_BATTERY_RESERVE_SEED,
+    CONF_GOE_BASE_TOPIC,
+    CONF_GOE_CHARGING,
+    CONF_GOE_CONNECTED,
+    CONF_GOE_CURRENT,
+    CONF_GOE_ENERGY,
+    CONF_GOE_FORCE,
+    CONF_GOE_PHASE,
+    CONF_GOE_POWER,
+    DOMAIN,
+)
 from .coordinator import GoeSteveCoordinator, SteVeCoordinator
 from .services import async_setup_services, async_unload_services
+
+# Legacy (pre-v4) charger-entity keys the v3→v4 migration strips once the direct
+# MQTT base topic takes over.
+_LEGACY_GOE_KEYS = (
+    CONF_GOE_CURRENT,
+    CONF_GOE_PHASE,
+    CONF_GOE_FORCE,
+    CONF_GOE_CONNECTED,
+    CONF_GOE_CHARGING,
+    CONF_GOE_POWER,
+    CONF_GOE_ENERGY,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,8 +64,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> 
     """Set up go-e + SteVe Smart Charging from a config entry."""
     await _async_register_frontend(hass)
 
+    # v4+: the charger link is direct go-e MQTT. A pre-v4 entry migrated to v4 has
+    # no base topic yet (an entity map can't become a topic) — guide the user to
+    # reconfigure instead of subscribing to nothing.
+    if not entry.data.get(CONF_GOE_BASE_TOPIC):
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"reconfigure_topic_{entry.entry_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="reconfigure_topic",
+        )
+        raise ConfigEntryError(
+            "The go-e charger now connects over MQTT — open the integration's "
+            "options and set the charger's base topic to finish the upgrade."
+        )
+    ir.async_delete_issue(hass, DOMAIN, f"reconfigure_topic_{entry.entry_id}")
+
     coordinator = GoeSteveCoordinator(hass, entry)
     entry.runtime_data = coordinator
+
+    # Subscribe to the charger's MQTT topics before the first engine run so its
+    # retained state is primed. Unsubscribe on unload.
+    await coordinator.goe.async_start()
+    entry.async_on_unload(coordinator.goe.async_stop)
 
     # Optional SteVe linkage (Phase 3): authorization + metering. A SteVe outage
     # must not block the regulation brain, so we refresh non-blocking — entities
@@ -93,8 +141,12 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     (``min_grid_floor``) is gone — Solar + minimum now simply guarantees the
     minimum current — so its registry entry is dropped. The old charging modes
     map onto the new presets when the mode select restores its state.
+
+    v3 → v4: the charger link moves to direct go-e MQTT. The six mapped entity
+    keys are dropped; there's no way to derive a topic from them, so the entry
+    lands without a base topic and setup raises a reconfigure prompt.
     """
-    if entry.version > 3:
+    if entry.version > 4:
         return False  # future schema from a newer install — don't guess
 
     if entry.version == 1:
@@ -145,6 +197,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             registry.async_remove(floor_id)
         hass.config_entries.async_update_entry(entry, version=3)
         _LOGGER.info("Migrated config entry to v3 (strategies + arbiter engine)")
+
+    if entry.version == 3:
+        # Drop the legacy mapped-entity keys; the base topic is set later via the
+        # reconfigure prompt raised in async_setup_entry.
+        data = {k: v for k, v in entry.data.items() if k not in _LEGACY_GOE_KEYS}
+        hass.config_entries.async_update_entry(entry, data=data, version=4)
+        _LOGGER.info("Migrated config entry to v4 (direct go-e MQTT charger link)")
 
     return True
 

@@ -23,17 +23,22 @@ CONF_BATTERY_POWER: Final = "battery_power_entity"
 CONF_BATTERY_HOLD: Final = "battery_hold_entity"
 CONF_PRICE: Final = "price_entity"
 CONF_PRICE_FORECAST_ATTR: Final = "price_forecast_attr"
+# --- Charger link: direct go-e MQTT (v4+) -----------------------------------------
+# The brain talks to the go-e charger over its native MQTT instead of mapping
+# entities from a separate go-e integration. Only the base topic is needed:
+# "<prefix>/<serial>", e.g. "go-eCharger/222162" (a leading slash is preserved for
+# chargers that emit "/go-eCharger/…"). See goe_mqtt.py + docs/mqtt-direct-concept.md.
+CONF_GOE_BASE_TOPIC: Final = "goe_base_topic"
+
+# --- Legacy charger config keys (pre-v4: mapped HA entities) -----------------------
+# Kept only so a pre-v4 config entry keeps parsing during migration; no longer
+# offered in the flow. The v3→v4 migration drops them once the base topic is set.
 CONF_GOE_CURRENT: Final = "goe_current_number"
 CONF_GOE_PHASE: Final = "goe_phase_entity"
 CONF_GOE_FORCE: Final = "goe_force_entity"
 CONF_GOE_CONNECTED: Final = "goe_connected_entity"
-# Legacy (pre-v3): a mapped "charging status" entity that was never read by the
-# engine. No longer offered in the config flow; the key is kept so old entries
-# carrying it keep loading. Charging state is inferred from connected + power.
 CONF_GOE_CHARGING: Final = "goe_charging_entity"
 CONF_GOE_POWER: Final = "goe_power_entity"
-# Energy delivered in the current charging session (go-e "energy since car
-# connected"). Optional; surfaces the live "charged so far" figure on the card.
 CONF_GOE_ENERGY: Final = "goe_energy_entity"
 
 # --- Config entry keys: SteVe linkage (Phase 3, all optional) ----------------------

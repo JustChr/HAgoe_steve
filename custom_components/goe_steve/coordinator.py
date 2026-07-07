@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
@@ -26,12 +26,7 @@ from .const import (
     CONF_BATTERY_POWER,
     CONF_BATTERY_RESERVE_SEED,
     CONF_BATTERY_SOC,
-    CONF_GOE_CONNECTED,
-    CONF_GOE_CURRENT,
-    CONF_GOE_ENERGY,
-    CONF_GOE_FORCE,
-    CONF_GOE_PHASE,
-    CONF_GOE_POWER,
+    CONF_GOE_BASE_TOPIC,
     CONF_GRID_POWER,
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
@@ -72,75 +67,10 @@ from .engine import (
     decide,
 )
 from .forecast import dedupe_slots, parse_forecast
+from .goe_mqtt import FRC_NEUTRAL, FRC_OFF, FRC_ON, GoeMqttClient
 from .steve_api import SteVeApiClient, SteVeApiError, SteVeData
 
 _LOGGER = logging.getLogger(__name__)
-
-# Loose truthy/charging tokens, so we tolerate the many ways go-e integrations
-# expose "car connected" / "charging" (binary_sensor, sensor, enum, number).
-_TRUTHY = {STATE_ON, "true", "1", "connected", "charging", "car", "ready"}
-
-# go-e controls phases as a *mode* select ("Auto" / "Force single phase" /
-# "Force three phases"), not a 1/3 count. Map between the engine's phase count
-# and the select option by keyword, so we survive locale/firmware label changes
-# (English + German) instead of writing a literal "1"/"3" the select rejects.
-_ONE_PHASE_TOKENS = ("one", "single", "1-phase", "1 phase", "1phase", "einphasig", "1")
-_THREE_PHASE_TOKENS = ("three", "3-phase", "3 phase", "3phase", "dreiphasig", "3")
-
-
-def _phases_from_option(option: str) -> int | None:
-    """Phase count implied by a phase-switch option, or None for auto/unknown."""
-    low = option.lower()
-    if "auto" in low:
-        return None
-    if any(token in low for token in _THREE_PHASE_TOKENS):
-        return 3
-    if any(token in low for token in _ONE_PHASE_TOKENS):
-        return 1
-    return None
-
-
-def _phase_option_for(target_phases: int, options: list[str]) -> str | None:
-    """The select option that forces ``target_phases``, matched against live options."""
-    for option in options:
-        if _phases_from_option(option) == target_phases:
-            return option
-    return None
-
-
-# go-e exposes its force-state (``frc``) as a select with three options
-# ("Neutral" / "Don't charge" / "Charge", German "Neutral" / "Nicht laden" /
-# "Laden") — or, on some integrations, as a number (0/1/2). The amp number floors
-# at the 6 A hardware minimum and cannot actually pause charging, so the brain
-# starts/stops via this entity instead. Match by keyword to survive locale and
-# firmware label changes. The "off" tokens are checked first because the German
-# and English "don't charge" labels also contain the "charge"/"laden" keyword.
-_FORCE_OFF_TOKENS = ("don", "nicht", "kein", "stop", "off")
-_FORCE_ON_TOKENS = ("charge", "laden", "force", "on")
-_FORCE_NEUTRAL_TOKENS = ("neutral", "default", "auto")
-
-
-def _force_option_for(want_charge: bool, options: list[str]) -> str | None:
-    """The select option that forces charging on/off, matched against live options."""
-    for option in options:
-        low = option.lower()
-        is_off = any(token in low for token in _FORCE_OFF_TOKENS)
-        if want_charge:
-            if is_off:
-                continue
-            if any(token in low for token in _FORCE_ON_TOKENS):
-                return option
-        elif is_off:
-            return option
-    return None
-
-
-def _neutral_force_option(options: list[str]) -> str | None:
-    """The select's neutral/default option, to release manual control."""
-    for option in options:
-        if any(token in option.lower() for token in _FORCE_NEUTRAL_TOKENS):
-            return option
-    return None
 
 
 @dataclass(slots=True)
@@ -192,6 +122,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             ),
         )
         self._cfg = dict(entry.data)
+        # Direct link to the go-e charger over MQTT (replaces the old third-party
+        # integration + entity mapping). Subscription is started in setup.
+        self.goe = GoeMqttClient(hass, self._cfg.get(CONF_GOE_BASE_TOPIC, ""))
         self.settings = RuntimeSettings()
         # One-shot v1→v2 migration seed: the old battery policy mapped onto the
         # reserve line. Applied immediately (so the first engine cycles use it)
@@ -249,8 +182,8 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
     @property
     def has_phase_control(self) -> bool:
-        """True when a go-e phase-switch entity is mapped (1↔3 selectable)."""
-        return bool(self._cfg.get(CONF_GOE_PHASE))
+        """Always true over MQTT: the charger's ``psm`` is always writable."""
+        return True
 
     @property
     def last_written_force(self) -> bool | None:
@@ -274,67 +207,27 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         except (ValueError, TypeError):
             return None
 
-    def _get_bool(self, conf_key: str) -> bool | None:
-        entity_id = self._cfg.get(conf_key)
-        if not entity_id:
-            return None
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
-            return None
-        raw = state.state.lower()
-        if raw in _TRUTHY:
-            return True
-        if raw in (STATE_OFF, "false", "0", "idle", "disconnected"):
-            return False
-        # Numeric truthiness fallback (e.g. go-e "car" status code > 1).
-        try:
-            return float(raw) > 1
-        except (ValueError, TypeError):
-            return None
-
     @property
     def goe_session_energy_kwh(self) -> float | None:
-        """Energy charged in the running session (kWh), from the go-e meter.
+        """Energy charged in the running session (kWh), from the go-e ``wh`` key.
 
-        Reads the mapped session-energy entity and normalizes to kWh by its
-        unit — go-e exposes this either as Wh or kWh depending on the entity.
-        Returns None when unmapped or unavailable.
+        go-e reports ``wh`` in Wh ("energy since car connected"); we normalize to
+        kWh. Returns None when the charger hasn't reported it yet.
         """
-        entity_id = self._cfg.get(CONF_GOE_ENERGY)
-        if not entity_id:
-            return None
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
-            return None
-        try:
-            value = float(state.state)
-        except (ValueError, TypeError):
-            return None
-        unit = str(state.attributes.get("unit_of_measurement", "")).lower()
-        if unit in ("wh", "watt-hour", "watthour"):
-            value /= 1000.0
-        return value
+        wh = self.goe.session_wh
+        return wh / 1000.0 if wh is not None else None
 
     def _read_phases(self) -> int:
         """Actual phase count the car is charging on, best-effort.
 
-        Prefer reading the go-e phase-switch select back — a forced single/three
-        mode tells us the real count, which keeps the engine's ``P = I·φ·V`` math
-        grounded in reality and catches a failed write or a manual/app override.
-        An ``Auto`` mode (count unknown) and an unmapped entity fall back to the
-        engine's intended phase, then the static configured count.
+        Prefer the charger's reported ``pnp`` (phases actually charging): it keeps
+        the engine's ``P = I·φ·V`` math grounded in reality and catches a failed
+        write or a manual/app override. When the charger hasn't reported it (e.g.
+        idle), fall back to the engine's intended phase, then the configured count.
         """
-        entity_id = self._cfg.get(CONF_GOE_PHASE)
-        if entity_id:
-            state = self.hass.states.get(entity_id)
-            if state is not None and state.state not in (
-                STATE_UNAVAILABLE,
-                STATE_UNKNOWN,
-                "",
-            ):
-                phases = _phases_from_option(state.state)
-                if phases is not None:
-                    return phases
+        phases = self.goe.phases
+        if phases in (1, 3):
+            return phases
         return self._state.phases or self._phases
 
     def _read_price(self) -> tuple[float | None, list[PriceSlot] | None]:
@@ -419,7 +312,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
     # --- The regulation loop ----------------------------------------------------
     async def _async_update_data(self) -> Decision:
-        connected = self._get_bool(CONF_GOE_CONNECTED)
+        connected = self.goe.car_connected
         grid_raw = self._get_float(CONF_GRID_POWER)
 
         # Required signals missing/stale → keep hands off rather than guess.
@@ -438,7 +331,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # car power separately — is invariant to the car's own current changes.
         inputs = ChargerInputs(
             car_connected=connected,
-            car_actual_power_w=self._get_float(CONF_GOE_POWER) or 0.0,
+            car_actual_power_w=self.goe.power_w or 0.0,
             phases=self._read_phases(),
             voltage_v=self._voltage,
             grid_power_w=grid_raw,
@@ -498,19 +391,16 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # rate-limited current write below so it is never starved by the throttle.
         await self._write_hold(decision.hold_battery)
 
-        # Start/stop via the force-state entity when mapped: the amp number floors
-        # at the 6 A hardware minimum, so writing 0 there can't actually pause
-        # charging. When pausing, the force-state holds the car off and we leave
-        # the amp where it is. Without a force entity we fall back to the legacy
-        # current=0 stop (best-effort) below.
-        if self._cfg.get(CONF_GOE_FORCE):
-            await self._write_force(decision.should_charge)
-            if not decision.should_charge:
-                # Forget the last written current: while paused the go-e may
-                # clamp/alter the amp value, so the first write after resuming
-                # must not be deadband-compared against a stale reading.
-                self._last_written_a = None
-                return
+        # Start/stop via the go-e force-state (frc): the amp value floors at the
+        # 6 A hardware minimum, so it can't actually pause charging. When pausing,
+        # frc=1 holds the car off and we leave the amp where it is.
+        await self._write_force(decision.should_charge)
+        if not decision.should_charge:
+            # Forget the last written current: while paused the go-e may clamp/alter
+            # the amp value, so the first write after resuming must not be
+            # deadband-compared against a stale reading.
+            self._last_written_a = None
+            return
 
         target = round(decision.target_current_a) if decision.should_charge else 0
 
@@ -530,9 +420,6 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         await self._write_phases(decision)
 
-        current_entity = self._cfg.get(CONF_GOE_CURRENT)
-        if not current_entity:
-            return
         if (
             self._last_written_a is not None
             and abs(target - self._last_written_a) < MIN_WRITE_DELTA_A
@@ -540,20 +427,12 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         ):
             return
 
-        try:
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": current_entity, "value": target},
-                blocking=False,
-            )
-            self._last_written_a = float(target)
-            self._last_write_at = now
-        except Exception as err:  # noqa: BLE001 - never let a write break the loop
-            _LOGGER.warning("Failed to set charger current via %s: %s", current_entity, err)
+        await self.goe.set_amp(target)
+        self._last_written_a = float(target)
+        self._last_write_at = now
 
     async def _write_phases(self, decision: Decision) -> None:
-        """Write the phase count when an entity is mapped.
+        """Force the charger's phase count (psm) over MQTT.
 
         Driven by auto-phase (smart modes that adapt 1↔3) or an explicit
         ``write_phases`` request from the decision (Manual mode, where the user
@@ -561,109 +440,33 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """
         if not self.settings.auto_phase and not decision.write_phases:
             return
-        phase_entity = self._cfg.get(CONF_GOE_PHASE)
-        if not phase_entity:
-            return
         if self._last_written_phases == decision.target_phases:
             return
-
-        domain = phase_entity.split(".", 1)[0]
-        if domain == "select":
-            # go-e exposes a mode select ("Force single/three phase…"), not a
-            # 1/3 count — map to the real option, matched against its live list.
-            state = self.hass.states.get(phase_entity)
-            options = list(state.attributes.get("options", [])) if state else []
-            option = _phase_option_for(decision.target_phases, options)
-            if option is None:
-                _LOGGER.warning(
-                    "No option on %s forces %d phase(s); available options: %s",
-                    phase_entity,
-                    decision.target_phases,
-                    options,
-                )
-                return
-            service = "select_option"
-            data: dict[str, object] = {"entity_id": phase_entity, "option": option}
-        else:
-            service = "set_value"
-            data = {"entity_id": phase_entity, "value": decision.target_phases}
-
-        try:
-            await self.hass.services.async_call(domain, service, data, blocking=False)
-            self._last_written_phases = decision.target_phases
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Failed to set phases via %s: %s", phase_entity, err)
+        await self.goe.set_phase_count(decision.target_phases)
+        self._last_written_phases = decision.target_phases
 
     async def _write_force(self, want_charge: bool) -> None:
-        """Force the charger on/off via the go-e force-state entity, when mapped.
+        """Force the charger on/off via the go-e ``frc`` key.
 
-        ``want_charge=True`` forces charging on (``frc=2`` / "Charge"); False forces
-        it off (``frc=1`` / "Don't charge"). Skips redundant writes by remembering
-        the last state we set.
+        ``want_charge=True`` forces charging on (frc=2 / On); False forces it off
+        (frc=1 / Off). Skips redundant writes by remembering the last state we set.
         """
-        force_entity = self._cfg.get(CONF_GOE_FORCE)
-        if not force_entity:
-            return
         if self._last_written_force is want_charge:
             return
-
-        domain = force_entity.split(".", 1)[0]
-        if domain == "select":
-            state = self.hass.states.get(force_entity)
-            options = list(state.attributes.get("options", [])) if state else []
-            option = _force_option_for(want_charge, options)
-            if option is None:
-                _LOGGER.warning(
-                    "No option on %s to %s charging; available options: %s",
-                    force_entity,
-                    "start" if want_charge else "stop",
-                    options,
-                )
-                return
-            service = "select_option"
-            data: dict[str, object] = {"entity_id": force_entity, "option": option}
-        else:
-            # Numeric force-state: 2 = force on (charge), 1 = force off.
-            service = "set_value"
-            data = {"entity_id": force_entity, "value": 2 if want_charge else 1}
-
-        try:
-            await self.hass.services.async_call(domain, service, data, blocking=False)
-            self._last_written_force = want_charge
-        except Exception as err:  # noqa: BLE001 - never let a write break the loop
-            _LOGGER.warning("Failed to set force-state via %s: %s", force_entity, err)
+        await self.goe.set_force(FRC_ON if want_charge else FRC_OFF)
+        self._last_written_force = want_charge
 
     async def _release_force(self) -> None:
-        """Return the force-state to neutral so manual/app control resumes.
+        """Return ``frc`` to neutral so manual/app control resumes.
 
-        Only acts when the brain previously forced the state; an untouched entity
+        Only acts when the brain previously forced the state; an untouched charger
         (``_last_written_force is None``) is left alone so we never override a value
         the user set themselves.
         """
-        force_entity = self._cfg.get(CONF_GOE_FORCE)
-        if not force_entity or self._last_written_force is None:
+        if self._last_written_force is None:
             return
-
-        domain = force_entity.split(".", 1)[0]
-        if domain == "select":
-            state = self.hass.states.get(force_entity)
-            options = list(state.attributes.get("options", [])) if state else []
-            option = _neutral_force_option(options)
-            if option is None:
-                self._last_written_force = None
-                return
-            service = "select_option"
-            data: dict[str, object] = {"entity_id": force_entity, "option": option}
-        else:
-            service = "set_value"
-            data = {"entity_id": force_entity, "value": 0}
-
-        try:
-            await self.hass.services.async_call(domain, service, data, blocking=False)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Failed to release force-state via %s: %s", force_entity, err)
-        finally:
-            self._last_written_force = None
+        await self.goe.set_force(FRC_NEUTRAL)
+        self._last_written_force = None
 
     async def async_restore_hold_state(self) -> None:
         """Restore the last battery-hold state we wrote, persisted across restarts.

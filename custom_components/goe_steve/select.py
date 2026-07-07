@@ -11,8 +11,24 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from . import GoeSteveConfigEntry
 from .coordinator import SteVeCoordinator
 from .engine import LEGACY_MODE_MAP, SUPPORTED_MODES, ChargingMode
-from .entity import GoeSteveEntity, SteVeEntity
+from .entity import GoeMqttEntity, GoeSteveEntity, SteVeEntity
+from .goe_mqtt import (
+    FRC_NEUTRAL,
+    FRC_OFF,
+    FRC_ON,
+    PSM_AUTO,
+    PSM_SINGLE,
+    PSM_THREE,
+)
 from .steve_api import SteVeTag
+
+# go-e ``psm`` (phaseSwitchMode) ↔ select option (1 = single, 2 = three phase).
+_PSM_TO_OPTION = {PSM_AUTO: "auto", PSM_SINGLE: "1", PSM_THREE: "3"}
+_OPTION_TO_PSM = {option: psm for psm, option in _PSM_TO_OPTION.items()}
+
+# go-e ``frc`` (forceState) ↔ select option.
+_FRC_TO_OPTION = {FRC_NEUTRAL: "neutral", FRC_OFF: "off", FRC_ON: "on"}
+_OPTION_TO_FRC = {option: frc for frc, option in _FRC_TO_OPTION.items()}
 
 
 async def async_setup_entry(
@@ -24,10 +40,10 @@ async def async_setup_entry(
     entities: list[SelectEntity] = [
         ChargingModeSelect(coordinator),
         BatteryHoldModeSelect(coordinator),
+        ManualPhaseSelect(coordinator),
+        ChargerPhaseSelect(coordinator),
+        ChargerForceSelect(coordinator),
     ]
-    # Manual phase choice only makes sense when a phase-switch entity is mapped.
-    if coordinator.has_phase_control:
-        entities.append(ManualPhaseSelect(coordinator))
     if coordinator.steve is not None:
         entities.append(SteVeTagSelect(coordinator.steve))
     async_add_entities(entities)
@@ -137,6 +153,54 @@ class ManualPhaseSelect(GoeSteveEntity, RestoreEntity, SelectEntity):
         self.coordinator.set_manual_passive(False)
         self.async_write_ha_state()
         self.coordinator.request_apply()
+
+
+class ChargerPhaseSelect(GoeMqttEntity, SelectEntity):
+    """The charger's phase-switch mode (``psm``), live over MQTT.
+
+    Reflects the go-e's own setting: Auto lets the charger decide, 1/3 force the
+    phase count. The brain overrides this while auto-phase or Manual phase control
+    is active; by hand it's authoritative when the brain isn't controlling.
+    """
+
+    _attr_icon = "mdi:sine-wave"
+    _attr_options = ["auto", "1", "3"]
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_phases")
+
+    @property
+    def current_option(self) -> str | None:
+        return _PSM_TO_OPTION.get(self._client.phase_mode)
+
+    async def async_select_option(self, option: str) -> None:
+        psm = _OPTION_TO_PSM.get(option)
+        if psm is not None:
+            await self._client.set_phase_mode(psm)
+
+
+class ChargerForceSelect(GoeMqttEntity, SelectEntity):
+    """The charger's force-state (``frc``): Neutral / Off / On, live over MQTT.
+
+    Neutral hands control back to the charger's own logic (scheduler, surplus,
+    …); Off blocks charging; On forces it. The brain drives this to start/stop;
+    setting it by hand is authoritative only when the brain isn't controlling.
+    """
+
+    _attr_icon = "mdi:ev-station"
+    _attr_options = ["neutral", "off", "on"]
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "charger_force")
+
+    @property
+    def current_option(self) -> str | None:
+        return _FRC_TO_OPTION.get(self._client.force_state)
+
+    async def async_select_option(self, option: str) -> None:
+        frc = _OPTION_TO_FRC.get(option)
+        if frc is not None:
+            await self._client.set_force(frc)
 
 
 class SteVeTagSelect(SteVeEntity, RestoreEntity, SelectEntity):

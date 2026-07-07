@@ -98,9 +98,24 @@ concept document; this file is the actionable to-do list.
 - [ ] PV/price forecast-aware planning (solar forecast feeding the departure plan).
 - [ ] Diagnostics: data-source health/staleness, last-decision timestamp, dashboards.
 
+## Phase 6 — Direct go-e MQTT ✅ (done, on `main`)
+- [x] **v5.0.0 (breaking) — drop the third-party go-e integration; talk go-e MQTT directly.**
+      New HA-free `goe_parse.py` (keys/enums + pure decoding: topic split incl. the leading-slash
+      variant, JSON payloads, `nrg[11]` power, carState→connected) + HA client `goe_mqtt.py`
+      (subscribe `<base>/#`, cache, publish `<base>/<key>/set`, typed accessors + `local_push`
+      listeners, broker discovery on both `go-eCharger/#` and `/go-eCharger/#`). Coordinator now
+      reads `car`/`nrg`/`wh`/`pnp` and writes `amp`/`frc`/`psm` over MQTT — the label-matching
+      helpers are gone. Config charger step is a single **base topic** (auto-discovered). The
+      integration now **owns** the wallbox entities: current `number`, phase/force `select`s,
+      car-connected + charging-allowed `binary_sensor`s, charger status/power/session/total/
+      allowed-current `sensor`s. `manifest` gains the `mqtt` dependency + `local_push`. Config
+      entry v3→v4 drops the six mapped-entity keys; setup raises a repair issue prompting the user
+      to set the base topic (an entity map can't become a topic). Tests: `tests/test_goe_parse.py`.
+      Full design: `docs/mqtt-direct-concept.md`.
+
 ## Open items / decisions to make during build
-- [ ] go-e write path: existing integration's `number`/service vs. its API — confirm.
-- [ ] Pause behavior: set current 0 vs. a dedicated stop switch/force-state entity.
+- [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
+- [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).
 - [x] SteVe API surface/version + auth handling — `/steve/api/v1`, HTTP Basic with the web user's
       API password; tags `maxActiveTransactionCount`=0 → blocked. (Phase 3)
 - [ ] Price-optimization algorithm depth (greedy cheapest-hours vs. forecast-aware scheduling).
