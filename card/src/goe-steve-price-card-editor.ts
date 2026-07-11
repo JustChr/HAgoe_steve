@@ -28,6 +28,7 @@ export class GoeStevePriceCardEditor extends LitElement {
     { name: "device", selector: { device: { integration: PLATFORM } } },
     { name: "title", selector: { text: {} } },
     { name: "hours", selector: { number: { min: 6, max: 48, mode: "box", unit_of_measurement: "h" } } },
+    { name: "charge_hours", selector: { number: { min: 0, max: 12, step: 0.5, mode: "box", unit_of_measurement: "h" } } },
   ];
 
   private _label = (schema: { name: string }): string => {
@@ -38,6 +39,8 @@ export class GoeStevePriceCardEditor extends LitElement {
         return localize(this.hass, "editor.title");
       case "hours":
         return localize(this.hass, "editor.hours");
+      case "charge_hours":
+        return localize(this.hass, "editor.charge_hours");
       default:
         return schema.name;
     }

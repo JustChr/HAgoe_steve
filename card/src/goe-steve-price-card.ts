@@ -29,6 +29,8 @@ export interface GoeStevePriceCardConfig {
   title?: string;
   /** How many hours of forecast to show from now (default: all available, capped 48). */
   hours?: number;
+  /** Length of the "cheapest window" to highlight, in hours (default 3; 0 hides it). */
+  charge_hours?: number;
 }
 
 /** One forecast slot, parsed from the sensor's `slots` attribute. */
@@ -52,6 +54,14 @@ export class GoeStevePriceCard extends LitElement {
   @state() private _config!: GoeStevePriceCardConfig;
   /** Threshold being dragged (currency/kWh); null when not dragging. */
   @state() private _dragValue: number | null = null;
+  /** Index (into the shown slots) of the slot under the pointer; null when none. */
+  @state() private _hoverIndex: number | null = null;
+
+  /** Highlighted "cheapest window" length in hours (config, default 3). */
+  private get _chargeHours(): number {
+    const h = this._config?.charge_hours;
+    return h === undefined ? 3 : h;
+  }
 
   public static getConfigElement(): HTMLElement {
     return document.createElement("goe-steve-price-card-editor");
@@ -156,6 +166,7 @@ export class GoeStevePriceCard extends LitElement {
         </div>
         <div class="now-price">${this._fmtPrice(Number(forecast.state), cheap.unit)}</div>
       </div>
+      ${this._renderStats(slots, cheap.unit)}
       ${this._renderChart(slots, effective)}
       ${this._renderPreview(slots, effective)}
       ${this._renderThresholdInput(cheap, effective)}
@@ -182,9 +193,11 @@ export class GoeStevePriceCard extends LitElement {
     const t0 = shown[0].start;
     const t1 = shown[shown.length - 1].end;
     const prices = shown.map((s) => s.price);
+    const loPrice = Math.min(...prices);
+    const hiPrice = Math.max(...prices);
     // Domain padded so the threshold can sit a little above/below the curve.
-    const lo = Math.min(...prices, effective);
-    const hi = Math.max(...prices, effective);
+    const lo = Math.min(loPrice, effective);
+    const hi = Math.max(hiPrice, effective);
     const span = hi - lo || 1;
     const yMin = lo - span * 0.1;
     const yMax = hi + span * 0.1;
@@ -193,20 +206,43 @@ export class GoeStevePriceCard extends LitElement {
     const y = (p: number) => PAD.top + (1 - (p - yMin) / (yMax - yMin)) * PLOT_H;
     const baseline = PAD.top + PLOT_H;
     const yThresh = y(effective);
+    const avg = this._weightedMean(shown);
+    const yAvg = y(avg);
 
-    const bars = shown.map((s) => {
+    const bars = shown.map((s, i) => {
       const x0 = x(s.start);
       const x1 = x(s.end);
       const top = y(s.price);
-      const cheapBar = s.price <= effective;
+      const isCheap = s.price <= effective;
+      const isNow = now >= s.start && now < s.end;
+      const isHover = i === this._hoverIndex;
       return svg`<rect
-        class="bar ${cheapBar ? "cheap" : ""}"
+        class="bar ${isNow ? "now-bar" : ""} ${isHover ? "hover-bar" : ""}"
+        fill=${this._barFill(s.price, isCheap, effective, hiPrice)}
         x=${x0 + 0.5}
         y=${top}
         width=${Math.max(0.5, x1 - x0 - 1)}
         height=${Math.max(0, baseline - top)}
       ></rect>`;
     });
+
+    // Cheapest contiguous charging window (Tier 1 — the "charge here" cue).
+    const best = this._chargeHours > 0 ? this._bestWindow(shown, this._chargeHours) : null;
+    const window =
+      best && best.endIdx > best.startIdx - 1
+        ? (() => {
+            const wx0 = x(best.start);
+            const wx1 = x(best.end);
+            return svg`<g class="best-window">
+              <rect x=${wx0} y=${PAD.top} width=${Math.max(0, wx1 - wx0)} height=${PLOT_H}></rect>
+              <line x1=${wx0} y1=${PAD.top} x2=${wx0} y2=${baseline}></line>
+              <line x1=${wx1} y1=${PAD.top} x2=${wx1} y2=${baseline}></line>
+              <text x=${(wx0 + wx1) / 2} y=${PAD.top + 21}>${this._t("price.cheapest_window", {
+                hours: this._fmtHours(this._chargeHours),
+              })}</text>
+            </g>`;
+          })()
+        : nothing;
 
     // Vertical day-boundary dividers + "Tomorrow" label at each local midnight.
     const dividers: TemplateResult[] = [];
@@ -236,15 +272,22 @@ export class GoeStevePriceCard extends LitElement {
         viewBox="0 0 ${W} ${H}"
         preserveAspectRatio="none"
         @pointermove=${this._onPointerMove}
+        @pointerdown=${this._onChartPointerDown}
         @pointerup=${this._onPointerUp}
         @pointercancel=${this._onPointerUp}
+        @pointerleave=${this._onPointerLeave}
       >
-        <!-- y grid: min / threshold / max -->
+        <!-- y grid: min / avg / threshold / max -->
         <text class="y-tick" x=${PAD.left - 4} y=${y(yMax) + 3}>${this._fmtNum(hi)}</text>
         <text class="y-tick" x=${PAD.left - 4} y=${baseline}>${this._fmtNum(lo)}</text>
+        <text class="y-tick thresh-tick" x=${PAD.left - 4} y=${yThresh + 3}>${this._fmtNum(effective)}</text>
+        ${window}
         ${dividers}
         ${bars}
         ${ticks}
+        <!-- average reference line -->
+        <line class="avg-line" x1=${PAD.left} y1=${yAvg} x2=${W - PAD.right} y2=${yAvg}></line>
+        <text class="avg-lbl" x=${PAD.left + 2} y=${yAvg - 2}>Ø</text>
         ${nowX !== null
           ? svg`<line class="now-line" x1=${nowX} y1=${PAD.top} x2=${nowX} y2=${baseline}></line>
                  <text class="now-tick" x=${nowX} y=${PAD.top - 2}>${this._t("price.now")}</text>`
@@ -258,7 +301,111 @@ export class GoeStevePriceCard extends LitElement {
           <text x=${W - PAD.right - 26} y=${yThresh + 4}>${this._fmtNum(effective)}</text>
         </g>
       </svg>
+      ${this._renderTooltip(shown, x, y)}
     </div>`;
+  }
+
+  /** Fill color for a price bar: cheap → accent, negative → green, else amber→red heat. */
+  private _barFill(price: number, isCheap: boolean, effective: number, hiPrice: number): string {
+    if (price < 0) return "var(--success-color, #2e7d32)";
+    if (isCheap) return "var(--primary-color)";
+    // Warm gradient scaled from just-above-threshold (amber) to the peak (red).
+    const range = hiPrice - effective || 1;
+    const t = Math.max(0, Math.min(1, (price - effective) / range));
+    const hue = 45 - t * 37; // 45° amber → 8° red-orange
+    const light = 55 - t * 8;
+    return `hsl(${hue.toFixed(0)}, 85%, ${light.toFixed(0)}%)`;
+  }
+
+  /** Duration-weighted mean price across the given slots. */
+  private _weightedMean(slots: Slot[]): number {
+    let dur = 0;
+    let cost = 0;
+    for (const s of slots) {
+      const d = (s.end - s.start) / HOUR_MS;
+      dur += d;
+      cost += s.price * d;
+    }
+    return dur > 0 ? cost / dur : 0;
+  }
+
+  /** Cheapest contiguous block covering at least `hours`, by duration-weighted mean. */
+  private _bestWindow(
+    slots: Slot[],
+    hours: number,
+  ): { start: number; end: number; mean: number; startIdx: number; endIdx: number } | null {
+    let best: { start: number; end: number; mean: number; startIdx: number; endIdx: number } | null =
+      null;
+    for (let i = 0; i < slots.length; i++) {
+      let dur = 0;
+      let cost = 0;
+      let j = i;
+      while (j < slots.length && dur < hours - 1e-9) {
+        const d = (slots[j].end - slots[j].start) / HOUR_MS;
+        dur += d;
+        cost += slots[j].price * d;
+        j++;
+      }
+      if (dur < hours - 1e-9) break; // can't fill the window from here on → nor from any later i
+      const mean = cost / dur;
+      if (!best || mean < best.mean) {
+        best = { start: slots[i].start, end: slots[j - 1].end, mean, startIdx: i, endIdx: j - 1 };
+      }
+    }
+    return best;
+  }
+
+  // --- Hover tooltip -----------------------------------------------------------
+  private _renderTooltip(
+    shown: Slot[],
+    x: (t: number) => number,
+    y: (p: number) => number,
+  ): TemplateResult | typeof nothing {
+    const i = this._hoverIndex;
+    if (i === null || i < 0 || i >= shown.length) return nothing;
+    const s = shown[i];
+    const cx = (x(s.start) + x(s.end)) / 2;
+    // Horizontal: map viewBox x back to the padded content width (svg has 8px side padding).
+    const leftPct = (cx / W) * 100;
+    const topPx = Math.max(2, y(s.price) - 4); // svg is 1:1 vertically (H === px height)
+    const unit = this._entities && this._stateObj(this._entities.price_forecast)?.attributes.unit;
+    return html`<div
+      class="tip"
+      style="left: calc(8px + ${leftPct.toFixed(2)}% - ${(leftPct / 100 * 16).toFixed(2)}px); top: ${topPx}px;"
+    >
+      <span class="tip-time">${this._fmtTime(s.start)}–${this._fmtTime(s.end)}</span>
+      <span class="tip-price">${this._fmtNum(s.price)}${unit ? ` ${unit}` : ""}</span>
+    </div>`;
+  }
+
+  /** Hit-test the pointer's X against the shown slots; returns the index or null. */
+  private _slotAtClientX(clientX: number): number | null {
+    const ent = this._entities;
+    const forecast = this._stateObj(ent?.price_forecast);
+    const slots = forecast ? this._slots(forecast) : [];
+    const shown = this._shownSlots(slots);
+    if (shown.length === 0) return null;
+    const svgEl = this.renderRoot.querySelector("svg");
+    if (!svgEl) return null;
+    const rect = svgEl.getBoundingClientRect();
+    const t0 = shown[0].start;
+    const t1 = shown[shown.length - 1].end;
+    const frac = (clientX - rect.left) / rect.width;
+    const vx = frac * W; // viewBox x
+    if (vx < PAD.left || vx > W - PAD.right) return null;
+    const t = t0 + ((vx - PAD.left) / PLOT_W) * (t1 - t0);
+    const idx = shown.findIndex((s) => t >= s.start && t < s.end);
+    return idx >= 0 ? idx : null;
+  }
+
+  private _onChartPointerDown(e: PointerEvent): void {
+    // A tap on a bar (e.g. touch) reveals its tooltip; the handle stops propagation.
+    if (this._dragging) return;
+    this._hoverIndex = this._slotAtClientX(e.clientX);
+  }
+
+  private _onPointerLeave(): void {
+    if (this._hoverIndex !== null) this._hoverIndex = null;
   }
 
   // --- Drag handling (pointer = mouse + touch) ---------------------------------
@@ -271,13 +418,20 @@ export class GoeStevePriceCard extends LitElement {
     if (!ent || !forecast || !ent.cheap_price) return;
     this._cheapCache = this._cheap(ent, forecast);
     this._dragging = true;
+    this._hoverIndex = null;
     (e.target as Element).setPointerCapture?.(e.pointerId);
     e.preventDefault();
     this._updateDrag(e);
   }
 
   private _onPointerMove(e: PointerEvent): void {
-    if (!this._dragging) return;
+    if (!this._dragging) {
+      // Not dragging → track the slot under the pointer for the tooltip.
+      const idx = this._slotAtClientX(e.clientX);
+      if (idx !== this._hoverIndex) this._hoverIndex = idx;
+      return;
+    }
+    this._hoverIndex = null;
     e.preventDefault();
     this._updateDrag(e);
   }
@@ -368,6 +522,22 @@ export class GoeStevePriceCard extends LitElement {
     </div>`;
   }
 
+  // --- Stat row (min · avg · max) ----------------------------------------------
+  private _renderStats(slots: Slot[], unit: string): TemplateResult | typeof nothing {
+    const shown = this._shownSlots(slots);
+    if (shown.length === 0) return nothing;
+    const prices = shown.map((s) => s.price);
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const avg = this._weightedMean(shown);
+    const u = unit ? ` ${unit}` : "";
+    return html`<div class="stats">
+      <span class="stat"><span class="stat-k stat-min">▼</span>${this._fmtNum(min)}${u}</span>
+      <span class="stat"><span class="stat-k">Ø</span>${this._fmtNum(avg)}${u}</span>
+      <span class="stat"><span class="stat-k stat-max">▲</span>${this._fmtNum(max)}${u}</span>
+    </div>`;
+  }
+
   // --- Numeric threshold input (precise entry / mobile fallback) ---------------
   private _renderThresholdInput(
     cheap: ReturnType<typeof this._cheap>,
@@ -406,6 +576,9 @@ export class GoeStevePriceCard extends LitElement {
   private _fmtPrice(v: number, unit: string): string {
     if (Number.isNaN(v)) return "—";
     return `${this._fmtNum(v)}${unit ? ` ${unit}` : ""}`;
+  }
+  private _fmtHours(h: number): string {
+    return Number.isInteger(h) ? String(h) : h.toFixed(1);
   }
   private _fmtTime(ms: number): string {
     return new Date(ms).toLocaleTimeString(this.hass?.locale?.language ?? [], {
@@ -456,9 +629,34 @@ export class GoeStevePriceCard extends LitElement {
       color: var(--primary-text-color);
     }
 
+    /* Stat row */
+    .stats {
+      display: flex;
+      gap: 16px;
+      padding: 0 16px 4px;
+      font-size: 0.85rem;
+      color: var(--secondary-text-color);
+    }
+    .stat {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+    .stat-k {
+      font-size: 0.75rem;
+      opacity: 0.9;
+    }
+    .stat-min {
+      color: var(--primary-color);
+    }
+    .stat-max {
+      color: hsl(8, 85%, 47%);
+    }
+
     /* Chart */
     .chart {
       padding: 0 8px;
+      position: relative;
     }
     .chart svg {
       width: 100%;
@@ -466,11 +664,69 @@ export class GoeStevePriceCard extends LitElement {
       /* default touch-action: vertical swipes scroll the page normally;
          only the handle (below) owns the drag gesture. */
     }
-    .bar {
-      fill: var(--divider-color);
+    /* Bar fill is set inline per-bar (heat gradient / accent / negative),
+       so no base fill here — a CSS fill would override the attribute. */
+    .now-bar {
+      stroke: var(--primary-text-color);
+      stroke-width: 1;
     }
-    .bar.cheap {
+    .hover-bar {
+      filter: brightness(1.12);
+    }
+
+    /* Cheapest-window highlight */
+    .best-window rect {
       fill: var(--primary-color);
+      opacity: 0.1;
+      pointer-events: none;
+    }
+    .best-window line {
+      stroke: var(--primary-color);
+      stroke-width: 1;
+      stroke-dasharray: 3 2;
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .best-window text {
+      fill: var(--primary-color);
+      font-size: 9px;
+      font-weight: 600;
+      text-anchor: middle;
+      pointer-events: none;
+    }
+
+    /* Average reference line */
+    .avg-line {
+      stroke: var(--secondary-text-color);
+      stroke-width: 1;
+      stroke-dasharray: 1 3;
+      opacity: 0.6;
+    }
+    .avg-lbl {
+      fill: var(--secondary-text-color);
+      font-size: 9px;
+    }
+
+    /* Hover tooltip */
+    .tip {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      pointer-events: none;
+      background: var(--primary-text-color);
+      color: var(--card-background-color, var(--ha-card-background, #fff));
+      border-radius: 6px;
+      padding: 3px 7px;
+      font-size: 0.72rem;
+      line-height: 1.35;
+      white-space: nowrap;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      z-index: 2;
+    }
+    .tip-price {
+      font-weight: 600;
     }
     .thresh {
       stroke: var(--primary-color);
@@ -525,6 +781,10 @@ export class GoeStevePriceCard extends LitElement {
       fill: var(--secondary-text-color);
       font-size: 9px;
       text-anchor: end;
+    }
+    .thresh-tick {
+      fill: var(--primary-color);
+      font-weight: 600;
     }
 
     /* Preview */

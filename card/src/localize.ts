@@ -118,6 +118,7 @@ const en: Dict = {
   "editor.show_sessions": "Show sessions & RFID",
   "editor.compact": "Compact (hide controls — wall dashboards)",
   "editor.hours": "Hours to show (optional)",
+  "editor.charge_hours": "Cheapest-window length (0 hides it)",
 
   "price.title": "Electricity price",
   "price.no_price":
@@ -128,6 +129,7 @@ const en: Dict = {
   "price.no_cheap": "No cheap hours coming up at this threshold",
   "price.now": "now",
   "price.tomorrow": "Tomorrow",
+  "price.cheapest_window": "Cheapest {hours} h",
 };
 
 const de: Dict = {
@@ -241,6 +243,7 @@ const de: Dict = {
   "editor.show_sessions": "Ladevorgänge & RFID anzeigen",
   "editor.compact": "Kompakt (Steuerung ausblenden — Wand-Dashboards)",
   "editor.hours": "Anzuzeigende Stunden (optional)",
+  "editor.charge_hours": "Länge des Günstig-Fensters (0 blendet es aus)",
 
   "price.title": "Strompreis",
   "price.no_price":
@@ -251,6 +254,7 @@ const de: Dict = {
   "price.no_cheap": "Bei dieser Schwelle keine günstigen Stunden in Sicht",
   "price.now": "jetzt",
   "price.tomorrow": "Morgen",
+  "price.cheapest_window": "Günstigste {hours} h",
 };
 
 const LANGUAGES: Record<string, Dict> = { en, de };
