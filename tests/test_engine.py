@@ -188,6 +188,44 @@ def test_protect_zone_charges_only_genuine_excess():
     assert d.surplus_w == pytest.approx(5000.0)  # no reclaim of the 2 kW
 
 
+def test_protect_zone_ignores_the_cars_own_draw():
+    # A car already pulling 4 kW of solar, no grid export (the car eats it all),
+    # battery flat and below the reserve: that draw would fill the battery if the
+    # car let go, so it is NOT available surplus. Raising the reserve above the
+    # SoC must therefore stop the charge, not keep it running on its own draw.
+    d = decide(
+        _inputs(car_actual_power_w=4000.0, battery_soc=50.0, battery_power_w=0.0),
+        _cfg(),
+    )
+    assert d.should_charge is False
+    assert d.surplus_w == 0.0
+    assert d.reason_key == "waiting_battery_reserve"
+
+
+def test_raising_reserve_above_soc_stops_an_active_solar_charge():
+    # Mirrors the reported bug: mid-session, charging on 4 kW of solar the car is
+    # fully consuming (grid ~0), then the reserve is lifted above the SoC. After
+    # the ride-out window the charge stops so the battery can fill.
+    cfg = _cfg()
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
+    stop_at = T0 + timedelta(seconds=cfg.stop_ride_out_s + 1)
+    for now in (T0, stop_at):
+        d = decide(
+            _inputs(
+                car_actual_power_w=4000.0,
+                grid_power_w=0.0,
+                battery_soc=50.0,
+                battery_power_w=0.0,
+                phases=1,
+                now=now,
+            ),
+            cfg,
+            state,
+        )
+    assert d.should_charge is False
+    assert d.reason_key == "waiting_battery_reserve"
+
+
 def test_protect_zone_deducts_discharge_immediately():
     # Below the reserve, battery power flowing into the car is not surplus.
     d = decide(

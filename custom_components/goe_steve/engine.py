@@ -430,7 +430,7 @@ def compute_availability(
     gently but falls fast — the car sheds current promptly when the surplus fades.
     """
     export_w = max(0.0, -inp.grid_power_w)
-    base = export_w + max(0.0, inp.car_actual_power_w)
+    car_draw = max(0.0, inp.car_actual_power_w)
     batt = inp.battery_power_w
     soc = inp.battery_soc
     protect = soc is None or soc < cfg.battery_reserve_soc
@@ -446,8 +446,20 @@ def compute_availability(
         state.avail_zone = zone
 
     discharge_raw = max(0.0, -batt) if batt is not None else 0.0
-    if not protect and batt is not None:
-        base += max(0.0, batt)  # reclaim solar the battery is absorbing
+    if protect:
+        # Battery comes first: all solar fills it, so the car gets only genuine
+        # grid export. The car's own draw is deliberately NOT counted — released,
+        # that power flows into the below-reserve battery, not the grid, so
+        # treating it as "available" would keep an already-running car alive and
+        # starve the battery (raising the reserve above the SoC would never stop
+        # the charge). The reclaim below is the buffer-zone counterpart: there
+        # the battery is satisfied, so both the car's draw and the solar the
+        # battery absorbs are genuine surplus for the car.
+        base = export_w
+    else:
+        base = export_w + car_draw
+        if batt is not None:
+            base += max(0.0, batt)  # reclaim solar the battery is absorbing
 
     base_s = _directional(
         state.avail_output,
