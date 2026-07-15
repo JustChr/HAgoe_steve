@@ -17,9 +17,10 @@ const en: Dict = {
 
   "hero.not_connected": "Not connected",
   "hero.paused": "Paused",
-  "hero.paused_ready": "Paused · ready on {phases} φ",
+  "hero.paused_ready": "Paused · ready on {phases}-phase",
   "hero.asked_takes": "asked {asked} A, car takes {takes} A",
   "hero.solar_share": "{pct} % solar",
+  "hero.phase_count": "{phases}-phase",
 
   "source.solar": "Solar",
   "source.battery": "Battery",
@@ -36,6 +37,7 @@ const en: Dict = {
   "balance.export": "Export",
   "balance.battery": "Battery",
   "balance.idle": "idle",
+  "balance.reserve": "reserve {pct}%",
 
   "chip.hold": "Battery discharge blocked",
   "chip.hold_manual": "Discharge blocked (manual)",
@@ -50,7 +52,17 @@ const en: Dict = {
   "plan.tight": "tight — few cheap hours",
 
   "control.home_battery": "Home battery",
+  "control.smart_active": "Smart control is active",
+  "control.smart_inactive": "Smart control is off",
   "control.mode": "Mode",
+
+  "mode_hint.manual": "You set current and phases — the charger holds them.",
+  "mode_hint.solar": "Charges only from solar surplus.",
+  "mode_hint.solar_min":
+    "Uses solar surplus, topping up from grid to a minimum rate.",
+  "mode_hint.smart":
+    "Targets the cheapest hours to reach your goal by departure.",
+  "mode_hint.fast": "Charges at full power right now.",
   "control.manual_charge": "Charge now",
   "control.manual_current": "Current",
   "control.manual_phases": "Phases",
@@ -121,6 +133,7 @@ const en: Dict = {
   "editor.charge_hours": "Cheapest-window length (0 hides it)",
 
   "price.title": "Electricity price",
+  "price.avg": "avg",
   "price.no_price":
     "No price forecast available. Configure a price sensor for {name} first.",
   "price.cheap_threshold": "Cheap below",
@@ -142,9 +155,10 @@ const de: Dict = {
 
   "hero.not_connected": "Nicht verbunden",
   "hero.paused": "Pausiert",
-  "hero.paused_ready": "Pausiert · bereit auf {phases} φ",
+  "hero.paused_ready": "Pausiert · bereit auf {phases}-phasig",
   "hero.asked_takes": "angefordert {asked} A, Auto nimmt {takes} A",
   "hero.solar_share": "{pct} % Solar",
+  "hero.phase_count": "{phases}-phasig",
 
   "source.solar": "Solar",
   "source.battery": "Batterie",
@@ -161,6 +175,7 @@ const de: Dict = {
   "balance.export": "Einspeisung",
   "balance.battery": "Batterie",
   "balance.idle": "inaktiv",
+  "balance.reserve": "Reserve {pct}%",
 
   "chip.hold": "Batterieentladung gesperrt",
   "chip.hold_manual": "Entladung gesperrt (manuell)",
@@ -175,7 +190,17 @@ const de: Dict = {
   "plan.tight": "knapp — wenige günstige Stunden",
 
   "control.home_battery": "Hausbatterie",
+  "control.smart_active": "Intelligente Steuerung aktiv",
+  "control.smart_inactive": "Intelligente Steuerung aus",
   "control.mode": "Modus",
+
+  "mode_hint.manual": "Du gibst Strom und Phasen vor — die Wallbox hält sie.",
+  "mode_hint.solar": "Lädt nur aus Solarüberschuss.",
+  "mode_hint.solar_min":
+    "Nutzt Solarüberschuss und stockt bis zu einer Mindestrate aus dem Netz auf.",
+  "mode_hint.smart":
+    "Steuert die günstigsten Stunden an, um dein Ziel bis zur Abfahrt zu erreichen.",
+  "mode_hint.fast": "Lädt jetzt mit voller Leistung.",
   "control.manual_charge": "Jetzt laden",
   "control.manual_current": "Stromstärke",
   "control.manual_phases": "Phasen",
@@ -246,6 +271,7 @@ const de: Dict = {
   "editor.charge_hours": "Länge des Günstig-Fensters (0 blendet es aus)",
 
   "price.title": "Strompreis",
+  "price.avg": "Mittel",
   "price.no_price":
     "Keine Preisprognose verfügbar. Richte zuerst einen Preissensor für {name} ein.",
   "price.cheap_threshold": "Günstig unter",

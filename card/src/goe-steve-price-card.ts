@@ -143,7 +143,10 @@ export class GoeStevePriceCard extends LitElement {
     const forecast = this._stateObj(ent?.price_forecast);
     const slots = forecast ? this._slots(forecast) : [];
 
-    const title = this._config.title ?? this._deviceName(ent?.deviceId) ?? this._t("price.title");
+    const deviceName = this._deviceName(ent?.deviceId);
+    const title =
+      this._config.title ??
+      (deviceName ? `${deviceName} · ${this._t("price.title")}` : this._t("price.title"));
 
     if (!forecast || slots.length === 0) {
       const [before, after] = this._t("price.no_price").split("{name}");
@@ -308,7 +311,7 @@ export class GoeStevePriceCard extends LitElement {
   /** Fill color for a price bar: cheap → accent, negative → green, else amber→red heat. */
   private _barFill(price: number, isCheap: boolean, effective: number, hiPrice: number): string {
     if (price < 0) return "var(--success-color, #2e7d32)";
-    if (isCheap) return "var(--primary-color)";
+    if (isCheap) return "var(--success-color, #2e7d32)";
     // Warm gradient scaled from just-above-threshold (amber) to the peak (red).
     const range = hiPrice - effective || 1;
     const t = Math.max(0, Math.min(1, (price - effective) / range));
@@ -533,7 +536,7 @@ export class GoeStevePriceCard extends LitElement {
     const u = unit ? ` ${unit}` : "";
     return html`<div class="stats">
       <span class="stat"><span class="stat-k stat-min">▼</span>${this._fmtNum(min)}${u}</span>
-      <span class="stat"><span class="stat-k">Ø</span>${this._fmtNum(avg)}${u}</span>
+      <span class="stat"><span class="stat-k">${this._t("price.avg")}</span>${this._fmtNum(avg)}${u}</span>
       <span class="stat"><span class="stat-k stat-max">▲</span>${this._fmtNum(max)}${u}</span>
     </div>`;
   }
@@ -647,7 +650,7 @@ export class GoeStevePriceCard extends LitElement {
       opacity: 0.9;
     }
     .stat-min {
-      color: var(--primary-color);
+      color: var(--success-color, #2e7d32);
     }
     .stat-max {
       color: hsl(8, 85%, 47%);
@@ -674,21 +677,21 @@ export class GoeStevePriceCard extends LitElement {
       filter: brightness(1.12);
     }
 
-    /* Cheapest-window highlight */
+    /* Cheapest-window highlight — green, matching the "cheap" bars */
     .best-window rect {
-      fill: var(--primary-color);
-      opacity: 0.1;
+      fill: var(--success-color, #2e7d32);
+      opacity: 0.12;
       pointer-events: none;
     }
     .best-window line {
-      stroke: var(--primary-color);
+      stroke: var(--success-color, #2e7d32);
       stroke-width: 1;
       stroke-dasharray: 3 2;
       opacity: 0.7;
       pointer-events: none;
     }
     .best-window text {
-      fill: var(--primary-color);
+      fill: var(--success-color, #2e7d32);
       font-size: 9px;
       font-weight: 600;
       text-anchor: middle;
@@ -755,12 +758,13 @@ export class GoeStevePriceCard extends LitElement {
       text-anchor: middle;
     }
     .now-line {
-      stroke: var(--error-color, #db4437);
+      stroke: var(--primary-text-color);
       stroke-width: 1.5;
     }
     .now-tick {
-      fill: var(--error-color, #db4437);
+      fill: var(--primary-text-color);
       font-size: 9px;
+      font-weight: 600;
       text-anchor: middle;
     }
     .day-div {

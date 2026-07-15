@@ -184,8 +184,16 @@ export class GoeSteveCard extends LitElement {
       ? this._t("live.updated_ago", { ago: this._fmtAgo(age!) })
       : this._t("live.live");
 
+    const brainLabel = controlling
+      ? this._t("control.smart_active")
+      : this._t("control.smart_inactive");
     return html`<div class="c-head">
-      <ha-icon class="brain ${controlling ? "" : "off"}" icon="mdi:brain"></ha-icon>
+      <ha-icon
+        class="brain ${controlling ? "" : "off"}"
+        icon="mdi:brain"
+        title=${brainLabel}
+        aria-label=${brainLabel}
+      ></ha-icon>
       <span class="c-title">${title}</span>
       <span class="livedot ${stale ? "stale" : ""}"><i></i>${liveText}</span>
     </div>`;
@@ -217,19 +225,28 @@ export class GoeSteveCard extends LitElement {
       split.total > 0 ? Math.round((split.solar / split.total) * 100) : 0;
     const targetA = num(status.target_current_a);
     const actualA = charging && phases > 0 ? carW / (phases * ASSUMED_VOLTAGE) : NaN;
-    const sub = this._heroSub(connected, charging, phases, targetA, actualA, solarPct);
+    const sub = this._heroSub(connected, charging, phases, targetA, actualA);
 
     return html`<div class="c-hero">
-      <div class="ring ${charging ? "on" : ""}">
-        <svg viewBox="0 0 100 100" fill="none" stroke-width="7" stroke-linecap="round">
-          <circle class="track" cx="50" cy="50" r="44"></circle>
-          ${arc(split.total ? split.grid / split.total : 0, "var(--goe-grid)")}
-          ${arc(split.total ? split.battery / split.total : 0, "var(--goe-battery)")}
-          ${arc(split.total ? split.solar / split.total : 0, "var(--goe-solar)")}
-        </svg>
-        <div class="caric">
-          <ha-icon icon="${connected === false ? "mdi:car-off" : "mdi:car-electric"}"></ha-icon>
+      <div class="ringwrap">
+        <div class="ring ${charging ? "on" : ""}">
+          <svg viewBox="0 0 100 100" fill="none" stroke-width="7" stroke-linecap="round">
+            <circle class="track" cx="50" cy="50" r="44"></circle>
+            ${arc(split.total ? split.grid / split.total : 0, "var(--goe-grid)")}
+            ${arc(split.total ? split.battery / split.total : 0, "var(--goe-battery)")}
+            ${arc(split.total ? split.solar / split.total : 0, "var(--goe-solar)")}
+          </svg>
+          <div class="caric">
+            <ha-icon icon="${connected === false ? "mdi:car-off" : "mdi:car-electric"}"></ha-icon>
+          </div>
         </div>
+        ${charging && split.total > 0
+          ? html`<div class="solarbadge">
+              <ha-icon icon="mdi:solar-power"></ha-icon>${this._t("hero.solar_share", {
+                pct: String(solarPct),
+              })}
+            </div>`
+          : nothing}
       </div>
       <div class="heroright">
         <div class="power">
@@ -246,7 +263,6 @@ export class GoeSteveCard extends LitElement {
     phases: number,
     targetA: number,
     actualA: number,
-    solarPct: number,
   ): string {
     if (connected === false) return this._t("hero.not_connected");
     if (!charging)
@@ -267,8 +283,7 @@ export class GoeSteveCard extends LitElement {
     } else if (!Number.isNaN(actualA)) {
       parts.push(`${Math.round(actualA)} A`);
     }
-    if (phases > 0) parts.push(`${phases} φ`);
-    parts.push(this._t("hero.solar_share", { pct: String(solarPct) }));
+    if (phases > 0) parts.push(this._t("hero.phase_count", { phases: String(phases) }));
     return parts.join(" · ");
   }
 
@@ -350,9 +365,12 @@ export class GoeSteveCard extends LitElement {
       const power = Math.abs(batt) <= 50 ? this._t("balance.idle") : `${dir}${fmtKw(Math.abs(batt))}`;
       const socTxt =
         soc != null
-          ? ` · ${Math.round(num(soc))} %${Number.isNaN(reserve) ? "" : ` ▸ ${Math.round(reserve)} %`}${hold ? " 🛡" : ""}`
+          ? ` · ${Math.round(num(soc))} %${Number.isNaN(reserve) ? "" : ` · ${this._t("balance.reserve", { pct: String(Math.round(reserve)) })}`}`
           : "";
-      items.push(html`<span><i class="dot" style="background:var(--goe-battery)"></i>${this._t("balance.battery")} <b>${power}</b>${socTxt}</span>`);
+      const shield = hold
+        ? html`<ha-icon class="hold-ico" icon="mdi:shield"></ha-icon>`
+        : nothing;
+      items.push(html`<span><i class="dot" style="background:var(--goe-battery)"></i>${this._t("balance.battery")} <b>${power}</b>${socTxt}${shield}</span>`);
     }
     return html`<div class="balance">${items}</div>`;
   }
@@ -394,11 +412,6 @@ export class GoeSteveCard extends LitElement {
     const pause = this._countdown(status.pause_not_before);
     if (pause !== null)
       chips.push(this._chip("mdi:clock-outline", "chip.riding_out", { time: fmtClock(pause) }));
-
-    // Phase count.
-    const phases = num((this._stateObj(ent.power_flow)?.attributes ?? {}).phases);
-    if (!Number.isNaN(phases) && phases > 0)
-      chips.push(this._chip("mdi:sine-wave", "chip.phases", { phases: String(phases) }));
 
     // Forced-off explainer.
     if (status.forced === false)
@@ -455,8 +468,11 @@ export class GoeSteveCard extends LitElement {
     const modeState = this._effectiveState(ent.charging_mode);
     const isManual = modeState === "manual";
 
+    const hintKey = modeState ? `mode_hint.${modeState}` : "";
+    const hint = hintKey ? this._t(hintKey) : "";
     return html`<div class="controls">
       ${mode ? this._renderModeSeg(ent, mode) : nothing}
+      ${hint && hint !== hintKey ? html`<div class="modehint">${hint}</div>` : nothing}
       <div class="ctxctl">
         ${isManual ? this._renderManual(ent) : this._renderModeTunables(ent, modeState)}
         ${this._renderBatteryThreeWay(ent)}
@@ -542,7 +558,9 @@ export class GoeSteveCard extends LitElement {
             class="${opt === active ? "on" : ""}"
             @click=${() => this._selectOptimistic(sel, opt)}
           >
-            ${this._localizeOption(sel, opt)}${opt === "auto" && holdActive && active === "auto" ? " 🛡" : ""}
+            ${this._localizeOption(sel, opt)}${opt === "auto" && holdActive && active === "auto"
+              ? html`<ha-icon class="hold-ico" icon="mdi:shield"></ha-icon>`
+              : nothing}
           </button>`,
         )}
       </span>
@@ -941,11 +959,30 @@ export class GoeSteveCard extends LitElement {
       align-items: center;
       gap: 16px;
     }
+    .ringwrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      flex: none;
+    }
     .ring {
       width: 92px;
       height: 92px;
       flex: none;
       position: relative;
+    }
+    .solarbadge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--goe-solar);
+      font-variant-numeric: tabular-nums;
+    }
+    .solarbadge ha-icon {
+      --mdc-icon-size: 14px;
     }
     .ring svg {
       width: 100%;
@@ -1078,6 +1115,12 @@ export class GoeSteveCard extends LitElement {
       display: inline-block;
       margin-right: 5px;
     }
+    .hold-ico {
+      --mdc-icon-size: 14px;
+      color: var(--warning-color, #c05252);
+      margin-left: 4px;
+      vertical-align: -2px;
+    }
 
     /* Chips */
     .chips {
@@ -1184,6 +1227,11 @@ export class GoeSteveCard extends LitElement {
       background: var(--card-background-color);
       color: var(--goe-accent);
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+    .modehint {
+      font-size: 0.78rem;
+      color: var(--secondary-text-color);
+      margin-top: -2px;
     }
     .ctlrow {
       display: flex;
