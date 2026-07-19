@@ -8,8 +8,8 @@ Turn Home Assistant into the **smart-charging brain** for a [go-e](https://go-e.
 with [SteVe](https://github.com/steve-community/steve) as the OCPP backend for authorization
 and billable metering.
 
-HA regulates charge power **directly via the go-e local API**; SteVe owns *"may it charge / how
-much did it charge"*. They coexist because the go-e applies the **minimum of all active current
+HA regulates charge power by talking to the go-e charger **directly over its native MQTT**
+(no separate go-e integration needed); SteVe owns *"may it charge / how much did it charge"*. They coexist because the go-e applies the **minimum of all active current
 limits**.
 
 ## Highlights

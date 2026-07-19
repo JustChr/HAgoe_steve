@@ -185,8 +185,10 @@ pytest tests/     # engine + SteVe parsing; no Home Assistant install required
 
 ## Concept
 
-The full theoretical design (architecture, energy-flow model, the home-battery reserve line,
-all charging modes, SteVe linkage, Lovelace card, roadmap) is documented in the project plan.
+The behavior is specified situation-by-situation in the
+[**Charging behavior matrix**](docs/charging-behavior-matrix.md); the direct go-e MQTT
+design (topics, key map, verified enum semantics) lives in
+[`docs/mqtt-direct-concept.md`](docs/mqtt-direct-concept.md).
 
 ## Feedback
 
