@@ -74,8 +74,10 @@ by taste. An EMA's output noise scales with `dt/τ`, and the loop re-evaluates a
 that only reported every 5 s. What stops us going lower is not noise but **real** short
 transients: at τ=5 s a 2-second compressor or kettle blip moves the current about 2 A and
 back, at τ=2 s it moves ~3.4 A. Beyond that, two hard limits make a faster loop pointless
-anyway — a car may take several seconds to follow a changed pilot signal, and the 1 A write
-deadband is ~690 W at 3φ, so sub-deadband wobbles are never written at any speed.
+anyway — a car may take several seconds to follow a changed pilot signal, and `amp` is
+integer amps, so the smallest step that can reach the charger is 1 A (~690 W at 3φ, 230 W
+at 1φ) however fast the loop runs. The charger itself is *not* a limit: it takes more than
+one write per second without complaint.
 
 ---
 

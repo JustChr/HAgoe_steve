@@ -62,6 +62,19 @@ Going direct: one dependency fewer, exact enum values instead of label-matching,
 > **`nrg` layout** (index): `U` L1,L2,L3,N = 0‑3 · `I` L1,L2,L3 = 4‑6 ·
 > `P` L1,L2,L3,N,**Total** = 7‑11 · `pf` L1,L2,L3,N = 12‑15. Total power = **`nrg[11]`**.
 
+> **`amp` write frequency — not a constraint.** Verified in practice: the charger takes
+> **more than one write per second**, sustained, without complaint. The brain writes far
+> less than that (~4/min on a fluctuating day, with a 2 s post-write settle), so when
+> tuning the regulation loop the charger is *not* the limiting factor — the car is, since
+> a vehicle may take several seconds to follow a changed pilot signal.
+
+> **`amp` resolution is the loop's floor.** `amp` is **uint8 amps**, so the smallest step
+> that can reach the charger at all is 1 A ≈ 690 W at 3φ, 230 W at 1φ. `MIN_WRITE_DELTA_A`
+> is set to 1.0 to match, which makes it a no-op on top of the rounding the coordinator
+> already does — it is documentation, not a knob. Finer surplus tracking is only available
+> by charging on a single phase (a third of the step size), which is one more reason the
+> surplus strategy prefers 1φ for small surpluses.
+
 ### Extras we gain (surfaced as full entities, per decision)
 
 - `acu` — amps the car is *actually allowed* right now

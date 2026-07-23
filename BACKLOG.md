@@ -129,11 +129,14 @@ surplus — a phantom surplus it would never back off from (normally masked by t
 battery discharging instead). Spec: `docs/charging-behavior-matrix.md` § "Two speeds".
 
   Follow-ups worth revisiting:
-  - **Watch the amp write rate in the field.** Roughly 4 writes/min on a blippy day, up
-    from ~0.6. Normal for PV surplus control, but the go-e's behaviour under that cadence
-    is unverified — `docs/mqtt-direct-concept.md` says nothing about `amp` write frequency.
-  - The next real lever on responsiveness is the **write deadband**, not timing: at 3φ a
-    1 A step is ~690 W, so sub-deadband changes never reach the charger at any loop speed.
+  - ~~Watch the amp write rate in the field.~~ **Closed:** the go-e handles >1 write/s
+    sustained (verified in practice), so the ~4 writes/min this release produces is a
+    non-issue. Recorded in `docs/mqtt-direct-concept.md`. The charger is not the limiting
+    factor when tuning the loop — the car's response time is.
+  - **Not a lever: the write deadband.** `amp` is uint8 *integer* amps and the coordinator
+    already rounds, so `MIN_WRITE_DELTA_A = 1.0` is a no-op that merely documents the
+    charger's own resolution (1 A ≈ 690 W at 3φ). Finer tracking is only available at 1φ,
+    where a step is 230 W — another reason surplus charging prefers a single phase.
   - `START_CONFIRM_S` still hard-resets on any dip below the minimum, so a fluctuating
     morning restarts the full 3 minutes repeatedly. A short grace before resetting would
     start solar sessions sooner; deliberately left alone as it trades against start caution.
