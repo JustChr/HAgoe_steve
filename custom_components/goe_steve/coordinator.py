@@ -20,7 +20,9 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    BATTERY_DISCHARGE_ATTACK_S,
     BATTERY_DISCHARGE_GRACE_S,
+    BATTERY_DISCHARGE_RELEASE_S,
     BATTERY_DISCHARGE_TOLERANCE_W,
     CONF_BATTERY_HOLD,
     CONF_BATTERY_POWER,
@@ -47,15 +49,20 @@ from .const import (
     DEFAULT_TARGET_ENERGY_KWH,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    FAST_BACKOFF_DELTA_A,
     INPUT_SETTLE_S,
     MIN_UPDATE_INTERVAL_S,
     MIN_WRITE_DELTA_A,
+    PHASE_CONFIRM_S,
     PHASE_DWELL_S,
+    PHASE_UP_MARGIN_W,
     START_CONFIRM_S,
     STEVE_SCAN_INTERVAL,
     STOP_RIDE_OUT_S,
     SURPLUS_DROP_TAU_S,
     SURPLUS_SMOOTH_WINDOW_S,
+    SURPLUS_TRACK_DROP_TAU_S,
+    SURPLUS_TRACK_RISE_TAU_S,
 )
 from .engine import (
     ChargerInputs,
@@ -361,10 +368,16 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             manual_passive=self._manual_passive,
             max_phases=max(self._phases, 3),
             phase_dwell_s=PHASE_DWELL_S,
+            phase_confirm_s=PHASE_CONFIRM_S,
+            phase_up_margin_w=PHASE_UP_MARGIN_W,
             smooth_window_s=SURPLUS_SMOOTH_WINDOW_S,
             surplus_drop_tau_s=SURPLUS_DROP_TAU_S,
+            track_rise_tau_s=SURPLUS_TRACK_RISE_TAU_S,
+            track_drop_tau_s=SURPLUS_TRACK_DROP_TAU_S,
             discharge_tolerance_w=BATTERY_DISCHARGE_TOLERANCE_W,
             discharge_grace_s=BATTERY_DISCHARGE_GRACE_S,
+            discharge_attack_s=BATTERY_DISCHARGE_ATTACK_S,
+            discharge_release_s=BATTERY_DISCHARGE_RELEASE_S,
             start_confirm_s=START_CONFIRM_S,
             stop_ride_out_s=STOP_RIDE_OUT_S,
         )
@@ -404,17 +417,27 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         target = round(decision.target_current_a) if decision.should_charge else 0
 
-        # Rate-limit writes, but always allow a stop and a phase change through.
+        # Rate-limit writes, but always allow a stop, a phase change and a decisive
+        # back-off through. The back-off exception is what keeps the post-write
+        # settle from costing anything: the settle exists so we don't command into a
+        # car that is still ramping, and that reasoning only applies to asking for
+        # *more*. Asking for less is always safe to do at once, and it is the
+        # direction where waiting means importing or draining the home battery.
         phase_change = (
             (self.settings.auto_phase or decision.write_phases)
             and self._last_written_phases is not None
             and decision.target_phases != self._last_written_phases
+        )
+        backing_off = (
+            self._last_written_a is not None
+            and self._last_written_a - target >= FAST_BACKOFF_DELTA_A
         )
         if (
             target != 0
             and self._last_write_at is not None
             and (now - self._last_write_at).total_seconds() < MIN_UPDATE_INTERVAL_S
             and not phase_change
+            and not backing_off
         ):
             return
 

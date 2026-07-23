@@ -308,10 +308,8 @@ def test_sustained_discharge_eases_off():
     assert d.surplus_w == pytest.approx(5000.0)  # 2000 + 4000 − 1000 raw
 
 
-def test_surplus_tracks_a_drop_quickly():
-    # A fading surplus is followed within tens of seconds, not two minutes: the
-    # asymmetric filter uses its short downward time constant, so the tracked value
-    # falls well past the plain average of the two readings.
+def test_current_tracks_a_drop_quickly():
+    # A fading surplus reaches the amps within tens of seconds, not minutes.
     cfg = _cfg()
     state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
     decide(
@@ -327,15 +325,15 @@ def test_surplus_tracks_a_drop_quickly():
         cfg,
         state,
     )
-    # 20 s tau, 30 s step: 6000 + (1-e^-1.5)(1000-6000) ≈ 2116 W — below the 3500 W
-    # a symmetric 2-sample average would still be sitting at.
-    assert d.surplus_w == pytest.approx(2116.0, abs=5.0)
-    assert d.surplus_w < 3500.0
+    # 5 s tracking tau, 30 s step: 6000 + (1-e^-6)(1000-6000) ≈ 1012 W — essentially
+    # all the way down, where a plain 2-sample average would still read 3500 W.
+    assert d.surplus_w == pytest.approx(1012.0, abs=5.0)
+    assert d.target_current_a == cfg.min_current_a  # 1 kW at 1φ is below the floor
 
 
-def test_surplus_climbs_gently_on_a_rise():
-    # A surplus jump is eased in over the long upward time constant, so a brief
-    # bright patch can't slam the current up and straight back down.
+def test_current_climbs_quickly_on_a_rise():
+    # …and a returning surplus is used while it lasts instead of being eased in
+    # over several minutes.
     cfg = _cfg()
     state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
     decide(
@@ -351,10 +349,106 @@ def test_surplus_climbs_gently_on_a_rise():
         cfg,
         state,
     )
-    # 120 s tau, 30 s step: 2000 + (1-e^-0.25)(8000-2000) ≈ 3327 W — well short of
-    # both the 8000 W reading and the 5000 W a symmetric average would give.
-    assert d.surplus_w == pytest.approx(3327.0, abs=5.0)
-    assert d.surplus_w < 5000.0
+    # 12 s tracking tau, 30 s step: 2000 + (1-e^-2.5)(8000-2000) ≈ 7507 W, versus
+    # the 3327 W the calm commitment filter is still sitting at.
+    assert d.surplus_w == pytest.approx(7507.0, abs=5.0)
+
+
+def test_a_short_dip_moves_the_amps_but_not_the_charging_state():
+    # The point of the two speeds: the current follows the dip immediately while
+    # the decision to keep charging stays with the calm signal.
+    cfg = _cfg()
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
+    decide(
+        _inputs(
+            grid_power_w=-6000.0,
+            battery_soc=90.0,
+            battery_power_w=0.0,
+            phases=1,
+            now=T0,
+        ),
+        cfg,
+        state,
+    )
+    d = decide(
+        _inputs(
+            grid_power_w=0.0,
+            battery_soc=90.0,
+            battery_power_w=0.0,
+            phases=1,
+            now=T0 + timedelta(seconds=5),
+        ),
+        cfg,
+        state,
+    )
+    assert d.should_charge is True
+    assert d.reason_key == "solar_surplus"
+    assert state.ride_out_since is None  # no stop is being contemplated
+    # Five seconds into the dip the amps are already well down from the 16 A cap
+    # (6000·e^-1 ≈ 2207 W), while the commitment signal is still at ≈ 4673 W.
+    assert d.target_current_a == pytest.approx(2207.0 / 230.0, abs=0.1)
+
+
+def test_ride_out_follows_a_recovering_surplus():
+    # Mid ride-out the commitment signal still says "stop soon", but the surplus
+    # is back — the amps go with it instead of sitting at the minimum.
+    cfg = _cfg()
+    state = EngineState(
+        charging=True,
+        active_source="solar",
+        avail_zone="buffer",
+        ride_out_since=T0,
+        avail_output=200.0,
+        track_output=200.0,
+        avail_sample_t=T0,
+    )
+    d = decide(
+        _inputs(
+            grid_power_w=-8000.0,
+            battery_soc=90.0,
+            phases=3,
+            now=T0 + timedelta(seconds=30),
+        ),
+        cfg,
+        state,
+    )
+    assert d.reason_key == "surplus_ride_out"  # commitment signal not convinced yet
+    assert d.target_current_a > cfg.min_current_a
+    assert d.target_current_a == pytest.approx(7360.0 / 690.0, abs=0.05)
+
+
+def test_battery_penalty_releases_once_the_dip_is_over():
+    # A battery that has stopped discharging must stop holding the current down.
+    cfg = _cfg()
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
+    decide(
+        _inputs(
+            grid_power_w=-4000.0, battery_soc=90.0, battery_power_w=0.0,
+            phases=1, now=T0,
+        ),
+        cfg,
+        state,
+    )
+    decide(  # the dip: the car's 4 kW rides on the battery
+        _inputs(
+            grid_power_w=0.0, car_actual_power_w=4000.0, battery_soc=90.0,
+            battery_power_w=-4000.0, phases=1, now=T0 + timedelta(seconds=30),
+        ),
+        cfg,
+        state,
+    )
+    d = decide(  # …and it's over: sun back, battery idle
+        _inputs(
+            grid_power_w=-4000.0, car_actual_power_w=4000.0, battery_soc=90.0,
+            battery_power_w=0.0, phases=1, now=T0 + timedelta(seconds=60),
+        ),
+        cfg,
+        state,
+    )
+    # Penalty after one 30 s release step: 884 W · e^(-30/40) ≈ 418 W, off a
+    # tracked base of ≈ 7672 W. A symmetric 120 s average would still deduct
+    # ≈ 1333 W here.
+    assert d.surplus_w == pytest.approx(7254.0, abs=10.0)
 
 
 # --- Start confirmation + ride-out ---------------------------------------------------
@@ -668,14 +762,72 @@ def test_large_surplus_climbs_to_three_phases():
     assert d.target_phases == 3
 
 
-def test_phase_dwell_blocks_a_quick_toggle():
-    state = EngineState(phases=1, phase_changed_at=T0 - timedelta(seconds=60))
+def test_phase_up_needs_headroom_above_the_three_phase_minimum():
+    # Just over the bare 3φ minimum (4140 W) is not enough — the margin keeps us
+    # on one phase rather than switching into a configuration we can barely hold.
     d = decide(
-        _inputs(grid_power_w=-6000.0, battery_soc=90.0, now=T0),
-        _cfg(auto_phase=True, max_phases=3, start_confirm_s=0.0),
+        _inputs(grid_power_w=-4300.0, battery_soc=90.0),
+        _cfg(auto_phase=True, max_phases=3),
+        EngineState(),
+    )
+    assert d.target_phases == 1
+
+
+def test_phase_switch_waits_for_the_confirmation_window():
+    # A crossing has to hold before the contactor moves at all.
+    cfg = _cfg(auto_phase=True, max_phases=3, start_confirm_s=0.0)
+    state = EngineState()
+    inputs = lambda now: _inputs(  # noqa: E731 - terse fixture, one expression
+        grid_power_w=-6000.0, battery_soc=90.0, phases=1, now=now
+    )
+    assert decide(inputs(T0), cfg, state).target_phases == 1
+    assert decide(inputs(T0 + timedelta(seconds=60)), cfg, state).target_phases == 1
+    assert decide(inputs(T0 + timedelta(seconds=130)), cfg, state).target_phases == 3
+
+
+def test_a_momentary_spike_does_not_switch_phases():
+    # The crossing has to hold *continuously*: a spike re-arms the window.
+    cfg = _cfg(auto_phase=True, max_phases=3, start_confirm_s=0.0)
+    state = EngineState()
+    decide(
+        _inputs(grid_power_w=-6000.0, battery_soc=90.0, phases=1, now=T0), cfg, state
+    )
+    decide(  # spike over well inside the confirmation window
+        _inputs(
+            grid_power_w=-1500.0,
+            battery_soc=90.0,
+            phases=1,
+            now=T0 + timedelta(seconds=60),
+        ),
+        cfg,
         state,
     )
-    assert d.target_phases == 1  # dwell not yet elapsed
+    assert state.phase_want is None  # window disarmed, not merely paused
+    d = decide(
+        _inputs(
+            grid_power_w=-6000.0,
+            battery_soc=90.0,
+            phases=1,
+            now=T0 + timedelta(seconds=130),
+        ),
+        cfg,
+        state,
+    )
+    assert d.target_phases == 1
+
+
+def test_phase_dwell_blocks_a_quick_toggle():
+    # The contactor moved a minute ago, so even a crossing that has held past the
+    # confirmation window has to wait out the dwell.
+    cfg = _cfg(auto_phase=True, max_phases=3, start_confirm_s=0.0)
+    state = EngineState(phases=1, phase_changed_at=T0 - timedelta(seconds=60))
+    inputs = lambda now: _inputs(  # noqa: E731 - terse fixture, one expression
+        grid_power_w=-6000.0, battery_soc=90.0, phases=1, now=now
+    )
+    decide(inputs(T0), cfg, state)
+    # Confirmed (120 s) but still inside the 300 s dwell, which started 60 s ago.
+    assert decide(inputs(T0 + timedelta(seconds=130)), cfg, state).target_phases == 1
+    assert decide(inputs(T0 + timedelta(seconds=250)), cfg, state).target_phases == 3
 
 
 def test_grid_charging_uses_full_phases_with_auto_phase():

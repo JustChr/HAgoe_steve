@@ -34,20 +34,28 @@ See [`docs/concept`](#concept) for the full design.
   *strategies* that bid a charging power every cycle; the highest bid drives the charger.
 - **One home-battery rule — the reserve line:** a single *"Keep home battery above X %"*
   number. Below the line the battery comes first (all solar fills it, the car gets only
-  genuine excess); at/above the line the battery is a **fluctuation buffer** — the car follows
-  the ~2-minute smoothed surplus and the battery bridges cloud dips instead of the car chasing
-  them. Sustained discharge into the car is corrected, so the battery never becomes the car's
-  power source. 100 % = always protect.
+  genuine excess); at/above the line the battery is a **fluctuation buffer** — it bridges the
+  seconds the car needs to follow a cloud, and stops holding the current down as soon as the
+  dip is over. Sustained discharge into the car is corrected, so the battery never becomes
+  the car's power source. 100 % = always protect.
 - **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
   helper) and the brain flips it on whenever it deliberately charges from the grid (cheap
   hours, the departure plan, Fast) so the car draws from the grid instead of draining your
   home battery. Solar surplus still charges the battery. An **Auto / Hold / Free** control (and
   a *Home battery held* sensor) lets you see and override that decision, and the card shows it
   as a shield chip.
+- **Fast on the knob, slow on the switches:** the surplus is tracked at two speeds. The
+  charging **current** follows a responsive signal, so a cloud or a switched-on oven reaches
+  the amps within seconds and a clearing sky is used while it lasts. Whether to charge **at
+  all**, and on how many **phases**, follows a deliberately calm one — so the fast tracking
+  never turns into relay flapping.
 - **Calm start/stop ("ride out, then stop"):** a solar start needs ~3 minutes of confirmed
-  surplus; a surplus collapse is ridden out for ~5 minutes at minimum current before a clean
-  stop — few, deliberate transitions instead of relay flapping.
-- **Mode-aware 1↔3 phase switching** with anti-flap hysteresis and dwell timers: power modes
+  surplus; a surplus collapse is ridden out for ~5 minutes before a clean stop (with the amps
+  still following the live surplus, so a recovery inside the window is used immediately) —
+  few, deliberate transitions instead of relay flapping.
+- **Mode-aware 1↔3 phase switching** with anti-flap hysteresis, a confirmation window and dwell
+  timers: a threshold crossing must hold for ~2 minutes and the contactor moves at most once
+  every 5 minutes. Power modes
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
   prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch —
   phase control (`psm`) is always available over MQTT.

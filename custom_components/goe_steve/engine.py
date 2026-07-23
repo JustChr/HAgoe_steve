@@ -14,9 +14,9 @@ Architecture — strategies + arbiter (v3):
 Every cycle, each strategy enabled by the charging mode independently proposes
 the charging *power* it could justify right now:
 
-* **Solar surplus** — the solar power available to the car, tracked through an
-  asymmetric filter (drops fast, rises slow) so the current follows a fading
-  surplus quickly but climbs gently.
+* **Solar surplus** — the solar power available to the car, tracked at two
+  speeds (see below) so the current follows the surplus closely while the
+  decision to charge at all stays deliberate.
 * **Cheap grid** — full power while the spot price is at/below the threshold.
 * **Departure plan** — full power during the cheapest forecast slots needed to
   cover the *remaining* energy (target − delivered) by departure, guaranteed.
@@ -27,6 +27,20 @@ The arbiter takes the highest proposal (grid strategies win ties, so the
 battery-hold below stays engaged), then applies the shared constraints: the
 home-battery policy, 1↔3-phase resolution with hysteresis + dwell, and the
 start-confirmation / ride-out machine that keeps the charger from flapping.
+
+Two speeds, two jobs:
+
+Turning the current knob is cheap and instantly reversible; starting, stopping
+and throwing the 1↔3-phase contactor are not. So the same raw surplus is
+tracked through two filters and each drives only what it is suited to:
+
+* the **tracking** signal (short time constants, :attr:`Availability.power_w`)
+  sets the charging current, so a passing cloud or a switched-on oven reaches
+  the amps within seconds;
+* the **commitment** signal (long time constants, :attr:`Availability.commit_w`)
+  decides whether to charge at all and on how many phases, so those transitions
+  stay few and deliberate — on top of the start-confirmation, ride-out and
+  phase-dwell timers that were already there.
 
 Home-battery policy (one reserve line, two zones):
 
@@ -45,7 +59,6 @@ deterministic and testable.
 from __future__ import annotations
 
 import math
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -155,13 +168,25 @@ class EngineConfig:
     auto_phase: bool = False
     max_phases: int = 3
     phase_dwell_s: float = 300.0  # min time between phase switches
-    # Solar smoothing + battery-buffer behaviour. The surplus is tracked by an
-    # asymmetric filter: ``smooth_window_s`` is the slow time constant for a
-    # *rising* surplus, ``surplus_drop_tau_s`` the fast one for a *falling* surplus.
+    phase_confirm_s: float = 120.0  # a threshold crossing must hold this long first
+    phase_up_margin_w: float = 500.0  # headroom demanded before climbing to 3φ
+    # Solar tracking — the *commitment* filter (start/stop + phase choice). An
+    # asymmetric EMA: ``smooth_window_s`` is the slow time constant for a *rising*
+    # surplus, ``surplus_drop_tau_s`` the faster one for a *falling* surplus.
     smooth_window_s: float = 120.0  # gentle time constant when the surplus rises
     surplus_drop_tau_s: float = 20.0  # fast time constant when the surplus falls
+    # …and the *tracking* filter, which sets the charging current. Short in both
+    # directions: the amps are meant to follow reality, not to be a commitment.
+    # How short is bounded by the sample rate — see the notes in ``const.py``.
+    track_rise_tau_s: float = 12.0
+    track_drop_tau_s: float = 5.0
     discharge_tolerance_w: float = 300.0  # sustained battery→car drain above this…
     discharge_grace_s: float = 180.0  # …for this long triggers a decisive ease-off
+    # How the buffer-zone battery-discharge penalty builds and fades: it ramps in
+    # slowly (that lag *is* the battery bridging a short dip) but is released far
+    # faster, so a dip that is over stops holding the current down.
+    discharge_attack_s: float = 120.0
+    discharge_release_s: float = 40.0
     # Start/stop shaping ("ride out, then stop").
     start_confirm_s: float = 180.0  # surplus must hold ≥ min this long to start
     stop_ride_out_s: float = 300.0  # keep min current this long through a dip
@@ -175,9 +200,12 @@ class EngineState:
     reset on restart, which simply means the windows and timers start fresh.
     """
 
-    # Phase hysteresis/dwell memory.
+    # Phase hysteresis/dwell memory. ``phase_want`` is the switch we are currently
+    # confirming (see ``_resolve_phases``), armed at ``phase_want_since``.
     phases: int | None = None
     phase_changed_at: datetime | None = None
+    phase_want: int | None = None
+    phase_want_since: datetime | None = None
     # Start/stop machine.
     charging: bool | None = None
     active_source: str | None = None  # "solar" | "grid" while charging
@@ -186,11 +214,14 @@ class EngineState:
     # Battery-buffer memory.
     discharge_high_since: datetime | None = None
     avail_zone: str | None = None  # "protect" | "buffer" the samples belong to
-    # Asymmetric surplus filter: the last emitted base value and when it was
-    # sampled, so the next cycle's directional EMA knows the elapsed time.
+    # Surplus filters: the last emitted value of the commitment filter
+    # (``avail_output``), of the tracking filter (``track_output``) and of the
+    # battery-discharge penalty, plus the time they were all sampled, so the next
+    # cycle's directional EMAs know the elapsed time.
     avail_output: float | None = None
+    track_output: float | None = None
+    discharge_output: float | None = None
     avail_sample_t: datetime | None = None
-    discharge_samples: deque[tuple[datetime, float]] = field(default_factory=deque)
 
 
 @dataclass(slots=True)
@@ -210,6 +241,10 @@ class Decision:
     # (Manual mode picks phases explicitly). Smart fixed-phase modes leave it False
     # so they never touch a phase switch the user controls.
     write_phases: bool = False
+    # The surplus this decision acted on (W) — the responsive tracking signal
+    # while charging (it is what sets the current), the calm commitment signal
+    # while waiting (it is what the start gate is waiting for). So the number on
+    # the card always matches the number quoted in ``reason``.
     surplus_w: float = 0.0
     reason: str = ""
     # Structured form of ``reason`` so the Lovelace card can localize it: a stable
@@ -337,27 +372,6 @@ def _current_to_power(current_a: float, phases: int, voltage_v: float) -> float:
 
 # --- Solar availability (the surplus strategy's signal) --------------------------
 
-def _smoothed(
-    samples: deque[tuple[datetime, float]],
-    now: datetime | None,
-    value: float,
-    window_s: float,
-) -> float:
-    """Time-based rolling average over ``window_s`` seconds.
-
-    With ``now`` unknown the value passes through raw (stateless tests / one-shot
-    reasoning). Samples arrive event-driven, so the window is wall-clock based,
-    not count based.
-    """
-    if now is None:
-        return value
-    samples.append((now, value))
-    cutoff = now - timedelta(seconds=window_s)
-    while samples and samples[0][0] < cutoff:
-        samples.popleft()
-    return sum(v for _, v in samples) / len(samples)
-
-
 def _directional(
     prev: float | None,
     last_t: datetime | None,
@@ -395,9 +409,15 @@ def _directional(
 
 @dataclass(slots=True)
 class Availability:
-    """Solar power available to the car right now, and how it was derived."""
+    """Solar power available to the car right now, and how it was derived.
+
+    Two numbers, same underlying surplus (see the module docstring): ``power_w``
+    is the responsive one the charging *current* follows, ``commit_w`` the calm
+    one the *decisions* follow — whether to charge at all, and on how many phases.
+    """
 
     power_w: float
+    commit_w: float
     zone: str  # "protect" (below reserve / SoC unknown) or "buffer"
     eased: bool  # sustained battery→car discharge is being corrected
 
@@ -405,15 +425,16 @@ class Availability:
 def compute_availability(
     inp: ChargerInputs, cfg: EngineConfig, state: EngineState
 ) -> Availability:
-    """Smoothed solar power available to the car (W), per the battery policy.
+    """Solar power available to the car (W), per the battery policy.
 
     The underlying identity — invariant to the car's own current changes, so it
     can be smoothed without chasing our own moves — is::
 
-        available = PV − house = grid_export + car_draw + battery_signed
+        available = PV − house = car_draw + battery_signed − grid_signed
 
-    (``battery_signed``: + charging adds reclaimable solar, − discharging
-    subtracts power that is *not* solar.)
+    (``grid_signed``: + import, − export, so exporting adds and importing
+    subtracts. ``battery_signed``: + charging adds reclaimable solar,
+    − discharging subtracts power that is *not* solar.)
 
     Two zones from the single reserve line:
 
@@ -421,13 +442,17 @@ def compute_availability(
       No reclaim of solar the battery is absorbing, and any discharge is
       deducted immediately — zero tolerance.
     * **buffer** (SoC at/above the reserve): solar flowing into the battery is
-      reclaimable for the car, and discharge is deducted only via the smoothed
-      window — so the battery bridges short dips and spikes. Sustained
-      discharge beyond ``discharge_tolerance_w`` for ``discharge_grace_s``
-      switches to the raw deduction (a decisive ease-off).
+      reclaimable for the car, and discharge is deducted through a filter that
+      builds slowly — that lag *is* the battery bridging short dips and spikes —
+      but is released quickly once the dip is over, so a battery that has stopped
+      discharging stops holding the current down. Sustained discharge beyond
+      ``discharge_tolerance_w`` for ``discharge_grace_s`` switches to the raw
+      deduction (a decisive ease-off).
 
-    The base surplus itself is passed through :func:`_directional`, so it climbs
-    gently but falls fast — the car sheds current promptly when the surplus fades.
+    The base surplus runs through :func:`_directional` twice, at the two speeds
+    described in the module docstring, giving the tracking and commitment
+    signals. The battery penalty is shared: it is a statement about the *world*,
+    not about how eagerly we act on it.
     """
     export_w = max(0.0, -inp.grid_power_w)
     car_draw = max(0.0, inp.car_actual_power_w)
@@ -440,8 +465,9 @@ def compute_availability(
     # other zone would blend two different signals, so start the filter fresh.
     if zone != state.avail_zone:
         state.avail_output = None
+        state.track_output = None
+        state.discharge_output = None
         state.avail_sample_t = None
-        state.discharge_samples.clear()
         state.discharge_high_since = None
         state.avail_zone = zone
 
@@ -457,30 +483,67 @@ def compute_availability(
         # battery absorbs are genuine surplus for the car.
         base = export_w
     else:
-        base = export_w + car_draw
+        # The full identity, with the *signed* grid: export adds to what is
+        # available, import subtracts from it. Clamping the grid to its export
+        # side here would count the car's draw as surplus even while the grid is
+        # importing to supply it — a phantom surplus the car would never back off
+        # from (a home battery normally masks this by discharging instead, which
+        # the penalty below catches, but not when it is held or power-limited).
+        base = -inp.grid_power_w + car_draw
         if batt is not None:
             base += max(0.0, batt)  # reclaim solar the battery is absorbing
 
-    base_s = _directional(
+    # All three filters advance off the same previous sample time.
+    last_t = state.avail_sample_t
+    commit_base = _directional(
         state.avail_output,
-        state.avail_sample_t,
+        last_t,
         inp.now,
         base,
         cfg.smooth_window_s,
         cfg.surplus_drop_tau_s,
     )
-    state.avail_output = base_s
-    state.avail_sample_t = inp.now
+    track_base = _directional(
+        state.track_output,
+        last_t,
+        inp.now,
+        base,
+        cfg.track_rise_tau_s,
+        cfg.track_drop_tau_s,
+    )
+    state.avail_output = commit_base
+    state.track_output = track_base
 
     if protect:
-        return Availability(max(0.0, base_s - discharge_raw), zone, False)
+        state.avail_sample_t = inp.now
+        return Availability(
+            power_w=max(0.0, track_base - discharge_raw),
+            commit_w=max(0.0, commit_base - discharge_raw),
+            zone=zone,
+            eased=False,
+        )
 
-    dis_s = _smoothed(
-        state.discharge_samples, inp.now, discharge_raw, cfg.smooth_window_s
+    # Buffer zone: the penalty ramps in over ``discharge_attack_s`` (the bridging
+    # tolerance) and is released over the shorter ``discharge_release_s``.
+    dis_s = _directional(
+        state.discharge_output,
+        last_t,
+        inp.now,
+        discharge_raw,
+        cfg.discharge_attack_s,
+        cfg.discharge_release_s,
     )
+    state.discharge_output = dis_s
+    state.avail_sample_t = inp.now
+
     eased = _track_sustained_discharge(inp, cfg, state, discharge_raw)
     penalty = discharge_raw if eased else dis_s
-    return Availability(max(0.0, base_s - penalty), zone, eased)
+    return Availability(
+        power_w=max(0.0, track_base - penalty),
+        commit_w=max(0.0, commit_base - penalty),
+        zone=zone,
+        eased=eased,
+    )
 
 
 def _track_sustained_discharge(
@@ -656,16 +719,25 @@ def _deadline_now(plan: _Plan | None, inp: ChargerInputs) -> tuple[str, dict[str
 def _resolve_phases(
     surplus_w: float, inp: ChargerInputs, cfg: EngineConfig, state: EngineState
 ) -> int:
-    """Pick 1 or 3 phases for solar charging, with hysteresis and a dwell timer.
+    """Pick 1 or 3 phases for solar charging, with hysteresis, confirmation and dwell.
+
+    ``surplus_w`` is the *commitment* signal: throwing the contactor is a
+    commitment, so it must not chase the fast tracking value.
 
     The thresholds evaluate the surplus against both *candidate* configurations
     (what three phases would minimally need, what one phase could maximally
     deliver) rather than the currently active phase count, so the choice is
     free of the current/target coupling. We switch up to three phases only once
-    the surplus can sustain their minimum, and back down only once it drops
-    below what a single phase can deliver at full current — the gap between the
-    two thresholds is the hysteresis band. A dwell timer caps how often the
-    contactor may toggle.
+    the surplus can sustain their minimum *plus* ``phase_up_margin_w`` of
+    headroom, and back down only once it drops below what a single phase can
+    deliver at full current — the gap between the two thresholds is the
+    hysteresis band. The margin is deliberately one-sided: widening the band
+    downwards would mean sitting at 3φ while a single phase could carry the
+    surplus, which means importing to hold the 3φ minimum.
+
+    Two timers then guard the switch itself: the crossing must *hold* for
+    ``phase_confirm_s`` (so a spike or a momentary dip never moves the
+    contactor), and ``phase_dwell_s`` caps how often it may toggle at all.
 
     Surplus charging *prefers* a single phase: with no remembered phase yet we
     start at 1φ so a small surplus is used immediately, climbing to 3φ only
@@ -675,7 +747,9 @@ def _resolve_phases(
         return max(1, inp.phases)
 
     current = state.phases if state.phases in (1, 3) else 1
-    up_threshold = _current_to_power(cfg.min_current_a, 3, inp.voltage_v)
+    up_threshold = (
+        _current_to_power(cfg.min_current_a, 3, inp.voltage_v) + cfg.phase_up_margin_w
+    )
     down_threshold = _current_to_power(cfg.max_current_a, 1, inp.voltage_v)
 
     desired = current
@@ -685,8 +759,21 @@ def _resolve_phases(
         desired = 1
 
     if desired == current:
+        state.phase_want = None
+        state.phase_want_since = None
         state.phases = current
         return current
+
+    # The crossing has to hold before the contactor moves. With ``now`` unknown
+    # (stateless one-shot reasoning) there is no time to measure, so it passes.
+    if inp.now is not None:
+        if state.phase_want != desired or state.phase_want_since is None:
+            state.phase_want = desired
+            state.phase_want_since = inp.now
+        if (
+            inp.now - state.phase_want_since
+        ).total_seconds() < cfg.phase_confirm_s:
+            return current
 
     # Honour the dwell timer before toggling the contactor.
     if (
@@ -698,6 +785,8 @@ def _resolve_phases(
 
     state.phases = desired
     state.phase_changed_at = inp.now
+    state.phase_want = None
+    state.phase_want_since = None
     return desired
 
 
@@ -787,6 +876,10 @@ def _collect_proposals(
     Ordering matters: the arbiter keeps the *first* of equal-power proposals, so
     listing grid strategies ahead of solar keeps the battery-hold engaged when a
     grid strategy ties with the surplus.
+
+    Solar bids its *commitment* power: which strategy runs the session is a
+    decision, not a knob. The current it then charges at follows the tracking
+    signal (see :func:`_decide`).
     """
     proposals: list[_Proposal] = []
     max_grid_w = _current_to_power(cfg.max_current_a, grid_phases, inp.voltage_v)
@@ -821,7 +914,7 @@ def _collect_proposals(
 
     if cfg.mode in _SOLAR_MODES:
         proposals.append(
-            _Proposal("solar", "solar", min(avail.power_w, max_grid_w))
+            _Proposal("solar", "solar", min(avail.commit_w, max_grid_w))
         )
 
     return proposals
@@ -830,7 +923,11 @@ def _collect_proposals(
 def _idle_reason(
     inp: ChargerInputs, cfg: EngineConfig, avail: Availability, needed_w: float
 ) -> tuple[str, str, dict[str, str]]:
-    """Why the charger is (staying) off — the most informative answer first."""
+    """Why the charger is (staying) off — the most informative answer first.
+
+    Quotes the commitment signal, because that is the number the start gate is
+    actually waiting on.
+    """
     remaining = _plan_remaining_kwh(inp, cfg)
     if remaining is not None and remaining <= 0:
         return _reason(
@@ -851,7 +948,7 @@ def _idle_reason(
         return _reason("plan_waiting")
     return _reason(
         "waiting_surplus",
-        surplus=f"{avail.power_w:.0f}",
+        surplus=f"{avail.commit_w:.0f}",
         needed=f"{needed_w:.0f}",
     )
 
@@ -922,7 +1019,8 @@ def _decide_manual(
     elif cfg.battery_hold_mode == "free":
         hold = False
     else:
-        hold = requested_w > avail.power_w + _MANUAL_GRID_MARGIN_W
+        # Driving the hold switch is a commitment, so it follows the calm signal.
+        hold = requested_w > avail.commit_w + _MANUAL_GRID_MARGIN_W
     current, guarded = _battery_guard_current(
         cfg.manual_current_a, phases, inp, cfg, hold=hold
     )
@@ -1066,7 +1164,9 @@ def _decide(
     )
 
     # --- Start-confirmation window (solar starts only) -----------------------------
-    if avail.power_w >= min_solar_w:
+    # On the commitment signal, so a flickering surplus doesn't keep restarting
+    # the window — and doesn't start the charge on a bright patch either.
+    if avail.commit_w >= min_solar_w:
         if state.surplus_ok_since is None:
             state.surplus_ok_since = inp.now
     else:
@@ -1088,14 +1188,24 @@ def _decide(
             if (
                 inp.now - state.ride_out_since
             ).total_seconds() < cfg.stop_ride_out_s:
+                # Ride out at whatever the *live* surplus supports, not blindly at
+                # the minimum: if the dip is already recovering the amps recover
+                # with it, while the decision to stop keeps waiting on the calm
+                # signal. A real collapse still lands on the minimum.
+                phases = max(1, inp.phases)
+                amps = _clamp(
+                    _power_to_current(avail.power_w, phases, inp.voltage_v),
+                    cfg.min_current_a,
+                    cfg.max_current_a,
+                )
                 reason, rkey, rparams = _reason(
-                    "surplus_ride_out", amps=f"{cfg.min_current_a:.0f}"
+                    "surplus_ride_out", amps=f"{amps:.0f}"
                 )
                 return Decision(
                     control=True,
                     should_charge=True,
-                    target_current_a=cfg.min_current_a,
-                    target_phases=max(1, inp.phases),
+                    target_current_a=amps,
+                    target_phases=phases,
                     surplus_w=avail.power_w,
                     reason=reason,
                     reason_key=rkey,
@@ -1109,7 +1219,7 @@ def _decide(
             control=True,
             should_charge=False,
             target_phases=max(1, inp.phases),
-            surplus_w=avail.power_w,
+            surplus_w=avail.commit_w,
             reason=reason,
             reason_key=rkey,
             reason_params=rparams,
@@ -1121,13 +1231,13 @@ def _decide(
     # --- Solar starts wait for the confirmation window -----------------------------
     if not state.charging and winner.source == "solar" and not solar_confirmed:
         reason, rkey, rparams = _reason(
-            "surplus_confirm", surplus=f"{avail.power_w:.0f}"
+            "surplus_confirm", surplus=f"{avail.commit_w:.0f}"
         )
         return Decision(
             control=True,
             should_charge=False,
             target_phases=max(1, inp.phases),
-            surplus_w=avail.power_w,
+            surplus_w=avail.commit_w,
             reason=reason,
             reason_key=rkey,
             reason_params=rparams,
@@ -1139,7 +1249,7 @@ def _decide(
     # --- Build the charging decision ------------------------------------------------
     if winner.source == "grid":
         if winner.kind == "floor":
-            phases = _resolve_phases(avail.power_w, inp, cfg, state)
+            phases = _resolve_phases(avail.commit_w, inp, cfg, state)
             base_amps = cfg.min_current_a
         else:
             phases = grid_phases
@@ -1182,8 +1292,9 @@ def _decide(
             reason_params=rparams,
         )
 
-    # Solar winner: follow the smoothed surplus; the battery buffers around it.
-    phases = _resolve_phases(avail.power_w, inp, cfg, state)
+    # Solar winner: the current follows the responsive tracking signal, the phase
+    # count the calm one; the battery buffers whatever is left in between.
+    phases = _resolve_phases(avail.commit_w, inp, cfg, state)
     amps = _clamp(
         _power_to_current(avail.power_w, phases, inp.voltage_v),
         cfg.min_current_a,

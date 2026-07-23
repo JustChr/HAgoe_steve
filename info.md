@@ -20,7 +20,10 @@ limits**.
   comes first; at/above it it buffers surplus fluctuations for the car, and deliberate grid
   charging never drains it (100 % = always protect). An **Auto / Hold / Free** control lets you
   override the brain's discharge decision when you want to.
-- **Automatic 1↔3 phase switching** with anti-flap hysteresis and dwell timers.
+- **Fast on the knob, slow on the switches:** the charging current follows the solar surplus
+  within seconds, while starting, stopping and phase switching wait for it to hold.
+- **Automatic 1↔3 phase switching** with anti-flap hysteresis, a confirmation window and
+  dwell timers.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).
 - **SteVe metering & control:** per-RFID kWh, session sensors, and services to authorize/block
   tags and remote start/stop charging.

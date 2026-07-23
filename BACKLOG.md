@@ -113,6 +113,34 @@ concept document; this file is the actionable to-do list.
       to set the base topic (an entity map can't become a topic). Tests: `tests/test_goe_parse.py`.
       Full design: `docs/mqtt-direct-concept.md`.
 
+## Phase 7 — Two-speed surplus tracking ✅ (done, on `main`, v5.3.0)
+The surplus is now tracked through **two** filters instead of one: a *tracking* signal
+(12 s up / 5 s down) that sets the charging current, and the existing calm *commitment*
+signal (120 s / 20 s) that decides whether to charge at all and on how many phases. One
+number could not do both jobs — it had to stay slow enough for the contactor, which made
+the amps crawl (a step took minutes). Phase switching gained a confirmation window
+(`PHASE_CONFIRM_S`) and one-sided headroom (`PHASE_UP_MARGIN_W`); the buffer-zone
+discharge penalty became a directional EMA (slow attack = the bridging tolerance, fast
+release) instead of a box-mean; the ride-out now follows the live surplus instead of
+pinning the minimum; and the write path dropped to a 2 s settle with a fast lane for
+decisive back-offs. Also fixed: the buffer-zone identity clamped the grid to its export
+side, so while the grid was *importing* to feed the car, the car's own draw counted as
+surplus — a phantom surplus it would never back off from (normally masked by the home
+battery discharging instead). Spec: `docs/charging-behavior-matrix.md` § "Two speeds".
+
+  Follow-ups worth revisiting:
+  - **Watch the amp write rate in the field.** Roughly 4 writes/min on a blippy day, up
+    from ~0.6. Normal for PV surplus control, but the go-e's behaviour under that cadence
+    is unverified — `docs/mqtt-direct-concept.md` says nothing about `amp` write frequency.
+  - The next real lever on responsiveness is the **write deadband**, not timing: at 3φ a
+    1 A step is ~690 W, so sub-deadband changes never reach the charger at any loop speed.
+  - `START_CONFIRM_S` still hard-resets on any dip below the minimum, so a fluctuating
+    morning restarts the full 3 minutes repeatedly. A short grace before resetting would
+    start solar sessions sooner; deliberately left alone as it trades against start caution.
+  - Tracking time constants are bounded by the *sample rate* (noise ∝ dt/τ). If the loop
+    ever evaluates faster than ~1.5 s, they could shorten further — but real short
+    transients, not noise, are what bites below ~5 s.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).
