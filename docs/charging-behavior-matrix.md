@@ -7,6 +7,10 @@ What the brain does in every situation. Derived from the regulation engine
 Defaults (all runtime-adjustable): **6 A min / 16 A max**, cheap grid **≤ 0.15 /kWh**,
 home-battery **reserve line 100 %**.
 
+**Minimum current** is the *Solar + minimum* setting and nothing else: it is what that mode
+tops up to from the grid, and the card offers it only there. Raising it never affects any
+other mode — everywhere else a charge bottoms out at the EV's own floor of **6 A**.
+
 ---
 
 ## How a decision is made (every ~30 s, plus on every sensor change)
@@ -26,10 +30,10 @@ home-battery **reserve line 100 %**.
 
 | Strategy | Proposes | Active in |
 |---|---|---|
-| **Solar surplus** | the surplus (0 if below the minimum) — bids the *commitment* signal, charges at the *tracking* one, see below | Smart, Solar only, Solar + minimum |
+| **Solar surplus** | the surplus (0 if below the mode's floor: 6 A, or the minimum current in Solar + minimum) — bids the *commitment* signal, charges at the *tracking* one, see below | Smart, Solar only, Solar + minimum |
 | **Cheap grid** | full power while `price ≤ cheap threshold` | Smart |
 | **Departure plan** | full power during the cheapest forecast slots that cover the **remaining** energy (target − delivered) by departure — **hard guarantee** | Smart |
-| **Minimum floor** | the minimum current, always | Solar + minimum |
+| **Minimum floor** | the **minimum current** setting, always | Solar + minimum |
 | **Full power** | maximum, unconditionally | Fast |
 
 ## Modes are presets
@@ -37,7 +41,7 @@ home-battery **reserve line 100 %**.
 | Mode | Strategies | One line |
 |---|---|---|
 | **Smart** | surplus + cheap grid + departure plan | Solar first, cheap grid opportunistically, target guaranteed by departure. |
-| **Solar only** | surplus | No sun, no charge. |
+| **Solar only** | surplus | No sun, no charge. Starts as soon as the surplus carries 6 A. |
 | **Solar + minimum** | surplus + floor | Solar surplus, but never below the minimum current (tops up from grid). |
 | **Fast** | full power | Full power now, no questions. |
 | **Manual** | — (bypasses the arbiter) | You drive: start/stop, current, phases from the card. |

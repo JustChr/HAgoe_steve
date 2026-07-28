@@ -153,7 +153,7 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `select` Home battery | Auto / Hold / Free — let the brain decide, always block discharge, or never |
 | `switch` Smart control | Master enable — off = hands off entirely |
 | `switch` Auto phase | Enable mode-aware 1↔3 phase switching (phase control is always available over MQTT) |
-| `number` Min/Max current | Charge current bounds (min is also the *Solar + minimum* floor) |
+| `number` Min/Max current | Max is the upper bound everywhere; min is the *Solar + minimum* floor and applies in that mode only (elsewhere a charge bottoms out at the EV's 6 A) |
 | `number` Keep home battery above | The reserve line (SoC %) — below it the battery comes first, at/above it it buffers for the car; 100 = always protect |
 | `number` Car target energy | kWh to deliver by departure (Smart) |
 | `number` Cheap price | At/below this price/kWh, grid counts as cheap |

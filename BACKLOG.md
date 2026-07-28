@@ -176,6 +176,27 @@ available exactly while the wait runs, and the card's countdown chip presses it.
   - Nothing skips the *ride-out* from the card yet (the symmetric "stop now"). Not asked for,
     and stopping early is already available via the mode switch.
 
+## Phase 8.1 — "Minimum current" is one mode's setting ✅ (done, on `main`, v5.4.1)
+
+**The bug.** *Minimum current* was global in the engine but mode-scoped in the card, which
+only offers it in Solar + minimum. A value raised there followed the user into Solar only
+and gated the start: at 10 A the surplus had to reach 2300 W (1φ) before charging began,
+with the knob no longer visible to turn back down. It also set the current clamp, the
+start-confirmation gate and the 3φ threshold in every mode.
+
+**The rule.** The setting means what the card says it means: it is the minimum-floor
+strategy's grid top-up level in Solar + minimum, and binds nowhere else. Every other mode
+bottoms out at the EV's own 6 A (`HARDWARE_MIN_CURRENT_A`). One helper, `_floor_current(cfg)`,
+answers "what is the floor here"; `min_current_a` is now read directly in exactly that one
+place, so the two can't drift apart again.
+
+  Follow-ups worth revisiting:
+  - The entity is still called plain *Minimum current* in HA's own settings list, where
+    nothing says it is mode-scoped. A rename (`strings.json` + EN/DE + card rebuild) would
+    close the last gap between what the knob is called and what it does.
+  - Fast and Manual now trim to 6 A rather than the setting when the battery guard bites.
+    Correct under this rule, but it is the one place the change reaches beyond solar.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

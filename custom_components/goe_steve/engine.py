@@ -103,6 +103,10 @@ _SOLAR_MODES: frozenset[ChargingMode] = frozenset(
     {ChargingMode.SMART, ChargingMode.SOLAR, ChargingMode.SOLAR_MIN}
 )
 
+#: The lowest current any EV accepts (the pilot signal's floor). Every charge
+#: bottoms out here; see :func:`_floor_current`.
+HARDWARE_MIN_CURRENT_A: float = 6.0
+
 
 @dataclass(slots=True)
 class PriceSlot:
@@ -143,6 +147,9 @@ class EngineConfig:
 
     mode: ChargingMode = ChargingMode.MANUAL
     smart_enabled: bool = True
+    # The *Solar + minimum* floor: what that mode tops up to from the grid. It
+    # binds in no other mode — read it through :func:`_floor_current`, never
+    # directly.
     min_current_a: float = 6.0
     max_current_a: float = 16.0
     # The home-battery reserve line (% SoC): below it the battery comes first
@@ -378,6 +385,21 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _floor_current(cfg: EngineConfig) -> float:
+    """The lowest current a charge may run at in the current mode.
+
+    "Minimum current" belongs to **Solar + minimum**: it is what the minimum-floor
+    strategy tops up to from the grid, and the card only offers it in that mode.
+    Everywhere else the floor is the EV's own, so a value raised for Solar +
+    minimum stops binding the moment you leave it — it used to keep Solar only
+    from starting until the sun could carry a current the user could no longer
+    see, let alone change.
+    """
+    if cfg.mode is ChargingMode.SOLAR_MIN:
+        return max(HARDWARE_MIN_CURRENT_A, cfg.min_current_a)
+    return HARDWARE_MIN_CURRENT_A
+
+
 def _power_to_current(power_w: float, phases: int, voltage_v: float) -> float:
     return power_w / (phases * voltage_v)
 
@@ -406,7 +428,7 @@ def _quantize_current(amps: float, cfg: EngineConfig, *, up: bool) -> float:
     band — in particular a surplus already at the maximum stays there.
     """
     snapped = math.ceil(amps - _AMP_EPSILON) if up else math.floor(amps + _AMP_EPSILON)
-    return _clamp(float(snapped), cfg.min_current_a, cfg.max_current_a)
+    return _clamp(float(snapped), _floor_current(cfg), cfg.max_current_a)
 
 
 def _generous_rounding(
@@ -681,7 +703,7 @@ def _battery_guard_current(
     # Snapped down: a protective trim that rounded *up* would hand part of the
     # drain we are trying to stop straight back to the car.
     guarded_a = _quantize_current(
-        max(cfg.min_current_a, full_current_a - trim_a), cfg, up=False
+        max(_floor_current(cfg), full_current_a - trim_a), cfg, up=False
     )
     return guarded_a, guarded_a < full_current_a
 
@@ -840,7 +862,8 @@ def _resolve_phases(
 
     current = state.phases if state.phases in (1, 3) else 1
     up_threshold = (
-        _current_to_power(cfg.min_current_a, 3, inp.voltage_v) + cfg.phase_up_margin_w
+        _current_to_power(_floor_current(cfg), 3, inp.voltage_v)
+        + cfg.phase_up_margin_w
     )
     down_threshold = _current_to_power(cfg.max_current_a, 1, inp.voltage_v)
 
@@ -1005,7 +1028,7 @@ def _collect_proposals(
             )
 
     if cfg.mode is ChargingMode.SOLAR_MIN:
-        floor_w = _current_to_power(cfg.min_current_a, floor_phases, inp.voltage_v)
+        floor_w = _current_to_power(_floor_current(cfg), floor_phases, inp.voltage_v)
         proposals.append(_Proposal("floor", "grid", floor_w))
 
     if cfg.mode in _SOLAR_MODES:
@@ -1243,7 +1266,7 @@ def _decide(
     avail = compute_availability(inp, cfg, state)
     grid_phases = cfg.max_phases if cfg.auto_phase else max(1, inp.phases)
     floor_phases = 1 if cfg.auto_phase else max(1, inp.phases)
-    min_solar_w = _current_to_power(cfg.min_current_a, floor_phases, inp.voltage_v)
+    min_solar_w = _current_to_power(_floor_current(cfg), floor_phases, inp.voltage_v)
 
     proposals = _collect_proposals(
         inp, cfg, avail, plan, grid_phases=grid_phases, floor_phases=floor_phases
@@ -1298,7 +1321,7 @@ def _decide(
                 amps = _quantize_current(
                     _clamp(
                         _power_to_current(avail.power_w, phases, inp.voltage_v),
-                        cfg.min_current_a,
+                        _floor_current(cfg),
                         cfg.max_current_a,
                     ),
                     cfg,
@@ -1356,7 +1379,7 @@ def _decide(
     if winner.source == "grid":
         if winner.kind == "floor":
             phases = _resolve_phases(avail.commit_w, inp, cfg, state)
-            base_amps = cfg.min_current_a
+            base_amps = _floor_current(cfg)
         else:
             phases = grid_phases
             base_amps = cfg.max_current_a
@@ -1404,7 +1427,7 @@ def _decide(
     amps = _quantize_current(
         _clamp(
             _power_to_current(avail.power_w, phases, inp.voltage_v),
-            cfg.min_current_a,
+            _floor_current(cfg),
             cfg.max_current_a,
         ),
         cfg,

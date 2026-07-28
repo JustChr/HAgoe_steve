@@ -718,6 +718,24 @@ def test_floor_tops_up_from_grid_and_holds():
     assert d.reason_key == "solar_min_topup"
 
 
+def test_raised_minimum_only_binds_in_solar_min():
+    # A minimum raised for Solar + minimum used to follow the user into Solar
+    # only — where the card doesn't even show the knob — and hold the start
+    # hostage to a surplus the sun couldn't reach. 1φ at 6 A is 1380 W.
+    inp = _inputs(phases=1, grid_power_w=-1500.0, battery_soc=85.0)
+
+    d = decide(inp, _cfg(mode=ChargingMode.SOLAR, min_current_a=10.0))
+    assert d.should_charge is True
+    assert d.target_current_a == 6.0
+    assert d.reason_key == "solar_surplus"
+
+    # …while Solar + minimum still tops up to the raised minimum from the grid.
+    d = decide(inp, _cfg(mode=ChargingMode.SOLAR_MIN, min_current_a=10.0))
+    assert d.should_charge is True
+    assert d.target_current_a == 10.0
+    assert d.reason_key == "solar_min_topup"
+
+
 def test_floor_yields_to_a_larger_surplus():
     d = decide(
         _inputs(grid_power_w=-8000.0, battery_soc=85.0),
