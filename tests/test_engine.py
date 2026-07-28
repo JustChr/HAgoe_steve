@@ -139,9 +139,11 @@ def test_manual_guard_trims_when_battery_discharges_anyway():
 # --- Solar surplus (availability + battery zones) ------------------------------------
 
 def test_solar_surplus_follows_export():
-    d = decide(_inputs(grid_power_w=-5000.0, battery_soc=90.0), _cfg())
+    # 5 kW over three phases is 7.2 A; the charger takes whole amps, and inside
+    # the buffer zone but below the midpoint the snap is downwards.
+    d = decide(_inputs(grid_power_w=-5000.0, battery_soc=85.0), _cfg())
     assert d.should_charge is True
-    assert d.target_current_a == pytest.approx(5000.0 / (3 * 230.0), abs=0.01)
+    assert d.target_current_a == 7.0
     assert d.hold_battery is False
     assert d.reason_key == "solar_surplus"
 
@@ -362,7 +364,7 @@ def test_a_short_dip_moves_the_amps_but_not_the_charging_state():
     decide(
         _inputs(
             grid_power_w=-6000.0,
-            battery_soc=90.0,
+            battery_soc=85.0,
             battery_power_w=0.0,
             phases=1,
             now=T0,
@@ -373,7 +375,7 @@ def test_a_short_dip_moves_the_amps_but_not_the_charging_state():
     d = decide(
         _inputs(
             grid_power_w=0.0,
-            battery_soc=90.0,
+            battery_soc=85.0,
             battery_power_w=0.0,
             phases=1,
             now=T0 + timedelta(seconds=5),
@@ -385,8 +387,9 @@ def test_a_short_dip_moves_the_amps_but_not_the_charging_state():
     assert d.reason_key == "solar_surplus"
     assert state.ride_out_since is None  # no stop is being contemplated
     # Five seconds into the dip the amps are already well down from the 16 A cap
-    # (6000·e^-1 ≈ 2207 W), while the commitment signal is still at ≈ 4673 W.
-    assert d.target_current_a == pytest.approx(2207.0 / 230.0, abs=0.1)
+    # (6000·e^-1 ≈ 2207 W → 9.6 A → 9 A), while the commitment signal is still at
+    # ≈ 4673 W.
+    assert d.target_current_a == 9.0
 
 
 def test_ride_out_follows_a_recovering_surplus():
@@ -405,7 +408,7 @@ def test_ride_out_follows_a_recovering_surplus():
     d = decide(
         _inputs(
             grid_power_w=-8000.0,
-            battery_soc=90.0,
+            battery_soc=85.0,
             phases=3,
             now=T0 + timedelta(seconds=30),
         ),
@@ -414,7 +417,7 @@ def test_ride_out_follows_a_recovering_surplus():
     )
     assert d.reason_key == "surplus_ride_out"  # commitment signal not convinced yet
     assert d.target_current_a > cfg.min_current_a
-    assert d.target_current_a == pytest.approx(7360.0 / 690.0, abs=0.05)
+    assert d.target_current_a == 10.0  # 7360 W over three phases is 10.7 A
 
 
 def test_battery_penalty_releases_once_the_dip_is_over():
@@ -451,19 +454,102 @@ def test_battery_penalty_releases_once_the_dip_is_over():
     assert d.surplus_w == pytest.approx(7254.0, abs=10.0)
 
 
+# --- Rounding direction: which side of the surplus we land on --------------------------
+
+def test_generous_rounding_takes_the_last_amp_from_the_battery():
+    # Comfortably above the reserve (80 % → generous from 90 %), the 7.2 A of
+    # surplus become 8 A: the last 520 W come out of the home battery instead of
+    # being exported.
+    d = decide(_inputs(grid_power_w=-5000.0, battery_soc=95.0), _cfg())
+    assert d.target_current_a == 8.0
+    assert d.reason_key == "solar_surplus_battery_topup"
+    assert d.reason_params["gap"] == "520"  # 8 A · 3φ · 230 V − 5000 W
+
+
+def test_conservative_rounding_stays_below_the_surplus():
+    # Same surplus, battery only just inside the buffer zone: the remainder is
+    # exported rather than borrowed.
+    d = decide(_inputs(grid_power_w=-5000.0, battery_soc=85.0), _cfg())
+    assert d.target_current_a == 7.0
+    assert d.reason_key == "solar_surplus"
+
+
+def test_generous_rounding_never_exceeds_the_max_current():
+    d = decide(_inputs(grid_power_w=-20000.0, battery_soc=95.0), _cfg())
+    assert d.target_current_a == 16.0
+
+
+def test_reserve_at_100_never_rounds_up():
+    # "Keep the battery at 100 %" means it even when the battery is full: the
+    # leftover is exported, never taken back out of the battery.
+    d = decide(
+        _inputs(grid_power_w=-5000.0, battery_soc=100.0),
+        _cfg(battery_reserve_soc=100.0),
+    )
+    assert d.should_charge is True
+    assert d.target_current_a == 7.0
+    assert d.reason_key == "solar_surplus"
+
+
+def test_generous_rounding_holds_through_a_small_soc_dip():
+    # Rounding up nudges the SoC back down across the very threshold that enabled
+    # it, so leaving the zone takes a few points more than entering it.
+    cfg = _cfg()
+    state = EngineState()
+    decide(_inputs(grid_power_w=-5000.0, battery_soc=90.0), cfg, state)
+    assert state.generous is True
+    decide(_inputs(grid_power_w=-5000.0, battery_soc=88.0), cfg, state)
+    assert state.generous is True  # still inside the exit margin
+    decide(_inputs(grid_power_w=-5000.0, battery_soc=86.0), cfg, state)
+    assert state.generous is False
+
+
+def test_the_borrowed_amp_is_not_treated_as_a_sustained_drain():
+    # One amp step of discharge is our own doing while rounding up (~690 W at 3φ),
+    # so the ease-off correction must not fire on it — otherwise every generous
+    # charge would permanently report "easing off home battery".
+    cfg = _cfg()
+    common = dict(
+        grid_power_w=0.0,
+        car_actual_power_w=5520.0,
+        battery_power_w=-600.0,
+        phases=3,
+        now=T0,
+    )
+    generous = EngineState(
+        charging=True,
+        active_source="solar",
+        avail_zone="buffer",
+        generous=True,
+        discharge_high_since=T0 - timedelta(seconds=200),
+    )
+    d = decide(_inputs(battery_soc=95.0, **common), cfg, generous)
+    assert d.reason_key == "solar_surplus_battery_topup"
+
+    # Below the midpoint the same 600 W is nobody's plan, and is corrected.
+    plain = EngineState(
+        charging=True,
+        active_source="solar",
+        avail_zone="buffer",
+        discharge_high_since=T0 - timedelta(seconds=200),
+    )
+    d = decide(_inputs(battery_soc=85.0, **common), cfg, plain)
+    assert d.reason_key == "solar_surplus_eased"
+
+
 # --- Start confirmation + ride-out ---------------------------------------------------
 
 def test_solar_start_waits_for_the_confirmation_window():
     cfg = _cfg()
     state = EngineState()
     d = decide(
-        _inputs(grid_power_w=-5000.0, battery_soc=90.0, now=T0), cfg, state
+        _inputs(grid_power_w=-5000.0, battery_soc=85.0, now=T0), cfg, state
     )
     assert d.should_charge is False
     assert d.reason_key == "surplus_confirm"
     d = decide(
         _inputs(
-            grid_power_w=-5000.0, battery_soc=90.0, now=T0 + timedelta(seconds=120)
+            grid_power_w=-5000.0, battery_soc=85.0, now=T0 + timedelta(seconds=120)
         ),
         cfg,
         state,
@@ -471,7 +557,7 @@ def test_solar_start_waits_for_the_confirmation_window():
     assert d.should_charge is False  # still confirming
     d = decide(
         _inputs(
-            grid_power_w=-5000.0, battery_soc=90.0, now=T0 + timedelta(seconds=185)
+            grid_power_w=-5000.0, battery_soc=85.0, now=T0 + timedelta(seconds=185)
         ),
         cfg,
         state,
@@ -492,6 +578,34 @@ def test_surplus_dropout_resets_the_confirmation_window():
         state,
     )
     assert state.surplus_ok_since is None
+
+
+def test_start_now_skips_the_confirmation_window():
+    cfg = _cfg()
+    state = EngineState()
+    d = decide(_inputs(grid_power_w=-5000.0, battery_soc=85.0, now=T0), cfg, state)
+    assert d.should_charge is False
+    assert d.reason_key == "surplus_confirm"
+
+    state.start_override = True  # the user taps the countdown / presses the button
+    d = decide(
+        _inputs(grid_power_w=-5000.0, battery_soc=85.0, now=T0 + timedelta(seconds=5)),
+        cfg,
+        state,
+    )
+    assert d.should_charge is True
+    assert d.reason_key == "solar_surplus"
+    assert state.start_override is False  # one-shot, not a standing permission
+
+
+def test_start_now_cannot_conjure_a_surplus():
+    # It skips the waiting, not the condition: with no surplus there is nothing
+    # to start, and the request is consumed rather than left lying around.
+    state = EngineState(start_override=True)
+    d = decide(_inputs(grid_power_w=-500.0, battery_soc=85.0, now=T0), _cfg(), state)
+    assert d.should_charge is False
+    assert d.reason_key == "waiting_surplus"
+    assert state.start_override is False
 
 
 def test_grid_strategies_start_without_confirmation():
@@ -585,7 +699,7 @@ def test_solar_beats_cheap_grid_when_it_offers_more():
     # max power. But with a *higher* solar cap unavailable, solar wins only when
     # cheap isn't active: expensive price → solar carries the session.
     d = decide(
-        _inputs(grid_power_w=-8000.0, price_now=0.30, battery_soc=90.0),
+        _inputs(grid_power_w=-8000.0, price_now=0.30, battery_soc=85.0),
         _cfg(mode=ChargingMode.SMART, cheap_price=0.15),
     )
     assert d.should_charge is True
@@ -606,10 +720,10 @@ def test_floor_tops_up_from_grid_and_holds():
 
 def test_floor_yields_to_a_larger_surplus():
     d = decide(
-        _inputs(grid_power_w=-8000.0, battery_soc=90.0),
+        _inputs(grid_power_w=-8000.0, battery_soc=85.0),
         _cfg(mode=ChargingMode.SOLAR_MIN),
     )
-    assert d.target_current_a == pytest.approx(8000.0 / 690.0, abs=0.01)
+    assert d.target_current_a == 11.0  # 8000 W over three phases is 11.6 A
     assert d.hold_battery is False
     assert d.reason_key == "solar_surplus"
 
@@ -727,7 +841,7 @@ def test_surplus_still_charges_beyond_the_target():
     d = decide(
         _inputs(
             grid_power_w=-8000.0,
-            battery_soc=90.0,
+            battery_soc=85.0,
             session_delivered_kwh=25.0,
             now=None,  # confirmation bypassed for the stateless check
         ),
@@ -745,12 +859,12 @@ def test_surplus_still_charges_beyond_the_target():
 
 def test_small_surplus_prefers_single_phase():
     d = decide(
-        _inputs(grid_power_w=-2500.0, battery_soc=90.0),
+        _inputs(grid_power_w=-2500.0, battery_soc=85.0),
         _cfg(auto_phase=True, max_phases=3),
         EngineState(),
     )
     assert d.target_phases == 1
-    assert d.target_current_a == pytest.approx(2500.0 / 230.0, abs=0.01)
+    assert d.target_current_a == 10.0  # 2500 W on one phase is 10.9 A
 
 
 def test_large_surplus_climbs_to_three_phases():

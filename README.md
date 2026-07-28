@@ -38,6 +38,11 @@ See [`docs/concept`](#concept) for the full design.
   seconds the car needs to follow a cloud, and stops holding the current down as soon as the
   dip is over. Sustained discharge into the car is corrected, so the battery never becomes
   the car's power source. 100 % = always protect.
+- **No more pointless export:** the charger only takes whole amps, so a surplus never divides
+  evenly. Once the home battery is comfortably charged — halfway between your reserve line and
+  full — the current rounds **up** to the next amp instead of down, and the last few hundred
+  watts come out of the nearly-full battery instead of being exported. Below that mark (and
+  always with the reserve at 100 %) it rounds down, so the battery is never asked to lend.
 - **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
   helper) and the brain flips it on whenever it deliberately charges from the grid (cheap
   hours, the departure plan, Fast) so the car draws from the grid instead of draining your
@@ -52,7 +57,9 @@ See [`docs/concept`](#concept) for the full design.
 - **Calm start/stop ("ride out, then stop"):** a solar start needs ~3 minutes of confirmed
   surplus; a surplus collapse is ridden out for ~5 minutes before a clean stop (with the amps
   still following the live surplus, so a recovery inside the window is used immediately) —
-  few, deliberate transitions instead of relay flapping.
+  few, deliberate transitions instead of relay flapping. Impatient? Tap the countdown on the
+  card (or press the **Start now** button) to skip the wait — the surplus condition itself
+  still has to be met.
 - **Mode-aware 1↔3 phase switching** with anti-flap hysteresis, a confirmation window and dwell
   timers: a threshold crossing must hold for ~2 minutes and the contactor moves at most once
   every 5 minutes. Power modes
@@ -150,6 +157,7 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Keep home battery above | The reserve line (SoC %) — below it the battery comes first, at/above it it buffers for the car; 100 = always protect |
 | `number` Car target energy | kWh to deliver by departure (Smart) |
 | `number` Cheap price | At/below this price/kWh, grid counts as cheap |
+| `button` Start now | Skip the ~3-minute confirmation before a solar start (available only while it runs) |
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the reserve line |
 | `sensor` Target current | What the brain is asking for |

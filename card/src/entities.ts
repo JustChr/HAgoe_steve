@@ -27,6 +27,7 @@ export interface ResolvedEntities {
   smart_control?: string;
   auto_phase?: string;
   manual_charge?: string;
+  start_now?: string;
   manual_current?: string;
   manual_phases?: string;
   battery_reserve_soc?: string;
@@ -96,6 +97,7 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.smart_control = find("smart_control");
   result.auto_phase = find("auto_phase");
   result.manual_charge = find("manual_charge");
+  result.start_now = find("start_now");
   result.manual_current = find("manual_current");
   result.manual_phases = find("manual_phases");
   result.battery_reserve_soc = find("battery_reserve_soc");

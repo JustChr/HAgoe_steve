@@ -144,6 +144,38 @@ battery discharging instead). Spec: `docs/charging-behavior-matrix.md` § "Two s
     ever evaluates faster than ~1.5 s, they could shorten further — but real short
     transients, not noise, are what bites below ~5 s.
 
+## Phase 8 — Rounding direction + "Start now" ✅ (done, on `main`, v5.4.0)
+Two small levers the loop was missing.
+
+**Which side of the surplus we land on.** The charger takes whole amps, so a surplus never
+divides evenly — and the engine used to hand the coordinator a float that was rounded to
+*nearest* on the way out, i.e. the direction was an accident of the remainder. It is now an
+explicit decision in the engine (`_quantize_current`): the floor by default (the leftover is
+exported, and below the reserve the battery is never asked to lend), the **ceiling** once the
+SoC is at/above the midpoint between the reserve line and 100 % — there the last ≤1 amp step
+comes out of a nearly-full battery instead of going to the grid. Never with the reserve at
+100 %, which the user has declared unconditional. Entering the generous zone takes the
+midpoint, leaving it 3 points less (`_GENEROUS_EXIT_MARGIN_PCT`), because rounding up walks
+the SoC back across the threshold that enabled it. The deliberate borrow is excluded from the
+sustained-discharge ease-off (its tolerance widens by one amp step) and is named in the status
+reason. Protective trims (`_battery_guard_current`) now snap *down* for the same reason a
+trim shouldn't hand power back.
+
+**"Start now."** The ~3-minute start confirmation is a good default and a bad wait when the
+user is looking at the surplus. A one-shot `EngineState.start_override` skips the remaining
+window (never the surplus condition itself); it is exposed as a `button` entity that is
+available exactly while the wait runs, and the card's countdown chip presses it.
+
+  Follow-ups worth revisiting:
+  - The rounding direction *is* the lever the write deadband never was (see Phase 7): at 3φ a
+    step is ~690 W, which is a lot of "little bit". If field use shows the borrow is too
+    coarse there, cap it by watts rather than by amps.
+  - The start gate itself is untouched: a surplus one step short of the minimum still waits
+    rather than borrowing its way to 6 A. Deliberate — starting is a commitment, and the
+    borrow would then last at least the ride-out window.
+  - Nothing skips the *ride-out* from the card yet (the symmetric "stop now"). Not asked for,
+    and stopping early is already available via the mode switch.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

@@ -44,6 +44,7 @@ const en: Dict = {
   "chip.price_cheap": "{price} {unit} — cheap ✓",
   "chip.price_wait": "{price} {unit} — waiting for ≤ {target}",
   "chip.resume_in": "Can resume in {time}",
+  "chip.start_now": "Start now",
   "chip.riding_out": "Riding out dip · {time}",
   "chip.phases": "{phases} φ",
   "chip.forced_off": "Charger forced off",
@@ -114,6 +115,8 @@ const en: Dict = {
   "reason.solar_surplus_phase": "Solar surplus {surplus} W → {amps} A ({phases}-phase)",
   "reason.solar_surplus_eased":
     "Solar surplus {surplus} W → {amps} A (easing off home battery)",
+  "reason.solar_surplus_battery_topup":
+    "Solar surplus {surplus} W → {amps} A — the last {gap} W come from the home battery instead of being exported",
   "reason.solar_min_topup":
     "Minimum {amps} A (surplus only {surplus} W, topping up from grid)",
 
@@ -182,6 +185,7 @@ const de: Dict = {
   "chip.price_cheap": "{price} {unit} — günstig ✓",
   "chip.price_wait": "{price} {unit} — warten auf ≤ {target}",
   "chip.resume_in": "Fortsetzen in {time}",
+  "chip.start_now": "Jetzt starten",
   "chip.riding_out": "Überbrücke Einbruch · {time}",
   "chip.phases": "{phases} φ",
   "chip.forced_off": "Wallbox zwangsweise aus",
@@ -252,6 +256,8 @@ const de: Dict = {
   "reason.solar_surplus_phase": "Solarüberschuss {surplus} W → {amps} A ({phases}-phasig)",
   "reason.solar_surplus_eased":
     "Solarüberschuss {surplus} W → {amps} A (Hausbatterie wird entlastet)",
+  "reason.solar_surplus_battery_topup":
+    "Solarüberschuss {surplus} W → {amps} A — die letzten {gap} W kommen aus der Hausbatterie statt ins Netz zu gehen",
   "reason.solar_min_topup":
     "Minimum {amps} A (nur {surplus} W Überschuss, Aufstockung aus dem Netz)",
 

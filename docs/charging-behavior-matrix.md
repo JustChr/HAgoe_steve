@@ -89,6 +89,11 @@ One slider — **"Keep home battery above X %"** — plus one principle:
 
 ```
 100 % ┤
+      │   COMFORTABLY ABOVE the line (from halfway between it and 100 %):
+      │   • the charging current rounds UP to the next whole amp instead of
+      │     down, so the last few hundred watts of surplus go into the car
+      │     and come out of the battery, instead of being exported
+      │   ↕ ┄┄ halfway mark ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
       │   AT/ABOVE the line — the battery is a fluctuation buffer:
       │   • the car follows the surplus closely (tracking signal)
       │   • the battery still bridges the seconds the car needs to follow:
@@ -111,6 +116,26 @@ as soon as solar carries the session again or the brain lets go. As a fallback w
 switch is mapped, the current is trimmed by whatever the battery discharges.
 
 With the battery SoC unknown, the brain is conservative: genuine solar excess only.
+
+### Which side of the surplus do we land on?
+
+The charger takes **whole amps**, so a surplus never divides evenly: one amp is ~230 W on a
+single phase and ~690 W on three. The charge therefore lands either just *below* the surplus
+(the remainder is exported) or just *above* it (the remainder comes out of the home battery),
+and the brain picks the side deliberately:
+
+| Home battery | Rounding | Effect |
+|---|---|---|
+| below the reserve, or SoC unknown | down | the battery comes first, nothing is borrowed |
+| above the reserve, below the halfway mark | down | up to one amp step is exported |
+| **at/above the halfway mark** (e.g. reserve 80 % → from 90 %) | **up** | up to one amp step is borrowed from a battery that is nearly full anyway |
+| **reserve set to 100 %** | down, always | "protect it unconditionally" is taken literally |
+
+Leaving the generous zone takes 3 points more SoC than entering it — rounding up nudges the
+SoC back down across the very threshold that enabled it, and the direction should not
+chatter. The borrowed watts are visible in the status reason ("*the last 520 W come from the
+home battery instead of being exported*") and, being our own doing, they do not count toward
+the sustained-discharge ease-off above.
 
 ---
 
@@ -136,6 +161,11 @@ surplus ≥ min ──────► confirm ~3 min ──────► CHARG
 The ride-out is a decision to *not stop yet*, not an instruction to sit at the minimum: if
 the surplus recovers inside the window the amps go straight back up with it, and only the
 stop keeps waiting on the calm signal.
+
+**Don't want to wait?** While the ~3-minute confirmation runs, the card's countdown chip is a
+button ("Start now"), backed by a **Start now** button entity that is available exactly while
+that wait is running. It skips the *waiting* only — the surplus still has to carry the
+minimum current, so it can never start a charge the sun can't pay for.
 
 Grid strategies are exempt in both directions: a cheap hour / plan slot / Fast starts
 immediately and stops immediately at its boundary — no ride-out on expensive grid.
@@ -170,7 +200,7 @@ immediately and stops immediately at its boundary — no ride-out on expensive g
 ## Status reasons
 
 Every decision carries a plain-language reason (localized on the card): what's charging and
-why (`Solar surplus 5,2 kW → 7,5 A`, `Planned cheap hour…`), what it's waiting for
+why (`Solar surplus 5200 W → 8 A`, `Planned cheap hour…`), what it's waiting for
 (`confirming before start`, `battery below reserve`, `waiting for a planned cheap hour`), or
 what just finished (`Departure target reached`).
 

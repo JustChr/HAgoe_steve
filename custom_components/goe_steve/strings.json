@@ -203,6 +203,9 @@
       "battery_hold": { "name": "Home battery held" },
       "car_connected": { "name": "Car connected" },
       "charging_allowed": { "name": "Charging allowed" }
+    },
+    "button": {
+      "start_now": { "name": "Start now" }
     }
   },
   "services": {

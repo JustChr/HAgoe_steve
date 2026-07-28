@@ -557,6 +557,39 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """Ask for an immediate re-evaluation after a settings change."""
         self.hass.async_create_task(self.async_request_refresh())
 
+    @property
+    def waiting_to_start(self) -> bool:
+        """True while a solar start is sitting out its confirmation window.
+
+        This is exactly when :meth:`start_now` has something to skip, so the
+        button (and the card's countdown chip) can offer itself only then.
+        """
+        decision = self.data
+        return (
+            decision is not None
+            and decision.control
+            and not decision.should_charge
+            and decision.resume_not_before is not None
+        )
+
+    def start_now(self) -> None:
+        """Skip the remaining start-confirmation wait and charge on this cycle.
+
+        The confirmation window is there to keep a bright patch from starting a
+        session that has to be undone minutes later — but when the user is
+        looking at the surplus and wants it now, waiting it out is just friction.
+        Only the *waiting* is skipped: the engine still needs a surplus that
+        carries the minimum current, so this can never start a charge the sun
+        can't pay for. Ignored when no start is waiting — there is nothing to
+        skip then, and an armed request must never lie in wait for a later
+        session it wasn't meant for.
+        """
+        if not self.waiting_to_start:
+            _LOGGER.debug("Start now: nothing is waiting to start, ignoring")
+            return
+        self._state.start_override = True
+        self.request_apply()
+
     @callback
     def async_setup_input_triggers(self) -> CALLBACK_TYPE:
         """Re-run the regulation loop whenever a live power input changes.

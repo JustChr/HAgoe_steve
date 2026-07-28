@@ -405,10 +405,19 @@ export class GoeSteveCard extends LitElement {
       }
     }
 
-    // Live dwell countdowns.
+    // Live dwell countdowns. The pre-start one doubles as a control: the wait is
+    // there to be deliberate, not to be endured, so tapping it starts now.
     const resume = this._countdown(status.resume_not_before);
-    if (resume !== null)
-      chips.push(this._chip("mdi:clock-outline", "chip.resume_in", { time: fmtClock(resume) }));
+    if (resume !== null) {
+      const params = { time: fmtClock(resume) };
+      chips.push(
+        this._canStartNow(ent)
+          ? this._actionChip("mdi:play-speed", "chip.resume_in", params, "chip.start_now", () =>
+              this._startNow(ent),
+            )
+          : this._chip("mdi:clock-outline", "chip.resume_in", params),
+      );
+    }
     const pause = this._countdown(status.pause_not_before);
     if (pause !== null)
       chips.push(this._chip("mdi:clock-outline", "chip.riding_out", { time: fmtClock(pause) }));
@@ -428,6 +437,31 @@ export class GoeSteveCard extends LitElement {
     cls = "",
   ): TemplateResult {
     return html`<span class="chipx ${cls}"><ha-icon icon="${icon}"></ha-icon>${this._t(key, params)}</span>`;
+  }
+
+  /** A chip that does something: same shape, plus a call-to-action label. */
+  private _actionChip(
+    icon: string,
+    key: string,
+    params: Record<string, string>,
+    ctaKey: string,
+    onClick: () => void,
+  ): TemplateResult {
+    return html`<button class="chipx act" @click=${onClick}>
+      <ha-icon icon="${icon}"></ha-icon>${this._t(key, params)}
+      <span class="cta">${this._t(ctaKey)}</span>
+    </button>`;
+  }
+
+  /** True while the brain is offering to skip the wait (button entity present). */
+  private _canStartNow(ent: ResolvedEntities): boolean {
+    const stateObj = this._stateObj(ent.start_now);
+    return !!stateObj && stateObj.state !== "unavailable";
+  }
+
+  private _startNow(ent: ResolvedEntities): void {
+    if (!ent.start_now) return;
+    this.hass.callService("button", "press", { entity_id: ent.start_now });
   }
 
   // --- Plan strip: progress toward the target energy ---------------------------
@@ -1157,6 +1191,22 @@ export class GoeSteveCard extends LitElement {
     }
     .chipx.cheap ha-icon {
       color: var(--goe-battery);
+    }
+    /* Actionable chip: reads as a chip, behaves as a button. */
+    button.chipx {
+      font-family: inherit;
+      cursor: pointer;
+      border-color: var(--primary-color);
+    }
+    button.chipx:hover {
+      background: var(--goe-chip-hover, var(--secondary-background-color));
+    }
+    button.chipx ha-icon,
+    button.chipx .cta {
+      color: var(--primary-color);
+    }
+    button.chipx .cta {
+      font-weight: 600;
     }
 
     /* Plan strip: charging-progress line */

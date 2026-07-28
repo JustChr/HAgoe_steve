@@ -29,7 +29,7 @@ platforms — it belongs in the engine so it stays unit-testable without HA.
 | `config_flow.py` | 3-step flow: energy sources → go-e base topic (auto-discovered) → SteVe (optional). Options flow re-maps everything. |
 | `__init__.py` | Setup, config-entry **migrations** (currently v4), card auto-registration (static path + `add_extra_js_url`). |
 | `const.py` | Config keys, defaults, mode/strategy names. |
-| `sensor.py`, `number.py`, `select.py`, `switch.py`, `binary_sensor.py`, `datetime.py` | Entity platforms — thin wrappers over coordinator data. Per-RFID energy sensors are created lazily as SteVe reports tags. |
+| `sensor.py`, `number.py`, `select.py`, `switch.py`, `binary_sensor.py`, `datetime.py`, `button.py` | Entity platforms — thin wrappers over coordinator data. Per-RFID energy sensors are created lazily as SteVe reports tags. `button.py` holds *Start now* (skips the pre-start confirmation wait). |
 | `services.py` / `services.yaml` | SteVe services: `authorize_tag`, `block_tag`, `set_tag_name`, `remote_start`, `remote_stop`. |
 | `www/goe-steve-card.js` | **Committed build output** of `card/` — never edit by hand. |
 

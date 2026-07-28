@@ -20,8 +20,12 @@ limits**.
   comes first; at/above it it buffers surplus fluctuations for the car, and deliberate grid
   charging never drains it (100 % = always protect). An **Auto / Hold / Free** control lets you
   override the brain's discharge decision when you want to.
+- **No more pointless export:** once the battery is comfortably charged (halfway between your
+  reserve line and full), the whole-amp charging current rounds *up* rather than down — the
+  last few hundred watts come from the nearly-full battery instead of going to the grid.
 - **Fast on the knob, slow on the switches:** the charging current follows the solar surplus
-  within seconds, while starting, stopping and phase switching wait for it to hold.
+  within seconds, while starting, stopping and phase switching wait for it to hold — and the
+  card's countdown before a solar start is a button, so you can skip that wait.
 - **Automatic 1↔3 phase switching** with anti-flap hysteresis, a confirmation window and
   dwell timers.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).

@@ -49,6 +49,9 @@ Home-battery policy (one reserve line, two zones):
 * **At/above the reserve** the battery is a *fluctuation buffer*: the car
   follows the smoothed surplus, the battery bridges short dips and spikes, and
   only sustained discharge into the car is corrected.
+* **Comfortably above the reserve** (past the midpoint between the reserve and
+  full) the charging current is rounded *up* to the next whole amp instead of
+  down — see :func:`_quantize_current`.
 * **Whenever a grid strategy wins** (cheap hour, plan, floor, Fast) the battery
   is held (``hold_battery``) so grid power charges the car, never the battery.
 
@@ -211,9 +214,16 @@ class EngineState:
     active_source: str | None = None  # "solar" | "grid" while charging
     surplus_ok_since: datetime | None = None
     ride_out_since: datetime | None = None
+    # One-shot "start now" from the user (the card's countdown chip / the Start
+    # now button): skip the remaining start-confirmation wait on the next cycle.
+    # Consumed by that cycle whatever it decides — see ``_decide``.
+    start_override: bool = False
     # Battery-buffer memory.
     discharge_high_since: datetime | None = None
     avail_zone: str | None = None  # "protect" | "buffer" the samples belong to
+    # Whether the battery is currently far enough above its reserve for the
+    # generous rounding (kept in state so the threshold can have hysteresis).
+    generous: bool = False
     # Surplus filters: the last emitted value of the commitment filter
     # (``avail_output``), of the tracking filter (``track_output``) and of the
     # battery-discharge penalty, plus the time they were all sampled, so the next
@@ -280,6 +290,12 @@ _BATTERY_DRAIN_TOLERANCE_W: float = 100.0
 # Manual charging counts as grid-assisted (→ hold the battery) once the
 # requested power exceeds the available surplus by more than this margin.
 _MANUAL_GRID_MARGIN_W: float = 100.0
+
+# How far the SoC may fall back below the generous-rounding threshold before the
+# rounding turns conservative again (see :func:`_generous_rounding`). Rounding up
+# discharges the battery a little, which would otherwise walk the SoC straight
+# back across the threshold and make the rounding direction chatter.
+_GENEROUS_EXIT_MARGIN_PCT: float = 3.0
 
 
 @dataclass(slots=True)
@@ -370,6 +386,60 @@ def _current_to_power(current_a: float, phases: int, voltage_v: float) -> float:
     return current_a * phases * voltage_v
 
 
+# Guards the snap below against floating-point dust (…6.999999 is meant to be 7).
+_AMP_EPSILON: float = 1e-6
+
+
+def _quantize_current(amps: float, cfg: EngineConfig, *, up: bool) -> float:
+    """Snap a computed current to a whole amp — the only resolution the charger has.
+
+    The charger takes integer amps, so a surplus never divides evenly and the
+    charge lands either just below it (the remainder is exported) or just above
+    it (the remainder comes out of the home battery). One amp is ~230 W on a
+    single phase and ~690 W on three, so *which side we land on* is a real
+    decision, not a rounding detail — and it is made here rather than by
+    truncating on the way to the charger.
+
+    ``up`` picks the side: the ceiling while the home battery is comfortably
+    charged (see :func:`_generous_rounding`), the floor otherwise. The result is
+    re-clamped, so the snap can never push the current outside the configured
+    band — in particular a surplus already at the maximum stays there.
+    """
+    snapped = math.ceil(amps - _AMP_EPSILON) if up else math.floor(amps + _AMP_EPSILON)
+    return _clamp(float(snapped), cfg.min_current_a, cfg.max_current_a)
+
+
+def _generous_rounding(
+    cfg: EngineConfig, soc: float | None, protect: bool, state: EngineState
+) -> bool:
+    """May the charging current round *up* past the surplus right now?
+
+    Rounding up means the last few hundred watts come out of the home battery
+    instead of being exported — worth it only when the battery is not just above
+    its reserve line but *comfortably* above it, so lending the car a little
+    costs nothing that the day's remaining sun won't put back. "Comfortably" is
+    the midpoint between the reserve and full: reserve 80 % → from 90 % SoC.
+
+    Never in the protect zone (below the reserve the battery comes first), never
+    without an SoC reading, and never with the reserve at 100 %: there the user
+    has asked for the battery to be protected unconditionally, so the car gets
+    the floor and the remainder goes to the grid.
+
+    Leaving the zone takes a few points more than entering it
+    (:data:`_GENEROUS_EXIT_MARGIN_PCT`), because rounding up nudges the SoC back
+    down across the very threshold that enabled it.
+    """
+    if protect or soc is None or cfg.battery_reserve_soc >= 100.0:
+        state.generous = False
+        return False
+    midpoint = (cfg.battery_reserve_soc + 100.0) / 2.0
+    threshold = (
+        midpoint - _GENEROUS_EXIT_MARGIN_PCT if state.generous else midpoint
+    )
+    state.generous = soc >= threshold
+    return state.generous
+
+
 # --- Solar availability (the surplus strategy's signal) --------------------------
 
 def _directional(
@@ -420,6 +490,7 @@ class Availability:
     commit_w: float
     zone: str  # "protect" (below reserve / SoC unknown) or "buffer"
     eased: bool  # sustained battery→car discharge is being corrected
+    generous: bool = False  # battery comfortably charged → round the amps up
 
 
 def compute_availability(
@@ -453,6 +524,9 @@ def compute_availability(
     described in the module docstring, giving the tracking and commitment
     signals. The battery penalty is shared: it is a statement about the *world*,
     not about how eagerly we act on it.
+
+    Deep inside the buffer zone the result also carries ``generous``, which lets
+    the charging current round up past the surplus (:func:`_generous_rounding`).
     """
     export_w = max(0.0, -inp.grid_power_w)
     car_draw = max(0.0, inp.car_actual_power_w)
@@ -460,6 +534,7 @@ def compute_availability(
     soc = inp.battery_soc
     protect = soc is None or soc < cfg.battery_reserve_soc
     zone = "protect" if protect else "buffer"
+    generous = _generous_rounding(cfg, soc, protect, state)
 
     # The formula changes across the reserve line; a value carried over from the
     # other zone would blend two different signals, so start the filter fresh.
@@ -521,6 +596,7 @@ def compute_availability(
             commit_w=max(0.0, commit_base - discharge_raw),
             zone=zone,
             eased=False,
+            generous=False,
         )
 
     # Buffer zone: the penalty ramps in over ``discharge_attack_s`` (the bridging
@@ -536,21 +612,33 @@ def compute_availability(
     state.discharge_output = dis_s
     state.avail_sample_t = inp.now
 
-    eased = _track_sustained_discharge(inp, cfg, state, discharge_raw)
+    # The ease-off is meant to catch the battery *becoming the car's power
+    # source*. While the current is deliberately rounded up, one amp step of
+    # discharge is our own doing, so the guard measures beyond that — otherwise a
+    # 3φ charge would sit permanently in "easing off" over a rounding decision.
+    tolerance = cfg.discharge_tolerance_w
+    if generous:
+        tolerance += _current_to_power(1.0, max(1, inp.phases), inp.voltage_v)
+    eased = _track_sustained_discharge(inp, cfg, state, discharge_raw, tolerance)
     penalty = discharge_raw if eased else dis_s
     return Availability(
         power_w=max(0.0, track_base - penalty),
         commit_w=max(0.0, commit_base - penalty),
         zone=zone,
         eased=eased,
+        generous=generous,
     )
 
 
 def _track_sustained_discharge(
-    inp: ChargerInputs, cfg: EngineConfig, state: EngineState, discharge_raw: float
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    discharge_raw: float,
+    tolerance_w: float,
 ) -> bool:
     """True once the battery has discharged beyond tolerance for the grace time."""
-    if inp.now is None or discharge_raw <= cfg.discharge_tolerance_w:
+    if inp.now is None or discharge_raw <= tolerance_w:
         state.discharge_high_since = None
         return False
     if state.discharge_high_since is None:
@@ -590,7 +678,11 @@ def _battery_guard_current(
     if discharge_w <= _BATTERY_DRAIN_TOLERANCE_W:
         return full_current_a, False
     trim_a = _power_to_current(discharge_w, max(1, phases), inp.voltage_v)
-    guarded_a = max(cfg.min_current_a, full_current_a - trim_a)
+    # Snapped down: a protective trim that rounded *up* would hand part of the
+    # drain we are trying to stop straight back to the car.
+    guarded_a = _quantize_current(
+        max(cfg.min_current_a, full_current_a - trim_a), cfg, up=False
+    )
     return guarded_a, guarded_a < full_current_a
 
 
@@ -835,6 +927,10 @@ _REASON_TEMPLATES: dict[str, str] = {
     "solar_surplus_eased": (
         "Solar surplus {surplus} W → {amps} A (easing off home battery)"
     ),
+    "solar_surplus_battery_topup": (
+        "Solar surplus {surplus} W → {amps} A — the last {gap} W come from the "
+        "home battery instead of being exported"
+    ),
     "solar_min_topup": (
         "Minimum {amps} A (surplus only {surplus} W, topping up from grid)"
     ),
@@ -1025,7 +1121,7 @@ def _decide_manual(
         cfg.manual_current_a, phases, inp, cfg, hold=hold
     )
     if guarded:
-        reason, rkey, rparams = _reason("manual_charging_guarded", amps=f"{current:.1f}")
+        reason, rkey, rparams = _reason("manual_charging_guarded", amps=f"{current:.0f}")
     else:
         reason, rkey, rparams = _reason("manual_charging", amps=f"{current:.0f}")
     return Decision(
@@ -1048,6 +1144,7 @@ def _reset_session_state(state: EngineState) -> None:
     state.active_source = None
     state.ride_out_since = None
     state.surplus_ok_since = None
+    state.start_override = False
 
 
 # --- The decision ---------------------------------------------------------------
@@ -1171,7 +1268,12 @@ def _decide(
             state.surplus_ok_since = inp.now
     else:
         state.surplus_ok_since = None
-    solar_confirmed = inp.now is None or (
+    # "Start now": the user has seen the surplus and doesn't want to wait out the
+    # confirmation. It skips the *waiting* only — the surplus still has to be
+    # there, so this can never start a charge the sun can't carry. Consumed on
+    # the spot, so it applies to this cycle and no later one.
+    start_now, state.start_override = state.start_override, False
+    solar_confirmed = start_now or inp.now is None or (
         state.surplus_ok_since is not None
         and (inp.now - state.surplus_ok_since).total_seconds() >= cfg.start_confirm_s
     )
@@ -1193,10 +1295,14 @@ def _decide(
                 # with it, while the decision to stop keeps waiting on the calm
                 # signal. A real collapse still lands on the minimum.
                 phases = max(1, inp.phases)
-                amps = _clamp(
-                    _power_to_current(avail.power_w, phases, inp.voltage_v),
-                    cfg.min_current_a,
-                    cfg.max_current_a,
+                amps = _quantize_current(
+                    _clamp(
+                        _power_to_current(avail.power_w, phases, inp.voltage_v),
+                        cfg.min_current_a,
+                        cfg.max_current_a,
+                    ),
+                    cfg,
+                    up=avail.generous,
                 )
                 reason, rkey, rparams = _reason(
                     "surplus_ride_out", amps=f"{amps:.0f}"
@@ -1265,11 +1371,11 @@ def _decide(
         if winner.kind == "cheap":
             key = "cheap_grid_guarded" if guarded else "cheap_grid"
             if guarded:
-                params["amps"] = f"{amps:.1f}"
+                params["amps"] = f"{amps:.0f}"
         elif winner.kind == "plan":
             key = "deadline_plan_guarded" if guarded else "deadline_plan"
             if guarded:
-                params["amps"] = f"{amps:.1f}"
+                params["amps"] = f"{amps:.0f}"
         elif winner.kind == "urgent":
             key = "deadline_urgent"
         elif winner.kind == "fast":
@@ -1277,7 +1383,7 @@ def _decide(
             params["amps"] = f"{amps:.0f}"
         else:  # floor
             key = "solar_min_topup"
-            params["amps"] = f"{amps:.1f}"
+            params["amps"] = f"{amps:.0f}"
             params["surplus"] = f"{avail.power_w:.0f}"
         reason, rkey, rparams = _reason(key, **params)
         return Decision(
@@ -1295,14 +1401,23 @@ def _decide(
     # Solar winner: the current follows the responsive tracking signal, the phase
     # count the calm one; the battery buffers whatever is left in between.
     phases = _resolve_phases(avail.commit_w, inp, cfg, state)
-    amps = _clamp(
-        _power_to_current(avail.power_w, phases, inp.voltage_v),
-        cfg.min_current_a,
-        cfg.max_current_a,
+    amps = _quantize_current(
+        _clamp(
+            _power_to_current(avail.power_w, phases, inp.voltage_v),
+            cfg.min_current_a,
+            cfg.max_current_a,
+        ),
+        cfg,
+        up=avail.generous,
     )
-    params = {"surplus": f"{avail.power_w:.0f}", "amps": f"{amps:.1f}"}
+    # What the charge asks for beyond the surplus — the home battery covers it.
+    gap_w = _current_to_power(amps, phases, inp.voltage_v) - avail.power_w
+    params = {"surplus": f"{avail.power_w:.0f}", "amps": f"{amps:.0f}"}
     if avail.eased:
         key = "solar_surplus_eased"
+    elif avail.generous and gap_w >= 1.0:
+        key = "solar_surplus_battery_topup"
+        params["gap"] = f"{gap_w:.0f}"
     elif phases != inp.phases:
         key = "solar_surplus_phase"
         params["phases"] = str(phases)
