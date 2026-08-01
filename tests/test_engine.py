@@ -1143,3 +1143,813 @@ def test_decision_exposes_resume_countdown_while_confirming():
 def test_plan_is_empty_outside_smart_mode():
     d = decide(_inputs(grid_power_w=-6000.0, battery_soc=90.0, now=T0), _cfg())
     assert d.plan == []
+
+
+# --- Peak protection (the capacity tariff) ------------------------------------------
+
+update_peak_window = engine.update_peak_window
+resolve_peak_tier = engine.resolve_peak_tier
+PEAK_WINDOW_S = engine.PEAK_WINDOW_S
+
+# 12:00 is a quarter-hour boundary, so windows start clean unless a test says otherwise.
+W0 = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+
+# For the two things the engine has to resolve on the user's clock rather than in
+# UTC: the billed month, and any wall-clock time it puts in a reason string. A
+# fixed offset rather than a named zone, so these tests still need nothing beyond
+# pytest — both dates below are in summer, when Vienna is UTC+2.
+VIENNA = timezone(timedelta(hours=2))
+
+
+def _peak_cfg(**kw) -> "engine.EngineConfig":
+    """A config with peak protection on and the Austrian-ish limits from the docs."""
+    base = dict(
+        mode=ChargingMode.FAST,
+        smart_enabled=True,
+        max_current_a=16.0,
+        battery_reserve_soc=80.0,
+        peak_guard_enabled=True,
+        peak_soft_w=3300.0,
+        peak_target_w=3700.0,
+        peak_hard_w=3900.0,
+        peak_follow_month=False,  # opt in per test; it changes the limits in force
+        shaving_reserve_soc=50.0,
+        peak_min_soc=35.0,
+    )
+    base.update(kw)
+    return EngineConfig(**base)
+
+
+def _run(cfg, state, seconds, step=20, **kw):
+    """Drive the engine across a span of time, returning the last decision."""
+    decision = None
+    for offset in range(0, seconds + 1, step):
+        decision = decide(_inputs(now=W0 + timedelta(seconds=offset), **kw), cfg, state)
+    return decision
+
+
+# --- The measurement (runs whether or not the guard is enabled) ---------------------
+
+def test_window_integrates_by_zero_order_hold():
+    # A meter reports a level, not an event: 4 kW held for 60 s is 66.7 Wh, and the
+    # *previous* sample is what covers the interval — the new one covers what follows.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 4000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(seconds=60), 4000.0, cfg, state)
+    assert window.imported_wh == pytest.approx(4000.0 * 60 / 3600.0, abs=0.1)
+    assert window.average_w == pytest.approx(4000.0, abs=1.0)
+
+
+def test_export_never_lowers_an_import_peak():
+    # The tariff bills import; exporting 5 kW does not buy back a kilowatt of it.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, -5000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(seconds=60), -5000.0, cfg, state)
+    assert window.imported_wh == 0.0
+    assert window.projected_w == 0.0
+
+
+def test_window_resets_exactly_on_the_quarter_hour():
+    cfg, state = _peak_cfg(), EngineState()
+    for offset in range(0, 900, 30):
+        update_peak_window(W0 + timedelta(seconds=offset), 4000.0, cfg, state)
+    before = update_peak_window(W0 + timedelta(seconds=890), 4000.0, cfg, state)
+    after = update_peak_window(W0 + timedelta(seconds=910), 4000.0, cfg, state)
+    assert before.start == W0
+    assert after.start == W0 + timedelta(seconds=900)
+    assert after.imported_wh < before.imported_wh  # a fresh budget, not a running total
+
+
+def test_projection_and_budget_are_the_documented_formulas():
+    # 6 minutes at 4 kW = 400 Wh. Projected = (400*3600 + 4000*540)/900 = 4000 W.
+    # Allowed  = (3700*900 - 400*3600)/540 = 3500 W.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 4000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(seconds=360), 4000.0, cfg, state)
+    assert window.imported_wh == pytest.approx(400.0, abs=1.0)
+    assert window.projected_w == pytest.approx(4000.0, abs=5.0)
+    assert window.allowed_w == pytest.approx(3500.0, abs=10.0)
+
+
+def test_budget_floors_the_remaining_time_at_a_minute():
+    # 5 s from the end the budget would otherwise diverge; the floor keeps the last
+    # minute deliberately conservative instead of inviting a boundary spike.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 1000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(seconds=895), 1000.0, cfg, state)
+    assert window.remaining_s == pytest.approx(5.0, abs=0.1)
+    # Computed against 60 s, not the 5 s actually left.
+    assert window.allowed_w == pytest.approx(
+        (3700.0 * 900.0 - window.imported_wh * 3600.0) / 60.0, rel=1e-6
+    )
+
+
+def test_month_peak_records_completed_windows_only():
+    cfg, state = _peak_cfg(), EngineState()
+    for offset in range(0, 1000, 20):
+        update_peak_window(W0 + timedelta(seconds=offset), 4000.0, cfg, state)
+    # The first window completed at 4 kW; the second is still running.
+    assert state.month_peak_w == pytest.approx(4000.0, abs=20.0)
+    assert state.month_peak_at == W0
+    assert len(state.peak_history) == 1
+
+
+def test_a_degraded_window_never_becomes_the_billed_number():
+    # A five-minute gap: the reading is held across it (never under-count) but the
+    # window is no longer trustworthy, so it must not set the month's record.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 9000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(seconds=300), 9000.0, cfg, state)
+    assert window.degraded is True
+    assert window.imported_wh == pytest.approx(9000.0 * 300 / 3600.0, abs=1.0)
+    update_peak_window(W0 + timedelta(seconds=910), 9000.0, cfg, state)
+    assert state.month_peak_w == 0.0
+    assert state.peak_history  # it still happened, and the card still shows it
+
+
+def test_a_missing_reading_degrades_the_window():
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 1000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(seconds=30), None, cfg, state)
+    assert window.degraded is True
+    # …and the held reading still covered the interval.
+    assert window.imported_wh == pytest.approx(1000.0 * 30 / 3600.0, abs=0.1)
+
+
+def test_a_long_outage_does_not_walk_every_window():
+    # Two days down. We must land in the right window without iterating hundreds.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 1000.0, cfg, state)
+    window = update_peak_window(W0 + timedelta(days=2), 1000.0, cfg, state)
+    assert window.start == W0 + timedelta(days=2)
+    assert window.degraded is True
+
+
+# --- Tiers, confirmation and release ------------------------------------------------
+
+def test_soft_tier_waits_out_the_confirmation_window():
+    cfg, state = _peak_cfg(), EngineState()
+    d = _run(cfg, state, 60, car_connected=True, grid_power_w=3600.0, battery_soc=60.0)
+    assert d.peak_tier == "off"  # projected 3.6 kW is over soft, but not for long
+    d = _run(cfg, state, 200, car_connected=True, grid_power_w=3600.0, battery_soc=60.0)
+    assert d.peak_tier == "soft"
+
+
+def test_hard_tier_engages_on_the_very_next_cycle():
+    # No confirmation: by the time 120 s had confirmed, a third of the quarter-hour
+    # it was protecting would be gone.
+    cfg, state = _peak_cfg(), EngineState()
+    decide(_inputs(now=W0, car_connected=True, grid_power_w=500.0), cfg, state)
+    d = decide(
+        _inputs(now=W0 + timedelta(seconds=20), car_connected=True, grid_power_w=9000.0),
+        cfg,
+        state,
+    )
+    assert d.peak_tier == "hard"
+
+
+def test_release_needs_both_the_confirmation_and_the_dwell():
+    cfg = _peak_cfg(peak_release_s=120.0, peak_dwell_s=300.0)
+    state = EngineState()
+    _run(cfg, state, 40, step=20, car_connected=True, grid_power_w=9000.0)
+    assert state.peak_tier == "hard"
+    # The grid collapses to nothing, but the window has already banked the energy,
+    # so the projection stays high for a while — then it falls and the timers start.
+    d = _run(cfg, state, 200, step=20, car_connected=True, grid_power_w=0.0)
+    assert d.peak_tier == "hard"  # the dwell (300 s) has not elapsed
+    d = _run(cfg, state, 600, step=20, car_connected=True, grid_power_w=0.0)
+    assert d.peak_tier in ("soft", "off")  # both timers satisfied
+
+
+def test_a_degraded_window_may_tighten_but_never_relax():
+    cfg, state = _peak_cfg(peak_dwell_s=0.0, peak_release_s=0.0), EngineState()
+    _run(cfg, state, 40, step=20, car_connected=True, grid_power_w=9000.0)
+    assert state.peak_tier == "hard"
+    # A five-minute blackout in the reading, then a calm grid: the tier is stuck
+    # until the next clean window, because we cannot account for the gap.
+    decide(
+        _inputs(now=W0 + timedelta(seconds=400), car_connected=True, grid_power_w=0.0),
+        cfg,
+        state,
+    )
+    d = decide(
+        _inputs(now=W0 + timedelta(seconds=500), car_connected=True, grid_power_w=0.0),
+        cfg,
+        state,
+    )
+    assert d.peak_degraded is True
+    assert d.peak_tier == "hard"
+
+
+# --- The wallbox cap ----------------------------------------------------------------
+
+def test_soft_tier_eases_the_car_back_without_pausing():
+    # House 800 W + car 3600 W, 200 s into the window: 244 Wh banked, so the rest
+    # of it may take (3700·900 − 244·3600)/700 = 3500 W. The house keeps 800 of
+    # that, leaving 2700 W for the car — 11 A at 1φ.
+    cfg, state = _peak_cfg(peak_hard_w=99000.0), EngineState()
+    d = _run(
+        cfg, state, 200, car_connected=True, phases=1,
+        car_actual_power_w=3600.0, grid_power_w=4400.0, battery_soc=60.0,
+    )
+    assert d.peak_tier == "soft"
+    assert d.should_charge is True
+    assert d.target_current_a == 11.0
+    assert d.reason_key == "fast"  # the arbiter's decision is trimmed, not replaced
+    assert d.peak_reason_key == "peak_shaving_car"
+    # …but the number in it is the one we actually wrote. A status line reading
+    # "Fast charging at 16 A" while 11 A goes to the car is the sensor lying about
+    # the single fact a user checks it for.
+    assert d.reason_params["amps"] == "11"
+    assert d.reason == "Fast charging at 11 A"
+
+
+def test_a_peak_pause_takes_over_the_status_reason():
+    # A trim leaves the arbiter's explanation true, so it keeps it. A pause does
+    # not: the car is at 0 A and "Fast charging" is simply wrong, however well the
+    # peak line beside it explains why.
+    cfg, state = _peak_cfg(), EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=True, phases=3,
+        car_actual_power_w=1000.0, grid_power_w=9000.0, battery_soc=36.0,
+    )
+    assert d.should_charge is False
+    assert d.reason_key == "peak_pause"
+    assert d.reason == d.peak_reason
+
+
+def test_soft_tier_clamps_at_the_hardware_minimum_rather_than_stopping():
+    cfg = _peak_cfg(peak_hard_w=99000.0)
+    state = EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=True, phases=1,
+        car_actual_power_w=1000.0, grid_power_w=8000.0, battery_soc=60.0,
+    )
+    assert d.peak_tier == "soft"
+    assert d.should_charge is True
+    assert d.target_current_a == engine.HARDWARE_MIN_CURRENT_A
+
+
+def test_hard_tier_pauses_when_six_amps_will_not_fit():
+    cfg, state = _peak_cfg(), EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=True, phases=3,
+        car_actual_power_w=1000.0, grid_power_w=9000.0, battery_soc=36.0,
+    )
+    assert d.peak_tier == "hard"
+    assert d.should_charge is False
+    assert d.target_current_a == 0.0
+    assert d.peak_reason_key == "peak_pause"
+
+
+def test_the_hard_stop_outranks_the_solar_ride_out():
+    # Mid-ride-out, a peak appears. The ride-out exists to smooth *solar* dips; it
+    # has no business holding the charger on through a demand-charge breach.
+    cfg = _peak_cfg(mode=ChargingMode.SOLAR)
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer")
+    d = _run(
+        cfg, state, 100, step=20, car_connected=True, phases=3,
+        car_actual_power_w=1000.0, grid_power_w=9000.0, battery_soc=36.0,
+    )
+    assert d.peak_tier == "hard"
+    assert d.should_charge is False
+
+
+def test_a_car_on_pure_solar_is_not_trimmed():
+    # PV 5 kW, house 1 kW, car 3 kW off the sun, battery charging 4 kW from grid:
+    # a 3 kW import peak the car has no part in. Stopping it would export, not
+    # reduce the import, so the cap must leave it alone.
+    cfg, state = _peak_cfg(peak_soft_w=1000.0, peak_target_w=1200.0), EngineState()
+    d = _run(
+        cfg, state, 200, car_connected=True, phases=1, car_actual_power_w=3000.0,
+        pv_power_w=5000.0, battery_power_w=4000.0, grid_power_w=3000.0,
+        battery_soc=60.0,
+    )
+    assert d.peak_tier in ("soft", "hard")
+    assert d.should_charge is True
+    # The cap lands on the car's own solar share (3000 W ≈ 13 A at 1φ) rather than
+    # below it: the guard stops it climbing into the grid, it does not cut it back.
+    assert d.target_current_a >= 13.0
+
+
+def test_the_cap_falls_at_once_but_rises_only_after_the_dwell():
+    cfg = _peak_cfg(peak_hard_w=99000.0, peak_dwell_s=300.0)
+    state = EngineState()
+    _run(
+        cfg, state, 200, car_connected=True, phases=1,
+        car_actual_power_w=3600.0, grid_power_w=4400.0, battery_soc=60.0,
+    )
+    assert state.peak_cap_a == 11.0
+    # The house load vanishes, so the budget jumps — but relaxing is comfort, not
+    # safety, and following every upward wobble is how the amps start flapping.
+    d = decide(
+        _inputs(
+            now=W0 + timedelta(seconds=220), car_connected=True, phases=1,
+            car_actual_power_w=3600.0, grid_power_w=3600.0, battery_soc=60.0,
+        ),
+        cfg,
+        state,
+    )
+    assert d.target_current_a == 11.0
+    d = decide(
+        _inputs(
+            now=W0 + timedelta(seconds=700), car_connected=True, phases=1,
+            car_actual_power_w=3600.0, grid_power_w=3600.0, battery_soc=60.0,
+        ),
+        cfg,
+        state,
+    )
+    assert d.target_current_a > 11.0
+
+
+def test_the_cap_binds_in_manual_mode_too():
+    cfg = _peak_cfg(
+        mode=ChargingMode.MANUAL, manual_charge=True, manual_current_a=16.0,
+        manual_phases=1, peak_hard_w=99000.0,
+    )
+    state = EngineState()
+    d = _run(
+        cfg, state, 200, car_connected=True, phases=1,
+        car_actual_power_w=3600.0, grid_power_w=4400.0, battery_soc=60.0,
+    )
+    assert d.peak_tier == "soft"
+    assert d.target_current_a == 11.0
+
+
+# --- The house levers ---------------------------------------------------------------
+
+def test_shaving_releases_the_battery_over_the_users_hold():
+    cfg = _peak_cfg(battery_hold_mode="hold")
+    state = EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=True, phases=3,
+        car_actual_power_w=1000.0, grid_power_w=9000.0, battery_soc=60.0,
+    )
+    assert d.peak_tier == "hard"
+    assert d.hold_battery is False
+    assert d.hold_source == "peak"
+    assert d.battery_min_soc == 35.0
+    assert d.grid_setpoint_w == 0.0
+
+
+def test_the_min_soc_rests_at_the_shaving_reserve():
+    cfg, state = _peak_cfg(), EngineState()
+    d = _run(cfg, state, 60, car_connected=True, grid_power_w=200.0, battery_soc=60.0)
+    assert d.peak_tier == "off"
+    assert d.battery_min_soc == 50.0  # banked headroom, held year-round
+    assert d.grid_setpoint_w == 50.0
+
+
+def test_a_house_peak_with_no_car_still_drives_the_battery():
+    # The case the whole layer exists for: a sauna sets the monthly peak whether or
+    # not a car is plugged in, and the levers for it are the battery's.
+    cfg, state = _peak_cfg(), EngineState()
+    d = _run(cfg, state, 300, car_connected=False, grid_power_w=9000.0, battery_soc=41.0)
+    assert d.peak_tier == "hard"
+    assert d.house_control is True
+    assert d.battery_min_soc == 35.0
+    assert d.grid_setpoint_w == 0.0
+    assert d.peak_reason_key == "peak_shaving_house"
+
+
+def test_an_empty_battery_says_so_rather_than_pretending():
+    cfg, state = _peak_cfg(), EngineState()
+    d = _run(cfg, state, 300, car_connected=False, grid_power_w=9000.0, battery_soc=35.0)
+    assert d.peak_reason_key == "peak_battery_empty"
+
+
+def test_the_soc_ladder_is_clamped_when_the_numbers_are_inverted():
+    # A floor above the reserve is meaningless; the floor gives way.
+    cfg = _peak_cfg(shaving_reserve_soc=40.0, peak_min_soc=70.0)
+    state = EngineState()
+    d = _run(cfg, state, 300, car_connected=False, grid_power_w=9000.0, battery_soc=60.0)
+    assert d.battery_min_soc == 40.0
+
+
+def test_the_limits_are_clamped_when_the_numbers_are_inverted():
+    # "Start easing off at" stays authoritative; the others are raised to fit.
+    cfg = _peak_cfg(peak_soft_w=5000.0, peak_target_w=3700.0, peak_hard_w=1000.0)
+    assert engine._peak_thresholds(cfg) == (5000.0, 5000.0, 5000.0)
+
+
+def test_smart_control_off_still_guards_the_house_and_stops_the_car():
+    # Peak protection answers to its own switch: a demand charge is money whether or
+    # not the brain is currently driving the wallbox.
+    cfg = _peak_cfg(smart_enabled=False)
+    state = EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=True, phases=3,
+        car_actual_power_w=1000.0, grid_power_w=9000.0, battery_soc=60.0,
+    )
+    assert d.house_control is True
+    assert d.battery_min_soc == 35.0
+    assert d.control is True  # the hard stop reaches even a released charger
+    assert d.should_charge is False
+    assert d.peak_reason_key == "peak_pause"
+    # …and the hold is flagged as ours to drive, so the coordinator writes it rather
+    # than leaving a switch the user may own untouched.
+    assert d.hold_source == "peak"
+
+
+def test_nothing_is_written_before_a_trustworthy_reading_arrives():
+    # A cold start must not shave blind.
+    cfg, state = _peak_cfg(), EngineState()
+    window = update_peak_window(W0 + timedelta(seconds=60), None, cfg, state)
+    tier = resolve_peak_tier(W0 + timedelta(seconds=60), window, cfg, state)
+    d = engine.apply_peak_guard(
+        engine.Decision(control=True),
+        _inputs(car_connected=False),
+        cfg,
+        state,
+        window,
+        tier,
+    )
+    assert d.grid_setpoint_w is None
+    assert d.battery_min_soc is None
+
+
+# --- The month-peak allowance --------------------------------------------------------
+
+def test_the_limits_follow_a_peak_the_month_has_already_paid_for():
+    # Up to the record, not onto it: the target lands a buffer below so the guard
+    # steers for just under what is already bought, while the hard limit sits on the
+    # record itself — nothing is thrown away, but nothing new is bought either.
+    cfg = _peak_cfg(peak_follow_month=True)
+    state = EngineState(month_key="2026-07", month_peak_w=5200.0)
+    window = update_peak_window(W0, 1000.0, cfg, state)
+    assert window.target_w == 5000.0
+    assert window.hard_w == 5200.0
+
+
+def test_the_soft_line_travels_with_the_allowance():
+    # The month has already bought 5.2 kW, so the enforced target is 5.0 kW. A
+    # 3.6 kW projection is over the *configured* soft line but well under anything
+    # we are actually defending — engaging the shave there would drop the minimum
+    # SoC and drain the home battery for a saving that cannot happen.
+    cfg = _peak_cfg(peak_follow_month=True)
+    state = EngineState(month_key="2026-07", month_peak_w=5200.0)
+    d = _run(cfg, state, 400, car_connected=True, grid_power_w=3600.0, battery_soc=60.0)
+    assert d.peak_tier == "off"
+    assert d.battery_min_soc == 50.0  # the resting reserve, not the shaving floor
+    assert d.hold_source != "peak"
+    # …and the status line explains exactly that, instead of claiming to shave.
+    assert d.peak_reason_key == "peak_month_headroom"
+
+
+def test_the_soft_line_still_engages_once_the_allowance_is_reached():
+    # The other direction: the allowance raises the line, it does not remove it.
+    # 5.1 kW against an enforced 5.0 kW target is over the soft line that moved
+    # with it, and the shave has to engage.
+    cfg = _peak_cfg(peak_follow_month=True)
+    state = EngineState(month_key="2026-07", month_peak_w=5200.0)
+    d = _run(cfg, state, 400, car_connected=True, grid_power_w=5100.0, battery_soc=60.0)
+    assert d.peak_tier == "soft"
+    assert d.battery_min_soc == 35.0
+    assert d.hold_source == "peak"
+
+
+def test_the_quarter_hour_in_a_reason_is_the_users_wall_clock():
+    # The one time a user reads off this module. 12:15 UTC is 14:15 in Vienna, and
+    # a status line telling someone their car resumes two hours from when it does
+    # is worse than no time at all.
+    cfg = _peak_cfg(local_tz=VIENNA)
+    state = EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=True, phases=3,
+        car_actual_power_w=1000.0, grid_power_w=9000.0, battery_soc=36.0,
+    )
+    assert d.peak_reason_key == "peak_pause"
+    assert d.peak_reason_params["until"] == "14:15"
+
+
+def test_the_allowance_does_not_ratchet_the_month_upward():
+    # The failure the buffer exists to prevent: aim exactly at the record, land a
+    # little over it because the projection is an estimate, and that overshoot is
+    # the new record — repeat all month. Holding a steady draw at the target must
+    # therefore finish the window *under* what the month has already cost.
+    cfg = _peak_cfg(peak_follow_month=True)
+    state = EngineState(month_key="2026-07", month_peak_w=5200.0)
+    window = update_peak_window(W0, 5000.0, cfg, state)
+    for offset in range(30, int(PEAK_WINDOW_S) + 1, 30):
+        window = update_peak_window(W0 + timedelta(seconds=offset), 5000.0, cfg, state)
+    assert state.month_peak_w == 5200.0  # the record stands; nothing new was bought
+    assert window.target_w == 5000.0
+
+
+def test_a_zero_buffer_aims_at_the_record_itself():
+    # The knob turned all the way down is the old behaviour, exactly.
+    cfg = _peak_cfg(peak_follow_month=True, peak_month_buffer_w=0.0)
+    state = EngineState(month_key="2026-07", month_peak_w=5200.0)
+    window = update_peak_window(W0, 1000.0, cfg, state)
+    assert window.target_w == 5200.0
+    assert window.hard_w == 5200.0
+
+
+def test_the_buffer_never_pulls_a_limit_below_what_you_asked_for():
+    # A record barely above the target must not make the guard *stricter* than the
+    # setting it is supposed to be relaxing.
+    cfg = _peak_cfg(peak_follow_month=True, peak_month_buffer_w=200.0)
+    state = EngineState(month_key="2026-07", month_peak_w=3750.0)
+    window = update_peak_window(W0, 1000.0, cfg, state)
+    assert window.target_w == 3700.0  # the configured target, not 3.55 kW
+    assert window.hard_w == 3900.0
+
+
+def test_the_allowance_can_be_switched_off_for_a_strict_ceiling():
+    cfg = _peak_cfg(peak_follow_month=False)
+    state = EngineState(month_key="2026-07", month_peak_w=5200.0)
+    window = update_peak_window(W0, 1000.0, cfg, state)
+    assert window.target_w == 3700.0
+    assert window.hard_w == 3900.0
+
+
+def test_a_new_month_starts_a_new_record():
+    # The demand charge resets with the calendar, so the record has to roll the
+    # moment the month does — not one window later, or the allowance would spend
+    # the first quarter-hour of the month still permitting the old peak.
+    cfg, state = _peak_cfg(), EngineState()
+    end_of_month = datetime(2026, 7, 31, 23, 45, tzinfo=timezone.utc)
+    for offset in range(0, 1000, 30):  # 30 s steps: no gap, so nothing is degraded
+        update_peak_window(end_of_month + timedelta(seconds=offset), 6000.0, cfg, state)
+    assert state.month_key == "2026-08"
+    assert state.month_peak_w == 0.0  # August's own record starts empty
+    assert state.prev_month_peak_w == pytest.approx(6000.0, abs=100.0)
+
+
+def test_the_month_rolls_on_the_users_calendar_not_on_utc():
+    # A demand charge is billed per calendar month, and the calendar is the one on
+    # the wall. In UTC the record would roll at 02:00 local, so a peak drawn in the
+    # first two hours of a new month would be filed against the old one — and the
+    # old month's peak would keep raising the ceiling after it stopped being
+    # billable.
+    cfg = _peak_cfg(local_tz=VIENNA)
+    state = EngineState(month_key="2026-06", month_peak_w=5000.0)
+    # 22:30 UTC on 30 June is 00:30 on 1 July in Vienna: July, as far as the bill
+    # is concerned.
+    update_peak_window(datetime(2026, 6, 30, 22, 30, tzinfo=timezone.utc), 1000.0, cfg, state)
+    assert state.month_key == "2026-07"
+    assert state.month_peak_w == 0.0
+    assert state.prev_month_peak_w == 5000.0
+
+
+# --- Surviving a restart -------------------------------------------------------------
+
+def _restored(window_start, *, sample_t=None, sample_w=0.0) -> "engine.EngineState":
+    """An EngineState as the coordinator rebuilds it from the peak store."""
+    state = EngineState(month_key="2026-07")
+    state.peak_window_start = window_start
+    state.peak_window_wh = 100.0
+    state.peak_window_degraded = True
+    state.peak_sample_t = sample_t
+    state.peak_sample_w = sample_w
+    return state
+
+
+def test_a_restart_after_a_long_outage_does_not_invent_a_month_peak():
+    # The expensive failure: come back after a day down, with the house drawing
+    # 8 kW right now, and back-fill the missed quarter-hours from that one live
+    # reading. Each fabricated window looks complete enough to set the record, and
+    # the record is the number the bill is made of — one restart would then hand
+    # the month a ceiling it never actually bought.
+    cfg = _peak_cfg(peak_follow_month=True)
+    state = _restored(W0, sample_t=W0 + timedelta(seconds=200), sample_w=1500.0)
+
+    down_for_a_day = W0 + timedelta(hours=24)
+    update_peak_window(down_for_a_day, 8000.0, cfg, state)
+    window = update_peak_window(down_for_a_day + timedelta(seconds=2), 8000.0, cfg, state)
+
+    assert state.month_peak_w == 0.0  # nothing was measured, so nothing is recorded
+    assert len(state.peak_history) == 1  # only the window we were actually in
+    assert window.degraded is True  # …and we say so until the next clean boundary
+    assert window.hard_w == 3900.0  # the configured limit, not a fabricated one
+
+
+def test_a_restored_window_without_a_sample_clock_is_still_a_long_outage():
+    # A peak store written by a build that didn't persist the sample clock. The
+    # window's own start is then the oldest thing we can vouch for, and that is
+    # what the outage has to be measured from — not from the first sample after
+    # the restart, which is seconds old and says nothing about the day we missed.
+    cfg = _peak_cfg(peak_follow_month=True)
+    state = _restored(W0)  # no sample_t at all
+
+    down_for_a_day = W0 + timedelta(hours=24)
+    update_peak_window(down_for_a_day, 8000.0, cfg, state)
+    window = update_peak_window(down_for_a_day + timedelta(seconds=2), 8000.0, cfg, state)
+
+    assert state.month_peak_w == 0.0
+    assert window.degraded is True
+
+
+def test_a_brief_restart_still_carries_the_reading_across_the_gap():
+    # The other side of the same coin: a restart of a few minutes must *not* take
+    # the long-outage shortcut, or we would throw away a quarter-hour we can
+    # legitimately account for. Under-counting is the error that lets a real peak
+    # through.
+    cfg = _peak_cfg()
+    state = _restored(W0, sample_t=W0 + timedelta(seconds=60), sample_w=4000.0)
+    window = update_peak_window(W0 + timedelta(seconds=300), 4000.0, cfg, state)
+    assert window.start == W0  # same window we were in
+    # 100 Wh restored + 4 kW held across the 240 s we were away.
+    assert window.imported_wh == pytest.approx(100.0 + 4000.0 * 240 / 3600.0, abs=1.0)
+
+
+# --- Cheap-hour grid charging --------------------------------------------------------
+
+def _grid_charge_cfg(**kw) -> "engine.EngineConfig":
+    base = dict(
+        mode=ChargingMode.SMART,
+        grid_charge_enabled=True,
+        cheap_price=0.15,
+        cheap_charge_power_w=2000.0,
+        bright_day_target_soc=40.0,
+        dark_day_target_soc=80.0,
+        pv_forecast_low_kwh=8.0,
+        grid_setpoint_w=50.0,
+        peak_guard_enabled=True,
+        peak_soft_w=3300.0,
+        peak_target_w=3700.0,
+        peak_hard_w=3900.0,
+        peak_follow_month=False,
+    )
+    base.update(kw)
+    return EngineConfig(**base)
+
+
+def test_a_cheap_hour_commands_the_import_it_wants():
+    # House 400 W, battery idle → the setpoint is the house plus the charge rate,
+    # because on an ESS the setpoint *is* total grid import.
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=45.0, price_now=0.08, pv_forecast_kwh=2.0, now=W0,
+        ),
+        _grid_charge_cfg(),
+        EngineState(),
+    )
+    assert d.grid_charging is True
+    assert d.grid_setpoint_w == pytest.approx(2400.0)
+    assert d.peak_reason_key == "grid_charge_dark"
+
+
+def test_a_bright_tomorrow_stops_the_buying_early():
+    # 45 % is already past the bright-day target: no point paying for a charge the
+    # sun would have given us, and the PV needs somewhere to land.
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=45.0, price_now=0.08, pv_forecast_kwh=30.0, now=W0,
+        ),
+        _grid_charge_cfg(),
+        EngineState(),
+    )
+    assert d.grid_charging is False
+    assert d.grid_setpoint_w == 50.0
+    assert d.peak_reason_key == "grid_charge_full"
+
+
+def test_with_no_forecast_mapped_it_assumes_the_pessimistic_case():
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=45.0, price_now=0.08, now=W0,
+        ),
+        _grid_charge_cfg(),
+        EngineState(),
+    )
+    assert d.grid_charging is True
+    assert d.peak_reason_key == "grid_charge_dark"
+
+
+def test_cheap_hour_importing_never_breaches_the_soft_limit():
+    # The whole point: buying cheap energy must not buy a demand charge with it.
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=2800.0, battery_power_w=0.0,
+            battery_soc=20.0, price_now=0.08, now=W0,
+        ),
+        _grid_charge_cfg(cheap_charge_power_w=9000.0),
+        EngineState(),
+    )
+    assert d.grid_setpoint_w == 3300.0  # the soft limit, not 2800 + 9000
+
+
+def test_grid_charging_is_abandoned_the_moment_the_guard_engages():
+    cfg = _grid_charge_cfg()
+    state = EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=False, grid_power_w=9000.0,
+        battery_power_w=0.0, battery_soc=20.0, price_now=0.08,
+    )
+    assert d.peak_tier == "hard"
+    assert d.grid_charging is False
+    assert d.grid_setpoint_w == 0.0
+
+
+def test_an_expensive_hour_leaves_the_setpoint_at_rest():
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=20.0, price_now=0.40, now=W0,
+        ),
+        _grid_charge_cfg(),
+        EngineState(),
+    )
+    assert d.grid_charging is False
+    assert d.grid_setpoint_w == 50.0
+
+
+# --- The compatibility guarantee -----------------------------------------------------
+
+_BEHAVIOUR_FIELDS = (
+    "control",
+    "should_charge",
+    "target_current_a",
+    "target_phases",
+    "write_phases",
+    "surplus_w",
+    "reason_key",
+    "reason_params",
+    "hold_battery",
+    "hold_source",
+    "plan",
+)
+
+# Scenarios spanning every branch of the arbiter, replayed with the peak layer both
+# absent (as the engine was before this feature) and present-but-disabled.
+_GOLDEN_SCENARIOS = (
+    ("no car", dict(car_connected=False, grid_power_w=0.0), dict()),
+    ("solar confirming", dict(grid_power_w=-5000.0, battery_soc=85.0), dict()),
+    ("solar charging", dict(grid_power_w=-5000.0, battery_soc=85.0),
+     dict(start_confirm_s=0.0)),
+    ("below the reserve", dict(grid_power_w=-5000.0, battery_soc=50.0), dict()),
+    ("no surplus", dict(grid_power_w=500.0, battery_soc=85.0), dict()),
+    ("battery topping up", dict(grid_power_w=-4000.0, battery_soc=95.0),
+     dict(start_confirm_s=0.0)),
+    ("cheap grid", dict(grid_power_w=8000.0, battery_soc=64.0, price_now=0.10),
+     dict(mode=ChargingMode.SMART, cheap_price=0.15)),
+    ("cheap grid, battery draining",
+     dict(grid_power_w=8000.0, battery_power_w=-500.0, battery_soc=64.0,
+          price_now=0.10),
+     dict(mode=ChargingMode.SMART, cheap_price=0.15)),
+    ("expensive grid", dict(grid_power_w=8000.0, battery_soc=64.0, price_now=0.40),
+     dict(mode=ChargingMode.SMART, cheap_price=0.15)),
+    ("fast", dict(grid_power_w=0.0, battery_soc=64.0), dict(mode=ChargingMode.FAST)),
+    ("solar + minimum", dict(grid_power_w=0.0, battery_soc=85.0),
+     dict(mode=ChargingMode.SOLAR_MIN, min_current_a=8.0)),
+    ("manual charging", dict(grid_power_w=0.0, battery_soc=85.0),
+     dict(mode=ChargingMode.MANUAL, manual_charge=True, manual_current_a=10.0)),
+    ("manual passive", dict(grid_power_w=0.0, battery_soc=85.0),
+     dict(mode=ChargingMode.MANUAL, manual_passive=True)),
+    ("smart control off", dict(grid_power_w=-5000.0, battery_soc=85.0),
+     dict(smart_enabled=False)),
+)
+
+
+@pytest.mark.parametrize("name,inputs,cfg_kw", _GOLDEN_SCENARIOS)
+def test_switched_off_the_brain_behaves_exactly_as_it_did_before(name, inputs, cfg_kw):
+    """The compatibility guarantee, enforced rather than asserted in prose.
+
+    With peak protection and cheap-hour charging off, every charging-relevant field
+    must match what the engine produced before either existed — and nothing may be
+    offered to the coordinator to write.
+    """
+    plain = decide(_inputs(now=T0, **inputs), _cfg(**cfg_kw), EngineState())
+    guarded = decide(
+        _inputs(now=T0, **inputs),
+        _cfg(peak_guard_enabled=False, grid_charge_enabled=False, **cfg_kw),
+        EngineState(),
+    )
+    for field in _BEHAVIOUR_FIELDS:
+        assert getattr(guarded, field) == getattr(plain, field), field
+    # Nothing to write: an unmapped or disabled setup is left completely alone.
+    assert guarded.grid_setpoint_w is None
+    assert guarded.battery_min_soc is None
+    assert guarded.grid_charging is False
+    assert guarded.peak_tier == "off"
+    # …and the house permission collapses back onto the old single one, under which
+    # the hold switch was written precisely when the brain was driving the charger.
+    assert guarded.house_control == guarded.control
+
+
+def test_the_measurement_runs_even_with_the_guard_switched_off():
+    # Deliberate, and the one read-only exception: you can watch your peaks for a
+    # month before deciding to let anything act on them.
+    cfg = _cfg(peak_guard_enabled=False)
+    state = EngineState()
+    decide(_inputs(grid_power_w=4000.0, now=W0), cfg, state)
+    d = decide(_inputs(grid_power_w=4000.0, now=W0 + timedelta(seconds=300)), cfg, state)
+    assert d.peak_window_avg_w == pytest.approx(4000.0, abs=20.0)
+    assert d.peak_window_ends == W0 + timedelta(seconds=900)
+    assert d.peak_reason_key == "peak_off"
+
+
+def test_without_a_clock_there_is_no_window_and_no_cap():
+    # The stateless one-shot convention every other timer in the engine follows.
+    d = decide(
+        _inputs(car_connected=True, grid_power_w=9000.0, now=None),
+        _peak_cfg(),
+        EngineState(),
+    )
+    assert d.peak_tier == "off"
+    assert d.peak_window_ends is None
+    assert d.grid_setpoint_w is None

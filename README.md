@@ -16,7 +16,7 @@ See [`docs/concept`](#concept) for the full design.
 > **Status: early days, actively tested.** All charging modes (solar, price-aware,
 > combined), automatic phase switching and the single home-battery reserve line are in
 > place, plus SteVe metering (per-RFID kWh, sessions), authorization/remote-control services, and
-> **two bundled Lovelace cards** (an answer-strip main card + price-forecast). It works on the author's own
+> **three bundled Lovelace cards** (an answer-strip main card, price-forecast and peak protection). It works on the author's own
 > setup, but it's still young and not every wallbox/inverter/price-provider combination has been
 > exercised yet. **Try it, and please [open an issue](https://github.com/JustChr/HAgoe_steve/issues)**
 > with what worked, what broke, or what you'd like — feedback shapes where this goes next. 🙏
@@ -49,6 +49,23 @@ See [`docs/concept`](#concept) for the full design.
   home battery. Solar surplus still charges the battery. An **Auto / Hold / Free** control (and
   a *Home battery held* sensor) lets you see and override that decision, and the card shows it
   as a shield chip.
+- **Peak protection for the 2027 capacity tariff:** Austrian grid operators will bill on the
+  **highest 15-minute average grid import** in the month, so one unlucky quarter-hour sets a
+  charge that stands until the month ends. The brain measures the *billing* quarter-hour
+  (the fixed clock one, :00/:15/:30/:45), projects where it is heading, and holds it under
+  your target — easing the wallbox back, and letting the home battery cover more of the
+  house. It is a **household** layer: a sauna sets the peak whether or not a car is plugged
+  in, so it works with nothing connected at all. **Off by default**, and off means the
+  integration behaves exactly as it did before — while the measurement still runs, so you
+  can watch your peaks for a month before switching it on. And once a month has already
+  peaked higher — the sauna and the oven at the same time, once — it stops throttling below
+  a charge you have already bought: the limits float up to just under that peak, close
+  enough to use the headroom you paid for and far enough not to push the record higher.
+- **Cheap-hour grid charging:** while the price is low, buy energy into the home battery and
+  run the house from the grid, filling deep when tomorrow looks dark and stopping early when
+  it looks bright so the sun still has somewhere to go. Capped by the peak budget, so it
+  imports steadily instead of in the spike that would set a monthly peak — the cheap energy
+  without the demand charge.
 - **Fast on the knob, slow on the switches:** the surplus is tracked at two speeds. The
   charging **current** follows a responsive signal, so a cloud or a switched-on oven reaches
   the amps within seconds and a clearing sky is used while it lasts. Whether to charge **at
@@ -66,14 +83,19 @@ See [`docs/concept`](#concept) for the full design.
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
   prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch —
   phase control (`psm`) is always available over MQTT.
-- **Two Lovelace cards:** a main *answer-strip* card — a live charging figure with a ring + source
+- **Three Lovelace cards:** a main *answer-strip* card — a live charging figure with a ring + source
   bar splitting the car's power into **solar / battery / grid**, a one-line PV/house/grid/battery
   balance, the brain's plain-language reason, chips for state that used to be invisible (battery
   hold, price verdict, dwell countdowns, phases), a plan strip with a **draggable price target**,
   and inline controls (mode, Auto/Hold/Free home battery, the reserve line, the mode's tunables);
-  plus a price-forecast card that plots upcoming prices with a **draggable "cheap" threshold**.
+  a price-forecast card that plots upcoming prices with a **draggable "cheap" threshold**; and a
+  peak-protection card showing the month's billed peak, the live billing quarter-hour against your
+  limits, what set the peak, and every setting inline.
 - Safety: if the car isn't connected or required data is stale, the brain keeps its hands off;
-  turning **Smart control** off returns full manual control.
+  turning **Smart control** off returns full manual control of the charger. The one deliberate
+  exception is peak protection, which has its own switch: while it is on it keeps managing the
+  home battery, and a projected breach of your hard limit still stops the car — a demand charge,
+  once bought, cannot be un-bought. Off (the default), it changes nothing at all.
 
 ## Installation
 
@@ -107,9 +129,9 @@ Everything can be re-mapped later via the integration's *Configure* (options) di
 
 ## Dashboard cards
 
-The integration ships **two** custom Lovelace cards and **registers them automatically** — no
+The integration ships **three** custom Lovelace cards and **registers them automatically** — no
 manual dashboard *Resources* entry needed. After setup, edit a dashboard, *Add card*, and pick
-them from the card picker (both show a preview). With one Smart Charging device they auto-discover
+them from the card picker (all show a preview). With one Smart Charging device they auto-discover
 all entities; if you run more than one, pick the device in the card's visual editor.
 
 **1. Smart Charging card** (`custom:goe-steve-card`) — the main card, an **answer strip**: a big
@@ -141,7 +163,25 @@ type: custom:goe-steve-price-card
 # hours: 48   # how many hours of forecast to show
 ```
 
-Both cards are built from one TypeScript + Lit source tree in [`card/`](card/); the bundle is
+**3. Peak protection card** (`custom:goe-steve-peak-card`) — what the capacity tariff is going to
+bill, and why. The month's **highest quarter-hour** (with the date it happened, and a warning when
+the live one is on course to beat it), the billing quarter-hour drawn against your three limits
+with the time left in it, a bar per recent quarter-hour so you can see *what* set the peak, the
+cheap hours ahead with how deep the battery will be filled in them, and every setting inline.
+
+Give it your grid contract's demand rate and it puts a number on the peak — the integration has no
+way to know that, so it lives in the card config.
+
+```yaml
+type: custom:goe-steve-peak-card
+# device: <optional — auto-detected when there's only one>
+# title: Peak protection
+# demand_rate: 4.50     # what your operator charges per kW of monthly peak
+# currency: "€"
+# show_settings: true
+```
+
+All three cards are built from one TypeScript + Lit source tree in [`card/`](card/); the bundle is
 committed to `custom_components/goe_steve/www/` and rebuilt with
 `cd card && npm install && npm run build`.
 
@@ -158,12 +198,28 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Car target energy | kWh to deliver by departure (Smart) |
 | `number` Cheap price | At/below this price/kWh, grid counts as cheap |
 | `button` Start now | Skip the ~3-minute confirmation before a solar start (available only while it runs) |
+| `switch` Peak protection | Master enable for the capacity-tariff layer — off = exactly the old behaviour, while the measurement keeps running |
+| `switch` Allow up to this month's peak | Stop throttling below a peak the month has already been billed for (on by default) |
+| `number` Stay under the month's peak by | How far below that already-billed peak the limits settle (0.2 kW; 0 aims straight at it) |
+| `switch` Cheap-hour grid charging | Buy energy into the home battery while the price is low |
+| `number` Start easing off at / Peak target / Never exceed | The three limits (kW), compared against the *projected* end-of-quarter-hour average |
+| `number` Keep in reserve for peaks | Where the mapped minimum-SoC rests, so ordinary house loads can't drain the battery flat |
+| `number` May discharge to for peaks | …and where it drops while shaving — the drop that actually frees the headroom |
+| `number` Normal grid import | Your resting ESS grid setpoint (W) |
+| `number` Cheap-hour import power | What a cheap hour may import on top of the house load |
+| `number` Cheap-hour target, bright/dark day | How deep to fill the battery, chosen by tomorrow's solar forecast |
+| `button` Reset this month's peak | Forget the recorded peak when the operator's meter disagrees |
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the reserve line |
 | `sensor` Target current | What the brain is asking for |
 | `sensor` Power flow | Live PV/grid/battery/house/car balance + the car's solar/battery/grid source split (attributes) — drives the card |
+| `sensor` This quarter-hour | Average grid import over the **billing** quarter-hour — the control signal, with the projection, budget and limits as attributes |
+| `sensor` This month's peak | The highest completed quarter-hour this month: what a capacity tariff actually bills |
+| `sensor` Grid power (15 min average) | A plain trailing average, easier to read at a glance |
+| `sensor` Peak protection status | **Plain-language reason** for what the peak layer is doing |
 | `binary_sensor` Brain controlling / Charging requested | Brain state |
 | `binary_sensor` Home battery held | On while the battery is blocked from discharging into the car (the shield chip) |
+| `binary_sensor` Peak shaving active | On while the peak layer is intervening; its `tier` attribute (soft/hard) is the hook for your own load-shedding automations |
 | `sensor` Active session / Last session energy | SteVe transactions (when configured) |
 | `sensor` `{tag} energy` (one per RFID) | Cumulative kWh charged per id-tag |
 

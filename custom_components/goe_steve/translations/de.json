@@ -11,7 +11,10 @@
           "battery_power_entity": "Leistung Hausbatterie (optional)",
           "battery_hold_entity": "Schalter „Hausbatterie halten“ (optional)",
           "price_entity": "Strompreis (optional)",
-          "price_forecast_attr": "Attribut der Preisprognose (optional)"
+          "price_forecast_attr": "Attribut der Preisprognose (optional)",
+          "victron_setpoint_entity": "Netz-Sollwert (optional)",
+          "victron_min_soc_entity": "Minimaler Batteriestand (optional)",
+          "pv_forecast_entity": "Solarprognose für morgen (optional)"
         },
         "data_description": {
           "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
@@ -20,7 +23,10 @@
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
           "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn immer dann ein, wenn sie bewusst aus dem Netz lädt (günstige Stunden, Abfahrtsplan, Schnellladen), damit das Auto aus dem Netz lädt und nie aus der Batterie. Beim Solarladen bleibt er aus, damit die Batterie Überschuss-Schwankungen abpuffern kann.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
-          "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen)."
+          "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
+          "victron_setpoint_entity": "Eine beschreibbare Zahl, die festlegt, wie viel Leistung dein Batteriesystem aus dem Netz zieht (bei Victron ESS der Netz-Sollwert). Lastspitzenschutz und Günstig-Laden steuern sie. Leer lassen, wenn nicht vorhanden — alles andere funktioniert trotzdem.",
+          "victron_min_soc_entity": "Eine beschreibbare Zahl mit dem minimalen Ladestand deines Batteriesystems. Der Lastspitzenschutz hält sie auf deiner Spitzenreserve und senkt sie kurz ab, damit die Batterie eine Spitze abfangen kann. Genau das gibt die Reserve frei — ohne sie lässt sich eine Spitze nur über das Auto abfedern.",
+          "pv_forecast_entity": "Erwartete Solarerzeugung morgen in kWh (Forecast.Solar, Solcast, …). Bestimmt, wie voll die Batterie aus günstigem Netzstrom geladen wird: für Strom zu zahlen, den die Sonne geschenkt hätte, lohnt nicht."
         }
       },
       "charger": {
@@ -70,6 +76,9 @@
           "battery_hold_entity": "Schalter „Hausbatterie halten“ (optional)",
           "price_entity": "Strompreis (optional)",
           "price_forecast_attr": "Attribut der Preisprognose (optional)",
+          "victron_setpoint_entity": "Netz-Sollwert (optional)",
+          "victron_min_soc_entity": "Minimaler Batteriestand (optional)",
+          "pv_forecast_entity": "Solarprognose für morgen (optional)",
           "goe_base_topic": "go-e Basis-Topic",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden",
@@ -87,6 +96,9 @@
           "battery_hold_entity": "Ein Schalter oder input_boolean, der — wenn an — das Entladen deiner Hausbatterie verhindert (z. B. ein Victron-Helfer „Entladen sperren“). Die Steuerung schaltet ihn immer dann ein, wenn sie bewusst aus dem Netz lädt (günstige Stunden, Abfahrtsplan, Schnellladen), damit das Auto aus dem Netz lädt und nie aus der Batterie. Beim Solarladen bleibt er aus, damit die Batterie Überschuss-Schwankungen abpuffern kann.",
           "price_entity": "Sensor mit dem aktuellen Strompreis (z. B. Tibber, EPEX). Ermöglicht preisoptimiertes Laden.",
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
+          "victron_setpoint_entity": "Eine beschreibbare Zahl, die festlegt, wie viel Leistung dein Batteriesystem aus dem Netz zieht (bei Victron ESS der Netz-Sollwert). Lastspitzenschutz und Günstig-Laden steuern sie. Leer lassen, wenn nicht vorhanden — alles andere funktioniert trotzdem.",
+          "victron_min_soc_entity": "Eine beschreibbare Zahl mit dem minimalen Ladestand deines Batteriesystems. Der Lastspitzenschutz hält sie auf deiner Spitzenreserve und senkt sie kurz ab, damit die Batterie eine Spitze abfangen kann. Genau das gibt die Reserve frei — ohne sie lässt sich eine Spitze nur über das Auto abfedern.",
+          "pv_forecast_entity": "Erwartete Solarerzeugung morgen in kWh (Forecast.Solar, Solcast, …). Bestimmt, wie voll die Batterie aus günstigem Netzstrom geladen wird: für Strom zu zahlen, den die Sonne geschenkt hätte, lohnt nicht.",
           "goe_base_topic": "Das MQTT-Basis-Topic deiner go-e Wallbox, z. B. go-eCharger/123456 (ein führender Schrägstrich ist ok, falls deine Wallbox einen verwendet). Aus der automatischen Erkennung wählen oder eintippen.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
@@ -158,7 +170,10 @@
     "switch": {
       "manual_charge": { "name": "Manuelles Laden" },
       "smart_control": { "name": "Intelligente Steuerung" },
-      "auto_phase": { "name": "Automatische Phasenumschaltung" }
+      "auto_phase": { "name": "Automatische Phasenumschaltung" },
+      "peak_guard": { "name": "Lastspitzenschutz" },
+      "peak_follow_month": { "name": "Monatsspitze ausschöpfen" },
+      "grid_charge": { "name": "Laden in günstigen Stunden" }
     },
     "number": {
       "manual_current": { "name": "Manueller Strom" },
@@ -167,7 +182,17 @@
       "battery_reserve_soc": { "name": "Hausbatterie halten über" },
       "cheap_price": { "name": "Schwelle günstiger Preis" },
       "target_energy": { "name": "Zielenergie bis Abfahrt" },
-      "charger_current": { "name": "Ladestrom" }
+      "charger_current": { "name": "Ladestrom" },
+      "peak_soft_limit": { "name": "Zurücknehmen ab" },
+      "peak_target_limit": { "name": "Ziel-Lastspitze" },
+      "peak_hard_limit": { "name": "Nie überschreiten" },
+      "peak_month_buffer": { "name": "Abstand zur Monatsspitze" },
+      "shaving_reserve_soc": { "name": "Reserve für Lastspitzen" },
+      "peak_min_soc": { "name": "Für Lastspitzen entladen bis" },
+      "grid_setpoint": { "name": "Normaler Netzbezug" },
+      "cheap_charge_power": { "name": "Bezugsleistung in günstigen Stunden" },
+      "bright_day_target_soc": { "name": "Zielstand, sonniger Tag" },
+      "dark_day_target_soc": { "name": "Zielstand, trüber Tag" }
     },
     "datetime": {
       "departure": { "name": "Abfahrtszeit" }
@@ -195,17 +220,23 @@
       "charger_allowed_current": { "name": "Wallbox erlaubter Strom" },
       "active_transaction": { "name": "Aktiver Ladevorgang" },
       "last_session_energy": { "name": "Energie letzter Ladevorgang" },
-      "tag_energy": { "name": "Energie {tag}" }
+      "tag_energy": { "name": "Energie {tag}" },
+      "peak_window_power": { "name": "Diese Viertelstunde" },
+      "monthly_peak": { "name": "Monatsspitze" },
+      "rolling_grid_power": { "name": "Netzleistung (15-Min-Mittel)" },
+      "peak_status": { "name": "Status Lastspitzenschutz" }
     },
     "binary_sensor": {
       "controlling": { "name": "Steuerung aktiv" },
       "charging_requested": { "name": "Laden angefordert" },
       "battery_hold": { "name": "Hausbatterie gehalten" },
       "car_connected": { "name": "Fahrzeug verbunden" },
-      "charging_allowed": { "name": "Laden erlaubt" }
+      "charging_allowed": { "name": "Laden erlaubt" },
+      "peak_guard_active": { "name": "Lastspitze wird gekappt" }
     },
     "button": {
-      "start_now": { "name": "Jetzt starten" }
+      "start_now": { "name": "Jetzt starten" },
+      "reset_monthly_peak": { "name": "Monatsspitze zurücksetzen" }
     }
   },
   "services": {

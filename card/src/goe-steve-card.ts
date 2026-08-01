@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 
 import "./goe-steve-card-editor";
 import "./goe-steve-price-card";
+import "./goe-steve-peak-card";
 import {
   resolveEntities,
   findDevices,
@@ -10,6 +11,7 @@ import {
   type ResolvedEntities,
 } from "./entities";
 import { localize } from "./localize";
+import { peakBarStyles, readPeakBar, renderPeakBar } from "./peak-bar";
 
 /** Display name of the integration, used in the empty-state message. */
 const INTEGRATION_NAME = "go-e + SteVe Smart Charging";
@@ -160,12 +162,35 @@ export class GoeSteveCard extends LitElement {
         ${this._renderHero(ent)}
         ${this._renderWhy(ent)}
         ${this._config.show_flow ? this._renderSplit(ent) : nothing}
+        ${this._renderPeak(ent)}
         ${this._renderChips(ent)}
         ${this._renderPlan(ent)}
         ${controls ? this._renderControls(ent) : nothing}
         ${this._config.show_sessions ? this._renderSession(ent) : nothing}
       </div>
     </ha-card>`;
+  }
+
+  // --- Peak strip: the billing quarter-hour against its limits -----------------
+  // Deliberately absent unless peak protection is switched on. It answers a
+  // different question from the rest of the card ("is this quarter-hour going to
+  // cost me?"), and a bar nobody has opted into would just be one more thing to
+  // decode. The dedicated peak card is where the full story lives.
+  private _renderPeak(ent: ResolvedEntities): TemplateResult | typeof nothing {
+    const stateObj = this._stateObj(ent.peak_window_power);
+    if (!stateObj || stateObj.attributes?.enabled !== true) return nothing;
+    const data = readPeakBar(stateObj);
+    if (!data) return nothing;
+
+    const left = this._t("peak.heading_for", {
+      projected: this._fmtKwNum(data.projectedW),
+    });
+    const ends = this._countdown(stateObj.attributes?.window_ends);
+    const right =
+      ends === null
+        ? this._t("peak.window_label")
+        : this._t("peak.time_left", { time: fmtClock(ends) });
+    return html`<div class="peakstrip">${renderPeakBar(data, { left, right })}</div>`;
   }
 
   /** Empty-state sentence with the integration name rendered in bold. */
@@ -425,6 +450,35 @@ export class GoeSteveCard extends LitElement {
     // Forced-off explainer.
     if (status.forced === false)
       chips.push(this._chip("mdi:hand-back-left", "chip.forced_off", {}, "hold"));
+
+    // Peak protection: only while it is actually doing something. The strip above
+    // already carries the "nothing to worry about" case.
+    const peak = this._stateObj(ent.peak_window_power);
+    const tier = String(peak?.attributes?.tier ?? "off");
+    if (tier === "soft" || tier === "hard") {
+      chips.push(
+        this._chip(
+          "mdi:transmission-tower-off",
+          tier === "hard" ? "chip.peak_hard" : "chip.peak_soft",
+          { projected: this._fmtKwNum(num(peak?.attributes?.projected_w)) },
+          "hold",
+        ),
+      );
+    } else if (peak?.attributes?.degraded === true && peak.attributes.enabled === true) {
+      chips.push(this._chip("mdi:progress-question", "chip.peak_degraded", {}));
+    }
+
+    const peakStatus = this._stateObj(ent.peak_status);
+    if (peakStatus?.attributes?.grid_charging === true) {
+      chips.push(
+        this._chip(
+          "mdi:cash-clock",
+          "chip.grid_charging",
+          { power: fmtPower(num(peakStatus.attributes.grid_setpoint_w)) },
+          "cheap",
+        ),
+      );
+    }
 
     if (chips.length === 0) return html``;
     return html`<div class="chips">${chips}</div>`;
@@ -851,6 +905,12 @@ export class GoeSteveCard extends LitElement {
     return Number.isInteger(v) ? String(v) : v.toFixed(v < 1 ? 2 : 1);
   }
 
+  /** Watts → a bare kW number for the peak strings, which supply their own unit. */
+  private _fmtKwNum(w: number): string {
+    if (Number.isNaN(w)) return "—";
+    return (w / 1000).toFixed(2);
+  }
+
   // --- optimistic control state ------------------------------------------------
   /** Reflect a select's state, trusting a recent tap until the entity confirms. */
   private _effectiveState(id: string | undefined): string | undefined {
@@ -909,7 +969,9 @@ export class GoeSteveCard extends LitElement {
     this.hass.callService("switch", on ? "turn_on" : "turn_off", { entity_id: id });
   }
 
-  static styles = css`
+  static styles = [
+    peakBarStyles,
+    css`
     :host {
       --goe-solar: #dd9a16;
       --goe-battery: var(--success-color, #3f9e68);
@@ -1418,11 +1480,15 @@ export class GoeSteveCard extends LitElement {
       display: flex;
       gap: 8px;
     }
+    .peakstrip {
+      margin-top: -4px;
+    }
     :focus-visible {
       outline: 2px solid var(--goe-accent);
       outline-offset: 2px;
     }
-  `;
+  `,
+  ];
 }
 
 // Register in the card picker.

@@ -197,6 +197,67 @@ place, so the two can't drift apart again.
   - Fast and Manual now trim to 6 A rather than the setting when the battery guard bites.
     Correct under this rule, but it is the one place the change reaches beyond solar.
 
+## Phase 9 — Peak protection + cheap-hour grid charging ✅ (done, on `main`, v5.5.0)
+
+**The bill changes shape.** From 2027 Austrian grid operators bill households on the highest
+average grid import over a fixed clock quarter-hour (:00/:15/:30/:45) in the month — one
+unlucky 15 minutes sets a charge that stands until the month ends. That is a *household*
+quantity: a sauna sets the peak whether or not a car is plugged in, so this could not be a
+charging strategy.
+
+**A ceiling, not a strategy.** The arbiter takes the highest bid, so a strategy wanting to
+charge *less* has no way to win. `apply_peak_guard` therefore runs after the arbiter and the
+finalizer, over every branch including Manual, Fast and "no car connected". The engine
+integrates import energy over the current quarter-hour and compares the *projection* against
+three limits: soft (ease the wallbox back), target (what the budget aims at), hard (setpoint
+→ 0 W, pause the car if 6 A won't fit). Escalation is immediate; every release is confirmed
+and dwelled. Off by default, and off is one early return — `test_switched_off_the_brain_
+behaves_exactly_as_it_did_before` replays 14 scenarios to keep it that way.
+
+**Two permissions, not one.** `Decision.control` governs the charger, `Decision.house_control`
+the house (grid setpoint, minimum SoC, hold switch). Peak protection answers to its own switch,
+so it keeps managing the house with Smart control off — and with it off the two collapse, which
+is exactly the old rule.
+
+**Don't pay twice.** With the month-peak allowance on, all three limits float up to what the
+month has already cost — *up to* it, not onto it: the target settles a buffer below the record
+so the projection's own error can't ratchet the month upward one overshoot at a time.
+
+**Cheap-hour grid charging.** On an ESS the setpoint *is* total grid import, which is exactly
+what a capacity tariff bills — so buying cheap energy into the home battery had to be capped by
+the live quarter-hour budget. Depth follows tomorrow's solar forecast; peak protection outranks
+it absolutely.
+
+  Fixed before release (found in review of the WIP):
+  - The restore path rebuilt the window without its sample clock, so a day of downtime looked
+    like a two-second gap and back-filled 96 quarter-hours from one live reading — as
+    *non-degraded* windows, i.e. straight into the month record. The outage is now measured
+    from the older of the last sample and the still-open window, which is restart-proof rather
+    than restore-proof.
+  - The soft tier compared against the raw threshold while target/hard were month-adjusted, so
+    it engaged — dropping minimum SoC and releasing the hold — to defend a line nobody was
+    defending. All three limits now move together (`PeakWindow.soft_w`).
+  - Nothing released the ESS setpoint / minimum SoC: switching off at the hard tier stranded
+    the house at 0 W import forever. A `number` has no neutral position, so release means
+    restore — captured on first write, persisted beside the hold.
+  - The billed month rolled on UTC (01:00/02:00 local), and the one wall-clock time in a reason
+    string was UTC too. Both now use HA's configured zone via `EngineConfig.local_tz`.
+  - A peak pause left the Status sensor saying "Fast charging at 16 A"; a trim left the amp
+    figure at the pre-trim value.
+  - Manual's passive window suppressed the *house* levers too, so the soft tier silently did
+    nothing until it escalated.
+
+  Follow-ups worth revisiting:
+  - Windows are floored in UTC. Exact for whole-hour offsets (Austria included); a half-hour
+    zone would align to the wrong boundary.
+  - Peak protection cannot shed a load. On an ESS the setpoint already sits at ~50 W, so the
+    battery is *already* covering the sauna; the peak appears only when it physically can't.
+    The `Peak shaving active` binary sensor's `tier` attribute is the hook for the user's own
+    load-shedding automations.
+  - There is deliberately no way to type this month's peak in by hand — the record is what was
+    measured, so a peak drawn while HA was down is not one the guard will spend. *Reset this
+    month's peak* is the escape hatch when the operator's meter disagrees.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

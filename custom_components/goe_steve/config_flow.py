@@ -29,7 +29,10 @@ from .const import (
     CONF_PHASES,
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
+    CONF_PV_FORECAST,
     CONF_PV_POWER,
+    CONF_VICTRON_MIN_SOC,
+    CONF_VICTRON_SETPOINT,
     CONF_STEVE_CHARGEBOX,
     CONF_STEVE_CONNECTOR,
     CONF_STEVE_PASSWORD,
@@ -56,6 +59,14 @@ _BATTERY_HOLD_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
 )
 _PRICE_ENTITY = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=["sensor", "input_number"])
+)
+# The ESS grid setpoint and minimum-SoC numbers peak protection steers. Writable
+# numbers rather than sensors — these are outputs, not readings.
+_SETPOINT_ENTITY = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=["number", "input_number"])
+)
+_PV_FORECAST_ENTITY = selector.EntitySelector(
     selector.EntitySelectorConfig(domain=["sensor", "input_number"])
 )
 _TEXT = selector.TextSelector()
@@ -146,6 +157,21 @@ def _energy_schema(defaults: dict[str, Any]) -> vol.Schema:
                     "suggested_value": defaults.get(CONF_PRICE_FORECAST_ATTR)
                 },
             ): _TEXT,
+            # Peak protection / cheap-hour charging steering entities. All optional
+            # and all best-effort: generic numbers the user maps themselves, so
+            # there is no coupling to any particular battery system.
+            vol.Optional(
+                CONF_VICTRON_SETPOINT,
+                description={"suggested_value": defaults.get(CONF_VICTRON_SETPOINT)},
+            ): _SETPOINT_ENTITY,
+            vol.Optional(
+                CONF_VICTRON_MIN_SOC,
+                description={"suggested_value": defaults.get(CONF_VICTRON_MIN_SOC)},
+            ): _SETPOINT_ENTITY,
+            vol.Optional(
+                CONF_PV_FORECAST,
+                description={"suggested_value": defaults.get(CONF_PV_FORECAST)},
+            ): _PV_FORECAST_ENTITY,
         }
     )
 

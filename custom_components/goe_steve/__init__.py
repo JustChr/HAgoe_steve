@@ -104,6 +104,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> 
     # switch we left on — the mapped entity may gate the whole house's battery.
     await coordinator.async_restore_hold_state()
 
+    # Likewise recall the billing quarter-hour and this month's recorded peak, so a
+    # restart mid-window neither starts the accumulator from zero (blind to what was
+    # already drawn) nor forgets the number that actually gets billed.
+    await coordinator.async_restore_peak_state()
+
     # First refresh runs the engine once; control entities restore their state
     # in their platform setup and push values into coordinator.settings.
     await coordinator.async_config_entry_first_refresh()

@@ -20,7 +20,7 @@ platforms — it belongs in the engine so it stays unit-testable without HA.
 
 | File | Role |
 |---|---|
-| `engine.py` | **The brain.** Pure, HA-free. Strategies + arbiter, battery reserve-line model, start/stop dwell logic, departure planning, `compute_power_flow` / `compute_car_sources`. |
+| `engine.py` | **The brain.** Pure, HA-free. Strategies + arbiter, battery reserve-line model, start/stop dwell logic, departure planning, `compute_power_flow` / `compute_car_sources`. Also the capacity-tariff layer: `update_peak_window` (the billing quarter-hour + the month record), `resolve_peak_tier`, `apply_peak_guard` (a ceiling *after* the arbiter), `apply_grid_charge`. |
 | `coordinator.py` | Glue: reads HA entities + go-e MQTT cache, calls engine, writes `amp`/`frc`/`psm`, throttles writes. Event-driven (debounced ~1.5 s) with a 30 s poll as safety net. Also `SteVeCoordinator` (60 s poll). |
 | `goe_parse.py` | Pure, HA-free go-e MQTT decoding: topic split, JSON payloads, `nrg[11]` power, `car`→connected. Unit-tested. |
 | `goe_mqtt.py` | HA MQTT client: subscribes `<base>/#`, caches, publishes `<base>/<key>/set`, broker discovery, `local_push` listeners. |
@@ -31,7 +31,7 @@ platforms — it belongs in the engine so it stays unit-testable without HA.
 | `const.py` | Config keys, defaults, mode/strategy names. |
 | `sensor.py`, `number.py`, `select.py`, `switch.py`, `binary_sensor.py`, `datetime.py`, `button.py` | Entity platforms — thin wrappers over coordinator data. Per-RFID energy sensors are created lazily as SteVe reports tags. `button.py` holds *Start now* (skips the pre-start confirmation wait). |
 | `services.py` / `services.yaml` | SteVe services: `authorize_tag`, `block_tag`, `set_tag_name`, `remote_start`, `remote_stop`. |
-| `www/goe-steve-card.js` | **Committed build output** of `card/` — never edit by hand. |
+| `www/goe-steve-card.js` | **Committed build output** of `card/` — never edit by hand. All three cards ship in this one bundle (single esbuild entry point: `card/src/goe-steve-card.ts` imports the price and peak cards). |
 
 Docs worth reading before touching behavior:
 - `docs/charging-behavior-matrix.md` — situation-by-situation spec of what each mode does. Keep it in sync when changing engine behavior.
@@ -78,7 +78,29 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
   `strings.json` and `translations/` (EN + DE are maintained in parallel).
 - **Safety invariant:** if the car isn't connected or required input data is stale, the
   brain must not write to the charger; with the *Smart control* switch off it is fully
-  hands-off.
+  hands-off **as far as the charger goes**. Since peak protection, that switch no longer
+  covers everything: `Decision.control` governs the *charger*, `Decision.house_control`
+  governs the *house* (grid setpoint, minimum SoC, hold switch), and peak protection answers
+  to its own switch — it keeps managing the house with Smart control off, and a projected
+  hard-limit breach still pauses the charger. With peak protection off the two collapse
+  (`house_control == control`), which is exactly the old rule. The same split governs Manual's
+  *passive window* (`_apply(charger=False)`): it suppresses the charger writes only, never the
+  house levers, which have nothing to do with what the wallbox is doing.
+- **The house numbers are borrowed, not taken.** The ESS grid setpoint and minimum SoC are
+  captured on the first write and handed back by `_release_setpoint` / `_release_min_soc` once
+  nothing wants them any more — ownership persisted beside the battery hold, because a restart
+  mid-shave would otherwise lose the only record that they are ours to give back. A `number`
+  has no neutral position to release to, which is why this one needs a capture and `frc` doesn't.
+- **Read the tiers off `PeakWindow`, never off `_peak_thresholds`.** The latter returns the raw
+  settings; `soft_w` / `target_w` / `hard_w` on the window are the ones after the month-peak
+  allowance, and all three move together. Comparing a projection against a raw threshold while
+  enforcing an effective one is how the shave engages to defend a line nobody is defending.
+- **Peak protection is a ceiling, not a strategy.** The arbiter takes the *highest* bid, so
+  a strategy wanting to charge *less* cannot express it. `apply_peak_guard` runs after the
+  arbiter and the finalizer instead. Don't try to make it a `_Proposal`.
+- **Backward compatibility is enforced, not asserted:** `test_switched_off_the_brain_behaves_exactly_as_it_did_before`
+  replays 14 scenarios and compares every charging-relevant field. If you touch the engine's
+  decision path, that test is the one that tells you whether you changed behaviour.
 
 ## Making a release
 

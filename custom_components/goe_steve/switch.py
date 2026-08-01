@@ -25,8 +25,95 @@ async def async_setup_entry(
             ManualChargeSwitch(coordinator),
             SmartControlSwitch(coordinator),
             AutoPhaseSwitch(coordinator),
+            PeakGuardSwitch(coordinator),
+            PeakFollowMonthSwitch(coordinator),
+            GridChargeSwitch(coordinator),
         ]
     )
+
+
+class _SettingSwitch(GoeSteveEntity, RestoreEntity, SwitchEntity):
+    """A boolean setting that persists and feeds the engine.
+
+    Subclasses declare ``_key`` (the entity key — unique id, translation key and the
+    card's lookup all derive from it) and ``_setting`` (the
+    :class:`RuntimeSettings` attribute). Same restore → mutate → write state →
+    re-evaluate shape as the older hand-written switches above.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _key: str
+    _setting: str
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, self._key)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None and last.state in (
+            "on",
+            "off",
+        ):
+            setattr(self.coordinator.settings, self._setting, last.state == "on")
+
+    @property
+    def is_on(self) -> bool:
+        return bool(getattr(self.coordinator.settings, self._setting))
+
+    async def _set(self, value: bool) -> None:
+        setattr(self.coordinator.settings, self._setting, value)
+        self.async_write_ha_state()
+        self.coordinator.request_apply()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._set(False)
+
+
+class PeakGuardSwitch(_SettingSwitch):
+    """Master switch for the capacity-tariff layer.
+
+    Off, the brain behaves exactly as it did before this feature existed — the
+    quarter-hour is still *measured* (the sensors stay live, so you can watch your
+    peaks for a month before committing) but nothing is ever written.
+
+    On, it answers to this switch alone: unlike everything else here it keeps
+    working with *Smart control* off, because the home battery's levers matter
+    whether or not a car is plugged in, and a demand charge is money either way.
+    """
+
+    _attr_icon = "mdi:transmission-tower-off"
+    _key = "peak_guard"
+    _setting = "peak_guard_enabled"
+
+
+class PeakFollowMonthSwitch(_SettingSwitch):
+    """Allow this quarter-hour up to the month's existing peak.
+
+    A demand charge is set by the month's single highest quarter-hour, so once one
+    window has already gone to 5.2 kW, holding the next one under the target saves
+    nothing at all — it only costs a slower charge for the rest of the month. Turn
+    this off for a strict ceiling regardless of what the month has already cost.
+    """
+
+    _attr_icon = "mdi:calendar-arrow-right"
+    _key = "peak_follow_month"
+    _setting = "peak_follow_month"
+
+
+class GridChargeSwitch(_SettingSwitch):
+    """Buy energy into the home battery while the price is low.
+
+    Commands the mapped ESS grid setpoint, which *is* total grid import — so the
+    peak budget caps it by construction and it imports steadily rather than in the
+    spike that would set a monthly peak.
+    """
+
+    _attr_icon = "mdi:transmission-tower-import"
+    _key = "grid_charge"
+    _setting = "grid_charge_enabled"
 
 
 class ManualChargeSwitch(GoeSteveEntity, RestoreEntity, SwitchEntity):

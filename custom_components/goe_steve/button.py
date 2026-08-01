@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoeSteveConfigEntry
@@ -16,7 +17,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities([StartNowButton(coordinator)])
+    async_add_entities([StartNowButton(coordinator), ResetMonthlyPeakButton(coordinator)])
 
 
 class StartNowButton(GoeSteveEntity, ButtonEntity):
@@ -38,3 +39,23 @@ class StartNowButton(GoeSteveEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         self.coordinator.start_now()
+
+
+class ResetMonthlyPeakButton(GoeSteveEntity, ButtonEntity):
+    """Forget this month's recorded peak.
+
+    For when the grid operator's own meter reading disagrees with ours, or after a
+    one-off (a welder, a guest's car) that shouldn't go on shaping the rest of the
+    month — with *Allow up to this month's peak* on, a stale record would keep the
+    limits floating higher than they need to be.
+    """
+
+    _attr_icon = "mdi:restart"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "reset_monthly_peak")
+
+    async def async_press(self) -> None:
+        self.coordinator.reset_month_peak()
+        await self.coordinator.async_request_refresh()

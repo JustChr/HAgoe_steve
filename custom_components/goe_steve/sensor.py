@@ -42,6 +42,13 @@ async def async_setup_entry(
             TargetCurrentSensor(coordinator),
             PowerFlowSensor(coordinator),
             PriceForecastSensor(coordinator),
+            # Peak protection. These are live whether or not the feature is enabled:
+            # measuring writes nothing, and watching your peaks for a month before
+            # switching anything on is exactly the point.
+            PeakWindowPowerSensor(coordinator),
+            MonthlyPeakSensor(coordinator),
+            RollingGridPowerSensor(coordinator),
+            PeakStatusSensor(coordinator),
             # go-e charger telemetry, straight off MQTT (parity + extras).
             ChargerStatusSensor(coordinator),
             ChargerPowerSensor(coordinator),
@@ -132,6 +139,163 @@ class StatusSensor(GoeSteveEntity, SensorEntity):
             "pause_not_before": _iso(decision.pause_not_before),
             "phase_locked_until": _iso(decision.phase_locked_until),
             "forced": self.coordinator.last_written_force,
+        }
+
+
+class PeakWindowPowerSensor(GoeSteveEntity, SensorEntity):
+    """Average grid import over the current billing quarter-hour.
+
+    The control signal, and the number the grid operator would bill if this window
+    turned out to be the month's highest. Its attributes carry everything the peak
+    card draws: the projection, the remaining budget, the limits in force, and the
+    completed windows behind it.
+    """
+
+    _attr_icon = "mdi:chart-timeline-variant"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "peak_window_power")
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        return data.peak_window_avg_w if data else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None:
+            return {}
+        settings = self.coordinator.settings
+        state = self.coordinator.engine_state
+        return {
+            "projected_w": round(data.peak_projected_w),
+            "allowed_w": round(data.peak_allowed_w),
+            "rolling_w": round(data.peak_rolling_w),
+            "window_ends": (
+                data.peak_window_ends.isoformat() if data.peak_window_ends else None
+            ),
+            "tier": data.peak_tier,
+            "degraded": data.peak_degraded,
+            "enabled": settings.peak_guard_enabled,
+            # The three limits as configured, plus the same three actually in force —
+            # they differ whenever the month-peak allowance is doing something, and
+            # the card says so rather than leaving the gap unexplained. The effective
+            # set comes straight from the engine; recomputing it here is how the two
+            # would drift apart. The soft line is in there because it moves with the
+            # target: the bar has to colour a window "easing off" at the level the
+            # guard actually acts on, not at the one that was typed in.
+            "soft_w": settings.peak_soft_w,
+            "target_w": settings.peak_target_w,
+            "hard_w": settings.peak_hard_w,
+            "effective_soft_w": round(data.peak_soft_w),
+            "effective_target_w": round(data.peak_target_w),
+            "effective_hard_w": round(data.peak_hard_w),
+            "month_peak_w": round(data.month_peak_w),
+            "history": [
+                (stamp.isoformat(), round(value))
+                for stamp, value in state.peak_history[-16:]
+            ],
+        }
+
+
+class MonthlyPeakSensor(GoeSteveEntity, SensorEntity):
+    """The highest completed quarter-hour this month — what a capacity tariff bills.
+
+    Only trustworthy windows count: one we couldn't fully measure never becomes the
+    number the card calls your bill.
+    """
+
+    _attr_icon = "mdi:chart-bar"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "monthly_peak")
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        return data.month_peak_w if data else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.engine_state
+        data = self.coordinator.data
+        return {
+            "month": state.month_key,
+            "peak_at": (
+                state.month_peak_at.isoformat() if state.month_peak_at else None
+            ),
+            "previous_month_w": round(state.prev_month_peak_w),
+            # True while the live window is on course to beat the record — the one
+            # moment where easing off actually saves money.
+            "record_at_risk": bool(
+                data
+                and state.month_peak_w > 0.0
+                and data.peak_projected_w > state.month_peak_w
+            ),
+        }
+
+
+class RollingGridPowerSensor(GoeSteveEntity, SensorEntity):
+    """Plain trailing 15-minute average of grid import.
+
+    Display only — the guard regulates against the *clock* quarter-hour, because
+    that is what gets billed. This one is here because it is the easier number to
+    read at a glance, and it has no window boundary to jump at.
+    """
+
+    _attr_icon = "mdi:transmission-tower"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "rolling_grid_power")
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        return data.peak_rolling_w if data else None
+
+
+class PeakStatusSensor(GoeSteveEntity, SensorEntity):
+    """Plain-language explanation of what peak protection is doing.
+
+    A second reason line, deliberately separate from the charging Status so neither
+    has to compete with the other for the one line the card shows.
+    """
+
+    _attr_icon = "mdi:transmission-tower-off"
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "peak_status")
+
+    @property
+    def native_value(self) -> str | None:
+        data = self.coordinator.data
+        return data.peak_reason if data else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None:
+            return {}
+        return {
+            "reason_key": data.peak_reason_key,
+            "reason_params": data.peak_reason_params,
+            "tier": data.peak_tier,
+            "grid_charging": data.grid_charging,
+            "grid_setpoint_w": data.grid_setpoint_w,
+            "battery_min_soc": data.battery_min_soc,
         }
 
 

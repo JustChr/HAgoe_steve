@@ -11,7 +11,10 @@
           "battery_power_entity": "Home battery power (optional)",
           "battery_hold_entity": "Home battery hold switch (optional)",
           "price_entity": "Electricity price (optional)",
-          "price_forecast_attr": "Price forecast attribute (optional)"
+          "price_forecast_attr": "Price forecast attribute (optional)",
+          "victron_setpoint_entity": "Grid setpoint number (optional)",
+          "victron_min_soc_entity": "Battery minimum-SoC number (optional)",
+          "pv_forecast_entity": "Solar forecast for tomorrow (optional)"
         },
         "data_description": {
           "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
@@ -20,7 +23,10 @@
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
           "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on whenever it deliberately charges from the grid (cheap hours, the departure plan, Fast) so the car draws from the grid, never the battery. During solar charging it stays off, so the battery can buffer surplus fluctuations.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
-          "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices)."
+          "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
+          "victron_setpoint_entity": "A writable number that sets how much power your battery system draws from the grid (on a Victron ESS, the grid setpoint). Peak protection and cheap-hour charging steer it. Leave empty if you have none — everything else still works.",
+          "victron_min_soc_entity": "A writable number holding your battery system's minimum charge level. Peak protection keeps it at your peak reserve and lowers it briefly so the battery can cover a peak. This is what actually frees the headroom, so without it a peak can only be shaved by easing off the car.",
+          "pv_forecast_entity": "Expected solar production tomorrow in kWh (Forecast.Solar, Solcast, …). Decides how deep to fill the battery from cheap grid: there is no point paying for a charge the sun would have given you."
         }
       },
       "charger": {
@@ -70,6 +76,9 @@
           "battery_hold_entity": "Home battery hold switch (optional)",
           "price_entity": "Electricity price (optional)",
           "price_forecast_attr": "Price forecast attribute (optional)",
+          "victron_setpoint_entity": "Grid setpoint number (optional)",
+          "victron_min_soc_entity": "Battery minimum-SoC number (optional)",
+          "pv_forecast_entity": "Solar forecast for tomorrow (optional)",
           "goe_base_topic": "go-e charger base topic",
           "voltage": "Grid voltage per phase",
           "phases": "Phases used for charging",
@@ -87,6 +96,9 @@
           "battery_hold_entity": "A switch or input_boolean that, when on, stops your home battery from discharging (e.g. a Victron 'disable discharge' helper). The brain turns it on whenever it deliberately charges from the grid (cheap hours, the departure plan, Fast) so the car draws from the grid, never the battery. During solar charging it stays off, so the battery can buffer surplus fluctuations.",
           "price_entity": "Sensor with the current electricity price (e.g. Tibber, EPEX). Enables price-aware charging.",
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
+          "victron_setpoint_entity": "A writable number that sets how much power your battery system draws from the grid (on a Victron ESS, the grid setpoint). Peak protection and cheap-hour charging steer it. Leave empty if you have none — everything else still works.",
+          "victron_min_soc_entity": "A writable number holding your battery system's minimum charge level. Peak protection keeps it at your peak reserve and lowers it briefly so the battery can cover a peak. This is what actually frees the headroom, so without it a peak can only be shaved by easing off the car.",
+          "pv_forecast_entity": "Expected solar production tomorrow in kWh (Forecast.Solar, Solcast, …). Decides how deep to fill the battery from cheap grid: there is no point paying for a charge the sun would have given you.",
           "goe_base_topic": "The MQTT base topic of your go-e charger, e.g. go-eCharger/123456 (a leading slash is fine if your charger uses one). Pick it from the auto-discovered list, or type it.",
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
           "phases": "How many phases charging uses by default when automatic phase switching is off."
@@ -158,7 +170,10 @@
     "switch": {
       "manual_charge": { "name": "Manual charging" },
       "smart_control": { "name": "Smart control" },
-      "auto_phase": { "name": "Automatic phase switching" }
+      "auto_phase": { "name": "Automatic phase switching" },
+      "peak_guard": { "name": "Peak protection" },
+      "peak_follow_month": { "name": "Allow up to this month's peak" },
+      "grid_charge": { "name": "Cheap-hour grid charging" }
     },
     "number": {
       "manual_current": { "name": "Manual current" },
@@ -167,7 +182,17 @@
       "battery_reserve_soc": { "name": "Keep home battery above" },
       "cheap_price": { "name": "Cheap price threshold" },
       "target_energy": { "name": "Target energy by departure" },
-      "charger_current": { "name": "Charging current" }
+      "charger_current": { "name": "Charging current" },
+      "peak_soft_limit": { "name": "Start easing off at" },
+      "peak_target_limit": { "name": "Peak target" },
+      "peak_hard_limit": { "name": "Never exceed" },
+      "peak_month_buffer": { "name": "Stay under the month's peak by" },
+      "shaving_reserve_soc": { "name": "Keep in reserve for peaks" },
+      "peak_min_soc": { "name": "May discharge to for peaks" },
+      "grid_setpoint": { "name": "Normal grid import" },
+      "cheap_charge_power": { "name": "Cheap-hour import power" },
+      "bright_day_target_soc": { "name": "Cheap-hour target, bright day" },
+      "dark_day_target_soc": { "name": "Cheap-hour target, dark day" }
     },
     "datetime": {
       "departure": { "name": "Departure time" }
@@ -195,17 +220,23 @@
       "charger_allowed_current": { "name": "Charger allowed current" },
       "active_transaction": { "name": "Active session" },
       "last_session_energy": { "name": "Last session energy" },
-      "tag_energy": { "name": "{tag} energy" }
+      "tag_energy": { "name": "{tag} energy" },
+      "peak_window_power": { "name": "This quarter-hour" },
+      "monthly_peak": { "name": "This month's peak" },
+      "rolling_grid_power": { "name": "Grid power (15 min average)" },
+      "peak_status": { "name": "Peak protection status" }
     },
     "binary_sensor": {
       "controlling": { "name": "Brain controlling" },
       "charging_requested": { "name": "Charging requested" },
       "battery_hold": { "name": "Home battery held" },
       "car_connected": { "name": "Car connected" },
-      "charging_allowed": { "name": "Charging allowed" }
+      "charging_allowed": { "name": "Charging allowed" },
+      "peak_guard_active": { "name": "Peak shaving active" }
     },
     "button": {
-      "start_now": { "name": "Start now" }
+      "start_now": { "name": "Start now" },
+      "reset_monthly_peak": { "name": "Reset this month's peak" }
     }
   },
   "services": {

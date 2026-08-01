@@ -55,6 +55,24 @@ Home-battery policy (one reserve line, two zones):
 * **Whenever a grid strategy wins** (cheap hour, plan, floor, Fast) the battery
   is held (``hold_battery``) so grid power charges the car, never the battery.
 
+Peak protection (the capacity tariff) — a layer, not a strategy:
+
+From 2027 Austrian grid operators bill households on the highest average grid
+import over a *fixed clock quarter-hour* in the month, so a single unlucky
+15 minutes sets a charge that stands until the month ends. Guarding against that
+cannot be a proposal: the arbiter takes the *highest* bid, and a strategy that
+wants to charge *less* has no way to say so. Peak protection is therefore a
+**ceiling applied after the arbiter** (:func:`apply_peak_guard`), which also
+means it covers every branch uniformly — Manual, Fast, ride-out, idle, and the
+no-car branch. That last one matters most: a sauna or a heat pump sets the peak
+whether or not a car is plugged in, so this layer is a *household* one and its
+levers include the home battery, not just the wallbox.
+
+It is off by default, and when off it is a single early return that touches
+nothing — the integration behaves exactly as it did before. The *measurement*
+(:func:`update_peak_window`) runs regardless, before every gate, so the sensors
+stay live and you can watch your peaks before deciding to let anything act.
+
 Everything time-dependent receives ``now`` explicitly so the logic stays
 deterministic and testable.
 """
@@ -63,7 +81,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from enum import StrEnum
 
 
@@ -134,6 +152,10 @@ class ChargerInputs:
     # Price environment.
     price_now: float | None = None
     price_forecast: list[PriceSlot] | None = None
+    # Expected PV production tomorrow (kWh), from an optional mapped solar-forecast
+    # sensor. Used by cheap-hour grid charging to decide *how deep* to fill the home
+    # battery — not whether to: see ``bright_day_target_soc`` / ``dark_day_target_soc``.
+    pv_forecast_kwh: float | None = None
     # Energy delivered in the running session (kWh), anchored at plug-in by the
     # coordinator. Feeds the departure plan (remaining = target − delivered).
     session_delivered_kwh: float | None = None
@@ -200,6 +222,44 @@ class EngineConfig:
     # Start/stop shaping ("ride out, then stop").
     start_confirm_s: float = 180.0  # surplus must hold ≥ min this long to start
     stop_ride_out_s: float = 300.0  # keep min current this long through a dip
+    # --- Peak protection (capacity tariff) -------------------------------------
+    # Off by default, and when off :func:`apply_peak_guard` returns immediately
+    # without touching a thing. The three limits are compared against the
+    # *projected* end-of-window average, in watts.
+    peak_guard_enabled: bool = False
+    peak_soft_w: float = 3300.0  # start easing the wallbox down
+    peak_target_w: float = 3700.0  # the ceiling the budget aims at
+    peak_hard_w: float = 3900.0  # cut now; pause the car if the budget can't carry 6 A
+    # Once this month has already recorded a higher peak, holding below the target
+    # saves nothing — the charge is booked. See ``_effective_targets``.
+    peak_follow_month: bool = True
+    # …but aim a little *under* that record rather than at it, or the allowance
+    # ratchets: a window that overshoots by a few watts sets a new record, which
+    # raises the ceiling, which invites the next overshoot.
+    peak_month_buffer_w: float = 200.0
+    # The SoC ladder: the mapped minimum-SoC entity sits at the reserve normally and
+    # drops to the floor while shaving. Clamped so the floor is never above it.
+    shaving_reserve_soc: float = 50.0
+    peak_min_soc: float = 35.0
+    peak_confirm_s: float = 120.0  # a soft-tier crossing must hold this long
+    peak_release_s: float = 120.0  # …and so must a release, in the other direction
+    peak_dwell_s: float = 60.0  # min time between tier changes (releases only)
+    # --- Cheap-hour grid charging ------------------------------------------------
+    # Commands the mapped ESS grid setpoint. On an ESS the setpoint *is* total grid
+    # import, so this is capped by the live peak budget by construction.
+    grid_charge_enabled: bool = False
+    grid_setpoint_w: float = 50.0  # the normal (non-charging) import setpoint
+    cheap_charge_power_w: float = 2000.0  # what a cheap hour may import
+    bright_day_target_soc: float = 40.0  # stop here when tomorrow looks good
+    dark_day_target_soc: float = 80.0  # …and fill to here when it doesn't
+    pv_forecast_low_kwh: float = 8.0  # below this, tomorrow counts as "dark"
+    # --- The user's calendar and clock ---------------------------------------------
+    # Everything else in here works in UTC, which is right for arithmetic and wrong
+    # for two things a *person* reads: the month a demand charge is billed in, and
+    # the time a reason string quotes. Both come from the wall clock the user lives
+    # on, so the coordinator hands us Home Assistant's configured time zone. ``None``
+    # means UTC, which keeps this module's own tests clock-agnostic.
+    local_tz: tzinfo | None = None
 
 
 @dataclass(slots=True)
@@ -239,6 +299,36 @@ class EngineState:
     track_output: float | None = None
     discharge_output: float | None = None
     avail_sample_t: datetime | None = None
+    # --- Peak protection ----------------------------------------------------------
+    # The billing quarter-hour accumulator. ``peak_sample_w`` is the last grid
+    # reading, *held* until the next sample (zero-order hold), which is what makes
+    # the integral correct under the coordinator's irregular event-driven cadence.
+    peak_window_start: datetime | None = None
+    peak_window_wh: float = 0.0
+    peak_window_degraded: bool = False  # part of this window went unmeasured
+    peak_seen_good: bool = False  # a trustworthy reading arrived in this window
+    peak_sample_t: datetime | None = None
+    peak_sample_w: float = 0.0
+    # Trailing 15-minute samples, for the display-only rolling average. Bounded by
+    # the trim in :func:`update_peak_window`, never read by the control path.
+    peak_rolling: list[tuple[datetime, float]] = field(default_factory=list)
+    # The month record — the number that actually gets billed. Only *completed*,
+    # non-degraded windows update it.
+    month_key: str = ""  # "2027-01"
+    month_peak_w: float = 0.0
+    month_peak_at: datetime | None = None
+    prev_month_peak_w: float = 0.0
+    peak_history: list[tuple[datetime, float]] = field(default_factory=list)
+    # Tier hysteresis, mirroring the phase machine: ``peak_tier_want`` is the tier
+    # currently being confirmed, armed at ``peak_tier_want_since``.
+    peak_tier: str = "off"  # "off" | "soft" | "hard"
+    peak_tier_want: str | None = None
+    peak_tier_want_since: datetime | None = None
+    peak_changed_at: datetime | None = None
+    # The cap in force (A). Falls freely, rises only after the dwell.
+    peak_cap_a: float | None = None
+    peak_cap_at: datetime | None = None
+    grid_charging: bool = False
 
 
 @dataclass(slots=True)
@@ -288,6 +378,41 @@ class Decision:
     resume_not_before: datetime | None = None
     pause_not_before: datetime | None = None
     phase_locked_until: datetime | None = None
+    # --- Peak protection -----------------------------------------------------------
+    # ``control`` above governs the *charger*. Peak protection also drives *house*
+    # outputs (the ESS grid setpoint, the minimum-SoC number, the battery-hold
+    # switch), and it does so under its own switch rather than under Smart control —
+    # a demand charge is money whether or not the brain is driving the wallbox. So
+    # the two permissions are separate. With peak protection off this is simply set
+    # to ``control``, which is exactly the old behaviour (the hold switch was written
+    # precisely when the brain controlled).
+    house_control: bool = False
+    peak_tier: str = "off"  # "off" | "soft" | "hard"
+    # The billing quarter-hour, surfaced for the sensors and the card.
+    peak_window_avg_w: float = 0.0  # running average so far
+    peak_projected_w: float = 0.0  # end-of-window average if the present draw holds
+    peak_allowed_w: float = 0.0  # total grid import allowed for the rest of it
+    peak_rolling_w: float = 0.0  # plain trailing 15-min average (display only)
+    peak_window_ends: datetime | None = None
+    peak_degraded: bool = False  # part of the window went unmeasured
+    month_peak_w: float = 0.0  # the highest completed window this month
+    # The three limits *in force* — i.e. after the month-peak allowance, which is why
+    # they can sit above the numbers the user typed. The card draws these, so the
+    # formula lives here rather than being repeated by the sensor.
+    peak_soft_w: float = 0.0
+    peak_target_w: float = 0.0
+    peak_hard_w: float = 0.0
+    # A second reason string, in the same shape as ``reason`` above, for the peak
+    # status sensor — kept separate so the charging reason never has to compete with
+    # it for the one line the card shows.
+    peak_reason: str = ""
+    peak_reason_key: str = ""
+    peak_reason_params: dict[str, str] = field(default_factory=dict)
+    # Values for the optional mapped Victron entities. None = don't write at all,
+    # which is what keeps an unmapped or disabled setup completely untouched.
+    grid_setpoint_w: float | None = None
+    battery_min_soc: float | None = None
+    grid_charging: bool = False  # deliberately importing on a cheap price
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
@@ -957,6 +1082,48 @@ _REASON_TEMPLATES: dict[str, str] = {
     "solar_min_topup": (
         "Minimum {amps} A (surplus only {surplus} W, topping up from grid)"
     ),
+    # --- Peak protection: the second reason line, on its own sensor ----------------
+    "peak_off": "Peak protection is off",
+    "peak_ok": "This quarter-hour is heading for {projected} kW — comfortable",
+    "peak_watch": (
+        "This quarter-hour is heading for {projected} kW, close to the {soft} kW "
+        "easing-off point"
+    ),
+    "peak_shaving_car": (
+        "Heading for {projected} kW — easing the car back to {amps} A to stay "
+        "under {target} kW"
+    ),
+    "peak_shaving_house": (
+        "Heading for {projected} kW — letting the home battery cover more of the "
+        "house to stay under {target} kW"
+    ),
+    "peak_holding": "Holding this quarter-hour under {target} kW — at {projected} kW",
+    "peak_pause": (
+        "Heading for {projected} kW — the car is paused until this quarter-hour "
+        "is over at {until}"
+    ),
+    "peak_battery_empty": (
+        "Heading for {projected} kW and the home battery is down to its {soc}% "
+        "floor — nothing left to shave with"
+    ),
+    "peak_degraded": (
+        "The grid reading was missing for part of this quarter-hour — holding the "
+        "current limit until {until} to be safe"
+    ),
+    "peak_month_headroom": (
+        "This month already peaked at {month} kW, so there is nothing to save by "
+        "holding below it — aiming at {target} kW, just under the record"
+    ),
+    # --- Cheap-hour grid charging --------------------------------------------------
+    "grid_charge_dark": (
+        "Cheap hour at {price}/kWh and little sun expected — importing {power} W "
+        "to fill the home battery to {target}%"
+    ),
+    "grid_charge_bright": (
+        "Cheap hour at {price}/kWh, but tomorrow looks bright — filling the home "
+        "battery only to {target}% so the sun has somewhere to go"
+    ),
+    "grid_charge_full": "Home battery at {soc}% — nothing left to buy this cheaply",
 }
 
 
@@ -967,6 +1134,755 @@ def _reason(key: str, **params: str) -> tuple[str, str, dict[str, str]]:
     ``Decision.reason`` plus the stable key and params the card localizes from.
     """
     return _REASON_TEMPLATES[key].format(**params), key, params
+
+
+# --- Peak protection: the capacity tariff (Leistungstarif) --------------------------
+#
+# The billed quantity is the highest *average grid import over a fixed clock
+# quarter-hour* in the month — not an instantaneous reading and not a rolling
+# window. Everything here follows from that one fact:
+#
+# * we integrate import energy over the current quarter-hour and compare the
+#   *projection* (where the average lands if the present draw holds) against the
+#   limits, so the guard reacts to where the window is heading;
+# * the throttle needs no ramp logic, because the remaining-budget formula already
+#   tightens smoothly as the window fills;
+# * a fresh quarter-hour is a fresh budget, so the guard relaxes on its own at every
+#   boundary rather than staying clamped;
+# * and once the month has already recorded a higher peak, holding below the target
+#   saves nothing at all — see :func:`_effective_targets`.
+
+#: The billing window (s).
+PEAK_WINDOW_S: float = 900.0
+
+#: Floor on "time remaining" when sizing the rest-of-window budget. Without it the
+#: budget diverges as the window closes: a big draw for the last two seconds really
+#: does barely move a 15-minute average, but acting on that would just make the amps
+#: leap at every boundary. With it, the last minute is deliberately conservative.
+_PEAK_MIN_REMAINING_S: float = 60.0
+
+#: A sample gap longer than this means part of the window went unmeasured.
+_PEAK_MAX_GAP_S: float = 120.0
+
+#: How far the projection must fall back below a limit before the tier releases, so
+#: a projection sitting on the threshold can't chatter.
+_PEAK_HYSTERESIS_W: float = 150.0
+
+#: Completed quarter-hours kept for the card's history strip (96 = 24 h).
+_PEAK_HISTORY_LEN: int = 96
+
+#: Tier ordering, for "is this tightening or relaxing?".
+_PEAK_RANK: dict[str, int] = {"off": 0, "soft": 1, "hard": 2}
+
+
+@dataclass(slots=True)
+class PeakWindow:
+    """The current billing quarter-hour, as measured so far.
+
+    ``average_w`` is what the window has drawn to date; ``projected_w`` is where it
+    lands if the present draw holds, and is what the tiers compare against;
+    ``allowed_w`` is the total grid import the *rest* of the window may take and
+    still finish at the target. ``soft_w``/``target_w``/``hard_w`` are the limits
+    actually in force, i.e. after the month-peak allowance — always read the tiers
+    off these, never off :func:`_peak_thresholds`, which returns the raw settings.
+    """
+
+    start: datetime | None
+    elapsed_s: float
+    remaining_s: float
+    imported_wh: float
+    average_w: float
+    projected_w: float
+    allowed_w: float
+    rolling_w: float  # plain trailing 15-min average — display only, never control
+    soft_w: float
+    target_w: float
+    hard_w: float
+    month_peak_w: float
+    degraded: bool  # part of this window went unmeasured → tighten only
+
+
+def _window_start(now: datetime) -> datetime:
+    """Floor to the clock quarter-hour the grid operator measures against."""
+    return now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+
+
+def _peak_thresholds(cfg: EngineConfig) -> tuple[float, float, float]:
+    """The three limits, ordered ``soft ≤ target ≤ hard``.
+
+    The user can set three independent numbers in any order; rather than sorting
+    them (which would silently swap which knob means what) each is raised to at
+    least the one below it, so "start easing off at" always stays authoritative.
+    """
+    soft = max(0.0, cfg.peak_soft_w)
+    target = max(soft, cfg.peak_target_w)
+    return soft, target, max(target, cfg.peak_hard_w)
+
+
+def _peak_soc_floor(cfg: EngineConfig) -> float:
+    """The SoC peak protection may discharge down to, never above its own reserve."""
+    return min(cfg.peak_min_soc, cfg.shaving_reserve_soc)
+
+
+def _effective_targets(
+    cfg: EngineConfig,
+    state: EngineState,
+    soft_w: float,
+    target_w: float,
+    hard_w: float,
+) -> tuple[float, float, float]:
+    """The limits in force, after the month-peak allowance.
+
+    A demand charge is set by the month's *highest* quarter-hour, so once one window
+    has already gone to 5.2 kW, holding the next one under 3.7 kW saves nothing —
+    it only costs a slower charge for the rest of the month. With the allowance on
+    (the default) the limits float up to whatever the month has already cost.
+
+    But *up to* it, not *onto* it: aiming exactly at the record is a ratchet. The
+    projection is an estimate and the house is not perfectly steerable, so a window
+    aimed at 5.2 kW eventually lands at 5.25 — which becomes the new record, which
+    raises the ceiling again, and the month creeps upward one overshoot at a time.
+    So the target lands a buffer *below* the record and the hard limit sits on it:
+    we steer for just under what is already bought, and cut before buying more.
+
+    The soft line travels the same distance as the target rather than staying put.
+    It means "start easing off", and easing off two kilowatts below a ceiling we
+    have deliberately decided not to defend is not caution — it is discharging the
+    home battery for a saving that cannot happen, since the charge is already
+    booked. Keeping the gap between the two constant keeps the warning where it
+    belongs: just under whatever is actually being enforced.
+    """
+    if not cfg.peak_follow_month or state.month_peak_w <= 0.0:
+        return soft_w, target_w, hard_w
+    buffer_w = max(0.0, cfg.peak_month_buffer_w)
+    target = max(target_w, state.month_peak_w - buffer_w)
+    return (
+        soft_w + (target - target_w),
+        target,
+        max(hard_w, state.month_peak_w),
+    )
+
+
+def _month_key(start: datetime, tz: tzinfo | None) -> str:
+    """The billed month of a window, on the *user's* calendar.
+
+    A demand charge is billed per calendar month, and the calendar in question is
+    the one on the wall — so this has to be resolved in local time. Doing it in UTC
+    rolls the record at 01:00 or 02:00 local, which both files the first hour of a
+    new month against the old one and lets the old month's peak keep raising the
+    ceiling after it has stopped being billable.
+    """
+    local = start.astimezone(tz) if tz is not None else start
+    return f"{local.year:04d}-{local.month:02d}"
+
+
+def _local_hhmm(when: datetime, cfg: EngineConfig) -> str:
+    """A wall-clock time for a reason string — the only place a user reads one."""
+    return f"{when.astimezone(cfg.local_tz) if cfg.local_tz is not None else when:%H:%M}"
+
+
+def _open_window(
+    state: EngineState, start: datetime, *, degraded: bool, tz: tzinfo | None = None
+) -> None:
+    """Begin a quarter-hour, rolling the month record if this one starts a new one.
+
+    The roll happens on *open*, not on close: the demand charge resets with the
+    calendar, so the first quarter-hour of a month must already be measured against
+    a clean record — otherwise the month-peak allowance would spend its first
+    fifteen minutes still permitting last month's peak.
+    """
+    key = _month_key(start, tz)
+    if key != state.month_key:
+        state.prev_month_peak_w = state.month_peak_w if state.month_key else 0.0
+        state.month_key = key
+        state.month_peak_w = 0.0
+        state.month_peak_at = None
+    state.peak_window_start = start
+    state.peak_window_wh = 0.0
+    state.peak_window_degraded = degraded
+
+
+def _close_window(state: EngineState) -> None:
+    """Record the window that just ended: the history strip and the month record."""
+    start = state.peak_window_start
+    if start is None:
+        return
+    average = state.peak_window_wh * 3600.0 / PEAK_WINDOW_S
+    state.peak_history.append((start, average))
+    if len(state.peak_history) > _PEAK_HISTORY_LEN:
+        del state.peak_history[:-_PEAK_HISTORY_LEN]
+
+    # Only a window we could actually account for may set the record: a guessed
+    # number must never become the one the card calls "your bill".
+    if not state.peak_window_degraded and average > state.month_peak_w:
+        state.month_peak_w = average
+        state.month_peak_at = start
+
+
+def _time_weighted_mean(
+    samples: list[tuple[datetime, float]], now: datetime, cutoff: datetime
+) -> float:
+    """Zero-order-hold mean of ``(t, value)`` samples over ``[cutoff, now]``.
+
+    A meter reports a *level*, not an event, so each sample counts for the time
+    until the next one — which is what makes this correct under the coordinator's
+    irregular, event-driven cadence.
+    """
+    if not samples:
+        return 0.0
+    total = 0.0
+    span = 0.0
+    for index, (stamp, value) in enumerate(samples):
+        end = samples[index + 1][0] if index + 1 < len(samples) else now
+        seconds = (end - max(stamp, cutoff)).total_seconds()
+        if seconds <= 0.0:
+            continue
+        total += value * seconds
+        span += seconds
+    return total / span if span > 0.0 else samples[-1][1]
+
+
+def update_peak_window(
+    now: datetime | None,
+    grid_w: float | None,
+    cfg: EngineConfig,
+    state: EngineState,
+) -> PeakWindow:
+    """Advance the billing quarter-hour and return it.
+
+    Deliberately takes primitives rather than a :class:`ChargerInputs`: the
+    coordinator bails out *before* it can assemble a snapshot when the grid or
+    charger reading is missing, and that is precisely the moment the window must
+    keep advancing — a frozen accumulator would silently under-count the very
+    quarter-hour a failed sensor is hiding.
+
+    Runs whether or not peak protection is enabled: measuring writes nothing, and
+    being able to watch your peaks for a month before switching anything on is the
+    point.
+    """
+    soft_w, target_w, hard_w = _peak_thresholds(cfg)
+    eff_soft, eff_target, eff_hard = _effective_targets(
+        cfg, state, soft_w, target_w, hard_w
+    )
+
+    if now is None:
+        # Stateless one-shot reasoning: no clock, so no window — the same convention
+        # every other timer in this module follows.
+        return PeakWindow(
+            start=None, elapsed_s=0.0, remaining_s=PEAK_WINDOW_S, imported_wh=0.0,
+            average_w=0.0, projected_w=0.0, allowed_w=0.0, rolling_w=0.0,
+            soft_w=eff_soft, target_w=eff_target, hard_w=eff_hard,
+            month_peak_w=state.month_peak_w, degraded=False,
+        )
+
+    start = _window_start(now)
+    last_t = state.peak_sample_t
+    held_w = max(0.0, state.peak_sample_w)
+
+    if state.peak_window_start is None:
+        # First sample ever, or a restart with nothing stored: whatever the elapsed
+        # part of this quarter-hour drew, we didn't see it.
+        _open_window(state, start, degraded=now > start, tz=cfg.local_tz)
+        last_t = None
+    elif last_t is None:
+        # A window restored from disk, but without the sample clock that belongs to
+        # it (a store written by an older build). Its own start is then the last
+        # moment we can vouch for, and there is no reading to carry across the gap:
+        # the accumulator already holds everything that was measured before the
+        # restart, so carrying anything here would double-count it.
+        last_t = state.peak_window_start
+        held_w = 0.0
+
+    if last_t is not None and now > last_t:
+        # How far behind we are is the *older* of two clocks: the last sample and
+        # the window still standing open. They come apart across a restart — the
+        # sample clock can be seconds old while the open window is a day old — and
+        # walking that apart window-by-window would mint a full quarter-hour of
+        # history per step out of one live reading, each one looking complete enough
+        # to set the month record.
+        behind_t = min(last_t, state.peak_window_start or last_t)
+        gap = (now - last_t).total_seconds()
+        stale = gap > _PEAK_MAX_GAP_S
+        if (now - behind_t).total_seconds() > PEAK_WINDOW_S * 2:
+            # A long outage. Don't walk hundreds of windows to get here — close the
+            # one we were in and start clean, degraded.
+            _close_window(state)
+            _open_window(state, start, degraded=True, tz=cfg.local_tz)
+        else:
+            # Carry the last reading across the gap rather than assuming zero:
+            # under-counting is the one error that would let a real peak through.
+            while state.peak_window_start is not None and state.peak_window_start != start:
+                end = state.peak_window_start + timedelta(seconds=PEAK_WINDOW_S)
+                covered = (end - max(last_t, state.peak_window_start)).total_seconds()
+                state.peak_window_wh += held_w * max(0.0, covered) / 3600.0
+                if stale:
+                    state.peak_window_degraded = True
+                _close_window(state)
+                _open_window(state, end, degraded=stale, tz=cfg.local_tz)
+                last_t = end
+            covered = (now - max(last_t, start)).total_seconds()
+            state.peak_window_wh += held_w * max(0.0, covered) / 3600.0
+            if stale:
+                state.peak_window_degraded = True
+
+    if grid_w is None:
+        # No reading this cycle. The held sample above still covers the time, but we
+        # are guessing from here on, so the guard may only tighten.
+        state.peak_window_degraded = True
+    else:
+        state.peak_sample_w = max(0.0, grid_w)  # export never lowers an import peak
+        state.peak_seen_good = True
+    state.peak_sample_t = now
+
+    # The display-only trailing average, kept beside (never inside) the control path.
+    state.peak_rolling.append((now, state.peak_sample_w))
+    cutoff = now - timedelta(seconds=PEAK_WINDOW_S)
+    while len(state.peak_rolling) > 2 and state.peak_rolling[1][0] <= cutoff:
+        del state.peak_rolling[0]
+
+    window_start = state.peak_window_start or start
+    elapsed = max(0.0, (now - window_start).total_seconds())
+    remaining = max(0.0, PEAK_WINDOW_S - elapsed)
+    imported_wh = state.peak_window_wh
+    live_w = state.peak_sample_w
+    return PeakWindow(
+        start=window_start,
+        elapsed_s=elapsed,
+        remaining_s=remaining,
+        imported_wh=imported_wh,
+        average_w=imported_wh * 3600.0 / elapsed if elapsed >= 1.0 else live_w,
+        projected_w=(imported_wh * 3600.0 + live_w * remaining) / PEAK_WINDOW_S,
+        allowed_w=max(
+            0.0,
+            (eff_target * PEAK_WINDOW_S - imported_wh * 3600.0)
+            / max(remaining, _PEAK_MIN_REMAINING_S),
+        ),
+        rolling_w=_time_weighted_mean(state.peak_rolling, now, cutoff),
+        soft_w=eff_soft,
+        target_w=eff_target,
+        hard_w=eff_hard,
+        month_peak_w=state.month_peak_w,
+        degraded=state.peak_window_degraded,
+    )
+
+
+def resolve_peak_tier(
+    now: datetime | None, window: PeakWindow, cfg: EngineConfig, state: EngineState
+) -> str:
+    """Which tier the projection puts us in — ``"off"``, ``"soft"`` or ``"hard"``.
+
+    Same three-layer shape as the phase machine (hysteresis band, confirmation hold,
+    dwell), but deliberately **asymmetric**: escalating to hard is a safety stop and
+    happens on the spot, while every relaxation has to be confirmed *and* wait out
+    the dwell. Tightening early costs a slower charge; relaxing early costs money.
+    """
+    if not cfg.peak_guard_enabled or window.start is None or now is None:
+        state.peak_tier = "off"
+        state.peak_tier_want = None
+        state.peak_tier_want_since = None
+        state.peak_cap_a = None
+        state.peak_cap_at = None
+        return "off"
+
+    # The limits *in force*, not the raw settings: with the month-peak allowance on,
+    # the enforced target can sit well above the configured soft line, and comparing
+    # against the raw one would engage the shave — draining the home battery — to
+    # defend a level we have deliberately decided not to defend.
+    soft = window.soft_w
+    current = state.peak_tier if state.peak_tier in _PEAK_RANK else "off"
+    projected = window.projected_w
+
+    if projected >= window.hard_w:
+        desired = "hard"
+    elif current == "hard" and projected >= window.target_w:
+        desired = "hard"  # hold hard until the projection is back under the target
+    elif projected >= soft:
+        desired = "soft"
+    elif current != "off" and projected >= soft - _PEAK_HYSTERESIS_W:
+        desired = "soft"  # hold soft through the hysteresis band
+    else:
+        desired = "off"
+
+    if desired == current:
+        state.peak_tier_want = None
+        state.peak_tier_want_since = None
+        return current
+
+    tightening = _PEAK_RANK[desired] > _PEAK_RANK[current]
+
+    if desired == "hard":
+        # No confirmation, no dwell: by the time a 120 s window has confirmed, the
+        # quarter-hour it was protecting is a third gone.
+        state.peak_tier = "hard"
+        state.peak_changed_at = now
+        state.peak_tier_want = None
+        state.peak_tier_want_since = None
+        return "hard"
+
+    hold_s = cfg.peak_confirm_s if tightening else cfg.peak_release_s
+    if state.peak_tier_want != desired or state.peak_tier_want_since is None:
+        state.peak_tier_want = desired
+        state.peak_tier_want_since = now
+    if (now - state.peak_tier_want_since).total_seconds() < hold_s:
+        return current
+
+    if not tightening:
+        # A window we can't fully account for may tighten but never relax.
+        if window.degraded:
+            return current
+        if (
+            state.peak_changed_at is not None
+            and (now - state.peak_changed_at).total_seconds() < cfg.peak_dwell_s
+        ):
+            return current
+
+    state.peak_tier = desired
+    state.peak_changed_at = now
+    state.peak_tier_want = None
+    state.peak_tier_want_since = None
+    return desired
+
+
+def _peak_current_cap(
+    inp: ChargerInputs, cfg: EngineConfig, window: PeakWindow, phases: int
+) -> float:
+    """The highest whole-amp charging current that still fits the import budget.
+
+    The car may have what the budget leaves *after* the rest of the house has taken
+    its share — plus whatever it is already drawing from solar or the home battery,
+    which never crossed the grid meter in the first place. That last term is why a
+    car running on pure PV is not trimmed at all: stopping it would export the
+    surplus, not reduce the import.
+
+    Snapped down (and *not* through :func:`_quantize_current`, whose floor is the
+    hardware minimum): a protective cap has to be able to say "less than 6 A", which
+    is how the hard tier learns it must pause instead of trim.
+    """
+    split = compute_car_sources(compute_power_flow(inp))
+    non_car_w = max(0.0, inp.grid_power_w - split.grid_w)
+    budget_w = (
+        max(0.0, window.allowed_w - non_car_w) + split.solar_w + split.battery_w
+    )
+    amps = _power_to_current(budget_w, max(1, phases), inp.voltage_v)
+    return max(0.0, math.floor(min(amps, cfg.max_current_a) + _AMP_EPSILON))
+
+
+def _rate_limit_cap(
+    cap_a: float, now: datetime | None, cfg: EngineConfig, state: EngineState
+) -> float:
+    """Let the cap fall at once but rise only after the dwell.
+
+    Trimming is safety and is never delayed. Relaxing is comfort, and letting it
+    follow every upward wobble of the budget — a kettle switching off, a cloud
+    passing — is exactly how the amps would start flapping.
+    """
+    previous = state.peak_cap_a
+    if now is None or previous is None or cap_a <= previous:
+        state.peak_cap_a = cap_a
+        state.peak_cap_at = now
+        return cap_a
+    if (
+        state.peak_cap_at is not None
+        and (now - state.peak_cap_at).total_seconds() < cfg.peak_dwell_s
+    ):
+        return previous
+    state.peak_cap_a = cap_a
+    state.peak_cap_at = now
+    return cap_a
+
+
+def _attach_window(decision: Decision, window: PeakWindow) -> None:
+    """Surface the measurement on the decision — always, enabled or not."""
+    decision.peak_window_avg_w = window.average_w
+    decision.peak_projected_w = window.projected_w
+    decision.peak_allowed_w = window.allowed_w
+    decision.peak_rolling_w = window.rolling_w
+    decision.peak_degraded = window.degraded
+    decision.month_peak_w = window.month_peak_w
+    decision.peak_soft_w = window.soft_w
+    decision.peak_target_w = window.target_w
+    decision.peak_hard_w = window.hard_w
+    if window.start is not None:
+        decision.peak_window_ends = window.start + timedelta(seconds=PEAK_WINDOW_S)
+
+
+def _peak_status_reason(
+    inp: ChargerInputs | None,
+    cfg: EngineConfig,
+    window: PeakWindow,
+    tier: str,
+    capped_a: float | None,
+    *,
+    paused: bool,
+) -> tuple[str, str, dict[str, str]]:
+    """The plain-language answer to "what is peak protection doing right now?"."""
+    if not cfg.peak_guard_enabled:
+        return _reason("peak_off")
+
+    # Raw settings here, deliberately: this pair is only used to explain that the
+    # month-peak allowance has *lifted* the limits off what was configured.
+    raw_soft, raw_target, _raw_hard = _peak_thresholds(cfg)
+    projected = f"{window.projected_w / 1000.0:.2f}"
+    until = (
+        _local_hhmm(window.start + timedelta(seconds=PEAK_WINDOW_S), cfg)
+        if window.start is not None
+        else "the next quarter-hour"
+    )
+
+    if window.degraded:
+        return _reason("peak_degraded", until=until)
+    if paused:
+        return _reason("peak_pause", projected=projected, until=until)
+    if tier in ("soft", "hard"):
+        floor = _peak_soc_floor(cfg)
+        if inp is not None and inp.battery_soc is not None and inp.battery_soc <= floor:
+            return _reason(
+                "peak_battery_empty", projected=projected, soc=f"{floor:.0f}"
+            )
+        target_kw = f"{window.target_w / 1000.0:.2f}"
+        if capped_a is not None:
+            return _reason(
+                "peak_shaving_car",
+                projected=projected,
+                amps=f"{capped_a:.0f}",
+                target=target_kw,
+            )
+        if inp is not None and inp.car_connected:
+            # A car is plugged in and the budget isn't binding on it — we are
+            # watching, not intervening, and the reason should not overclaim.
+            return _reason("peak_holding", projected=projected, target=target_kw)
+        # No car to ease back: the home battery is the only lever there is.
+        return _reason("peak_shaving_house", projected=projected, target=target_kw)
+    # Above what you configured, but the month has already bought more than that —
+    # so we are *not* shaving, and saying why is the whole point of this line.
+    if window.month_peak_w > raw_target and window.projected_w >= raw_soft:
+        return _reason(
+            "peak_month_headroom",
+            month=f"{window.month_peak_w / 1000.0:.2f}",
+            target=f"{window.target_w / 1000.0:.2f}",
+        )
+    if window.projected_w >= window.soft_w - _PEAK_HYSTERESIS_W:
+        return _reason(
+            "peak_watch", projected=projected, soft=f"{window.soft_w / 1000.0:.2f}"
+        )
+    return _reason("peak_ok", projected=projected)
+
+
+def apply_peak_guard(
+    decision: Decision,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    window: PeakWindow,
+    tier: str,
+) -> Decision:
+    """Apply the capacity-tariff ceiling on top of whatever the arbiter decided.
+
+    A ceiling, not a proposal: the arbiter takes the *highest* bid, so a strategy
+    wanting to charge less has no way to win. Sitting after it instead means this
+    covers every branch uniformly — Manual, Fast, ride-out, idle, and the no-car
+    branch, which is the one that matters most. A sauna sets the monthly peak
+    whether or not a car is plugged in, and the levers for that are the home
+    battery's, not the wallbox's.
+
+    Disabled, this is a single early return that changes nothing: ``house_control``
+    mirroring ``control`` is exactly the old rule, under which the hold switch was
+    written precisely when the brain was driving the charger.
+    """
+    _attach_window(decision, window)
+    decision.peak_tier = tier
+
+    if not cfg.peak_guard_enabled or window.start is None or not state.peak_seen_good:
+        # Off, clockless, or no trustworthy reading has arrived yet. Never shave
+        # blind on a cold start — measure, report, write nothing.
+        decision.house_control = decision.control
+        decision.peak_tier = "off" if not cfg.peak_guard_enabled else tier
+        decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+            _peak_status_reason(inp, cfg, window, tier, None, paused=False)
+        )
+        return decision
+
+    # Peak protection answers to its own switch, not to Smart control: a demand
+    # charge is money whether or not the brain is currently driving the wallbox.
+    decision.house_control = True
+    engaged = tier in ("soft", "hard")
+
+    # --- House levers ---------------------------------------------------------------
+    # The minimum-SoC number is *owned* while this is on: it sits at the shaving
+    # reserve normally, so ordinary house loads can't quietly drain the battery flat,
+    # and drops to the floor while shaving. That drop is what actually releases the
+    # headroom — and it works with no car anywhere near the house.
+    decision.battery_min_soc = (
+        _peak_soc_floor(cfg) if engaged else cfg.shaving_reserve_soc
+    )
+    decision.grid_setpoint_w = 0.0 if tier == "hard" else cfg.grid_setpoint_w
+    if engaged:
+        # Shaving means the battery has to be allowed to discharge, whatever the car
+        # brain — or the user's Auto/Hold/Free control — would otherwise have said.
+        decision.hold_battery = False
+        decision.hold_source = "peak"
+
+    # --- The wallbox cap ------------------------------------------------------------
+    capped_a: float | None = None
+    paused = False
+    if not engaged or not inp.car_connected:
+        state.peak_cap_a = None
+        state.peak_cap_at = None
+    else:
+        phases = max(1, decision.target_phases or inp.phases)
+        budget_a = _rate_limit_cap(
+            _peak_current_cap(inp, cfg, window, phases), inp.now, cfg, state
+        )
+        if tier == "hard" and budget_a < HARDWARE_MIN_CURRENT_A:
+            # Not even the hardware minimum fits. Stop — and note this reaches a
+            # charger the brain is otherwise not driving (Smart control off, Manual
+            # passive), because a demand charge, once bought, cannot be un-bought.
+            # A car is connected (the branch above guarantees it), so this is a
+            # pause we are actively holding, whatever the charger was doing before.
+            paused = True
+            decision.control = True
+            decision.should_charge = False
+            decision.target_current_a = 0.0
+        elif decision.control and decision.should_charge:
+            # Soft never pauses; it eases off, down to the hardware minimum.
+            limit_a = max(HARDWARE_MIN_CURRENT_A, min(budget_a, cfg.max_current_a))
+            if limit_a < decision.target_current_a:
+                decision.target_current_a = limit_a
+                capped_a = limit_a
+
+    decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+        _peak_status_reason(inp, cfg, window, tier, capped_a, paused=paused)
+    )
+
+    # The Status sensor's reason has to survive being overruled here, and the two
+    # kinds of override need different answers.
+    #
+    # A pause contradicts it outright: the arbiter's line says "Fast charging at
+    # 16 A" while the car stands at 0 A, and no amount of context makes that true.
+    # The peak line saying the right thing beside it is a second opinion, not a
+    # substitute for the first one being correct — so the pause takes the reason.
+    if paused:
+        decision.reason = decision.peak_reason
+        decision.reason_key = decision.peak_reason_key
+        decision.reason_params = decision.peak_reason_params
+    elif capped_a is not None and "amps" in decision.reason_params:
+        # A trim does not contradict it — the car really is fast-charging, just at
+        # fewer amps — so the arbiter keeps the explanation and only the number is
+        # corrected. Quoting the current we asked for instead of the one we wrote
+        # is the whole falsehood, and the peak line explains the difference.
+        decision.reason, decision.reason_key, decision.reason_params = _reason(
+            decision.reason_key, **{**decision.reason_params, "amps": f"{capped_a:.0f}"}
+        )
+
+    return decision
+
+
+def _grid_charge_target(cfg: EngineConfig, inp: ChargerInputs) -> float:
+    """How deep to fill the home battery from the grid, given tomorrow's forecast.
+
+    The forecast's job is not "is it winter" — it is *don't fill the battery from
+    the grid the night before a bright day*, where the sun would have done it for
+    free and the paid-for charge only leaves the PV nowhere to go. With no forecast
+    mapped we assume the pessimistic case, which is the safe one.
+    """
+    if inp.pv_forecast_kwh is None or inp.pv_forecast_kwh < cfg.pv_forecast_low_kwh:
+        return cfg.dark_day_target_soc
+    return cfg.bright_day_target_soc
+
+
+def apply_grid_charge(
+    decision: Decision,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    window: PeakWindow,
+    tier: str,
+) -> Decision:
+    """Buy energy into the home battery while the price is low.
+
+    On an ESS the grid setpoint *is* total grid import, so what we command here is
+    exactly the quantity a capacity tariff bills — which is the whole trick. Importing
+    hard in a cheap hour is precisely how a demand charge gets bought by accident;
+    capping the command by the live quarter-hour budget turns it into a steady draw
+    that collects the cheap energy without the peak.
+
+    Strictly last in line: peak protection outranks it absolutely.
+    """
+    if not cfg.grid_charge_enabled:
+        state.grid_charging = False
+        return decision
+
+    # Whichever feature is on owns the setpoint, so it always has a resting value to
+    # return to — otherwise a cheap hour would end with the setpoint left up.
+    decision.house_control = True
+    if decision.grid_setpoint_w is None:
+        decision.grid_setpoint_w = cfg.grid_setpoint_w
+
+    if tier != "off" or inp.price_now is None or inp.price_now > cfg.cheap_price:
+        state.grid_charging = False
+        return decision
+
+    target_soc = _grid_charge_target(cfg, inp)
+    soc = inp.battery_soc
+    if soc is None or soc >= target_soc:
+        state.grid_charging = False
+        if soc is not None:
+            decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+                _reason("grid_charge_full", soc=f"{soc:.0f}")
+            )
+        return decision
+
+    # What the grid must serve regardless of the battery (house + car − PV): the
+    # setpoint is a *total*, so the charge rate we want sits on top of it, and the
+    # ceiling then clamps the sum. If the house alone is already at the ceiling the
+    # battery simply doesn't charge — which is the correct answer, not a failure.
+    soft, _target, _hard = _peak_thresholds(cfg)
+    net_load_w = max(0.0, inp.grid_power_w - (inp.battery_power_w or 0.0))
+    ceiling_w = min(soft, window.allowed_w) if window.start is not None else soft
+    setpoint_w = max(
+        0.0, min(net_load_w + cfg.cheap_charge_power_w, ceiling_w)
+    )
+
+    decision.grid_setpoint_w = setpoint_w
+    decision.grid_charging = True
+    state.grid_charging = True
+    key = (
+        "grid_charge_bright"
+        if target_soc == cfg.bright_day_target_soc
+        and inp.pv_forecast_kwh is not None
+        and cfg.bright_day_target_soc != cfg.dark_day_target_soc
+        else "grid_charge_dark"
+    )
+    decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+        _reason(
+            key,
+            price=f"{inp.price_now:.3f}",
+            power=f"{setpoint_w:.0f}",
+            target=f"{target_soc:.0f}",
+        )
+    )
+    return decision
+
+
+def attach_peak_status(
+    decision: Decision,
+    cfg: EngineConfig,
+    state: EngineState,
+    window: PeakWindow,
+    tier: str,
+) -> Decision:
+    """Surface the peak measurement on a decision built outside :func:`decide`.
+
+    The coordinator bails out before it can assemble a snapshot when the grid or
+    charger reading is missing. The quarter-hour still has to be measured and shown,
+    so that path calls :func:`update_peak_window` and then this.
+    """
+    _attach_window(decision, window)
+    decision.peak_tier = tier
+    decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+        _peak_status_reason(None, cfg, window, tier, None, paused=False)
+    )
+    return decision
 
 
 # --- Strategies + arbiter -----------------------------------------------------------
@@ -1184,9 +2100,17 @@ def decide(
     used by the arbiter *and* surfaced on the decision (the card's plan strip),
     and a final pass applies the home-battery override and the countdown
     deadlines that were previously private to :class:`EngineState`.
+
+    Peak protection runs either side of that: the billing quarter-hour is measured
+    *before* every gate (it is billed whether or not the brain may act, and the
+    sensors stay live either way), and the ceiling is applied *after* the arbiter
+    and the finalizer, so it can override the home-battery decision they just made.
     """
     if state is None:
         state = EngineState()
+
+    window = update_peak_window(inp.now, inp.grid_power_w, cfg, state)
+    tier = resolve_peak_tier(inp.now, window, cfg, state)
 
     plan: _Plan | None = None
     if cfg.smart_enabled and cfg.mode is ChargingMode.SMART and inp.car_connected:
@@ -1194,7 +2118,9 @@ def decide(
         plan = _compute_plan(inp, cfg, grid_phases)
 
     decision = _decide(inp, cfg, state, plan)
-    return _finalize(decision, inp, cfg, state, plan)
+    decision = _finalize(decision, inp, cfg, state, plan)
+    decision = apply_peak_guard(decision, inp, cfg, state, window, tier)
+    return apply_grid_charge(decision, inp, cfg, state, window, tier)
 
 
 def _finalize(

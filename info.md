@@ -23,6 +23,18 @@ limits**.
 - **No more pointless export:** once the battery is comfortably charged (halfway between your
   reserve line and full), the whole-amp charging current rounds *up* rather than down — the
   last few hundred watts come from the nearly-full battery instead of going to the grid.
+- **Peak protection for the 2027 capacity tariff:** grid operators will bill on the **highest
+  15-minute average grid import** in the month, so one unlucky quarter-hour sets a charge that
+  stands until the month ends. The brain measures the *billing* quarter-hour, projects where it
+  is heading, and holds it under your target — easing the wallbox back and letting the home
+  battery cover more of the house. A **household** layer: a sauna sets the peak whether or not
+  a car is plugged in. **Off by default** (and off means exactly the old behaviour), while the
+  measurement still runs so you can watch your peaks before switching it on. Once a month has
+  already peaked higher, the limits float up to just under that peak — you get the headroom you
+  have already paid for, without the record creeping up further.
+- **Cheap-hour grid charging:** buy energy into the home battery while the price is low, deep
+  when tomorrow looks dark and only shallow when it looks bright. Capped by the peak budget, so
+  it imports steadily instead of in the spike that would set a monthly peak.
 - **Fast on the knob, slow on the switches:** the charging current follows the solar surplus
   within seconds, while starting, stopping and phase switching wait for it to hold — and the
   card's countdown before a solar start is a button, so you can skip that wait.
@@ -31,11 +43,13 @@ limits**.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).
 - **SteVe metering & control:** per-RFID kWh, session sensors, and services to authorize/block
   tags and remote start/stop charging.
-- **Two bundled Lovelace cards** — a *Smart Charging* card (a live **answer strip**: how much of
-  the charge is solar/battery/grid right now, the brain's reason, chips for the battery-hold
-  shield and price/dwell state, a plan strip with a draggable price target, and inline controls)
-  and a *Price* card (electricity-price forecast with a draggable "cheap" threshold). Both are
-  **auto-registered** on install: just add them from the dashboard card picker.
+- **Three bundled Lovelace cards** — a *Smart Charging* card (a live **answer strip**: how much
+  of the charge is solar/battery/grid right now, the brain's reason, chips for the battery-hold
+  shield and price/dwell state, a plan strip with a draggable price target, and inline controls),
+  a *Price* card (electricity-price forecast with a draggable "cheap" threshold), and a *Peak
+  protection* card (the month's billed peak, the live billing quarter-hour against your limits,
+  what set the peak, and the settings inline). All are **auto-registered** on install: just add
+  them from the dashboard card picker.
 
 After installing, restart Home Assistant and add the integration via
 *Settings → Devices & Services*.

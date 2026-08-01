@@ -32,20 +32,37 @@ from .const import (
     CONF_GRID_POWER,
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
+    CONF_PV_FORECAST,
     CONF_PV_POWER,
     CONF_PHASES,
     CONF_STEVE_PASSWORD,
     CONF_STEVE_URL,
     CONF_STEVE_USERNAME,
+    CONF_VICTRON_MIN_SOC,
+    CONF_VICTRON_SETPOINT,
     CONF_VOLTAGE,
     DEFAULT_AUTO_PHASE,
     DEFAULT_BATTERY_RESERVE_SOC,
+    DEFAULT_BRIGHT_DAY_TARGET_SOC,
+    DEFAULT_CHEAP_CHARGE_POWER_W,
     DEFAULT_CHEAP_PRICE,
+    DEFAULT_DARK_DAY_TARGET_SOC,
+    DEFAULT_GRID_CHARGE_ENABLED,
+    DEFAULT_GRID_SETPOINT_W,
     DEFAULT_MAX_CURRENT,
     DEFAULT_MIN_CURRENT,
+    DEFAULT_PEAK_FOLLOW_MONTH,
+    DEFAULT_PEAK_MONTH_BUFFER_W,
+    DEFAULT_PEAK_GUARD_ENABLED,
+    DEFAULT_PEAK_HARD_W,
+    DEFAULT_PEAK_MIN_SOC,
+    DEFAULT_PEAK_SOFT_W,
+    DEFAULT_PEAK_TARGET_W,
     DEFAULT_PHASES,
     DEFAULT_PRICE_FORECAST_ATTR,
+    DEFAULT_PV_FORECAST_LOW_KWH,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SHAVING_RESERVE_SOC,
     DEFAULT_TARGET_ENERGY_KWH,
     DEFAULT_VOLTAGE,
     DOMAIN,
@@ -53,6 +70,9 @@ from .const import (
     INPUT_SETTLE_S,
     MIN_UPDATE_INTERVAL_S,
     MIN_WRITE_DELTA_A,
+    PEAK_CONFIRM_S,
+    PEAK_DWELL_S,
+    PEAK_RELEASE_S,
     PHASE_CONFIRM_S,
     PHASE_DWELL_S,
     PHASE_UP_MARGIN_W,
@@ -71,13 +91,28 @@ from .engine import (
     EngineConfig,
     EngineState,
     PriceSlot,
+    attach_peak_status,
     decide,
+    resolve_peak_tier,
+    update_peak_window,
 )
 from .forecast import dedupe_slots, parse_forecast
 from .goe_mqtt import FRC_NEUTRAL, FRC_OFF, FRC_ON, GoeMqttClient
 from .steve_api import SteVeApiClient, SteVeApiError, SteVeData
 
 _LOGGER = logging.getLogger(__name__)
+
+# Write deadbands for the optional Victron numbers. These sit on a bus we should not
+# chatter at, and neither value is worth a service call for a rounding difference.
+_SETPOINT_DEADBAND_W: float = 25.0
+_MIN_SOC_DEADBAND_PCT: float = 1.0
+
+# How often the billing window + month record are persisted. Frequent enough that a
+# crash loses at most this much of a quarter-hour, rare enough not to churn the disk.
+_PEAK_SAVE_INTERVAL_S: float = 30.0
+# Completed windows kept in the store (the engine holds 24 h; 4 h is plenty to
+# redraw the card's history strip after a restart).
+_PEAK_SAVE_HISTORY: int = 16
 
 
 @dataclass(slots=True)
@@ -105,6 +140,25 @@ class RuntimeSettings:
     manual_charge: bool = False
     manual_current_a: float = DEFAULT_MAX_CURRENT
     manual_phases: int = DEFAULT_PHASES
+    # --- Peak protection (capacity tariff) --------------------------------------
+    # Off by default: with it off the brain behaves exactly as it did before, while
+    # the measurement still runs so the peak sensors are usable from day one.
+    # Limits are stored in watts; the number entities present them in kW.
+    peak_guard_enabled: bool = DEFAULT_PEAK_GUARD_ENABLED
+    peak_soft_w: float = DEFAULT_PEAK_SOFT_W
+    peak_target_w: float = DEFAULT_PEAK_TARGET_W
+    peak_hard_w: float = DEFAULT_PEAK_HARD_W
+    peak_follow_month: bool = DEFAULT_PEAK_FOLLOW_MONTH
+    peak_month_buffer_w: float = DEFAULT_PEAK_MONTH_BUFFER_W
+    shaving_reserve_soc: float = DEFAULT_SHAVING_RESERVE_SOC
+    peak_min_soc: float = DEFAULT_PEAK_MIN_SOC
+    # --- Cheap-hour grid charging -------------------------------------------------
+    grid_charge_enabled: bool = DEFAULT_GRID_CHARGE_ENABLED
+    grid_setpoint_w: float = DEFAULT_GRID_SETPOINT_W
+    cheap_charge_power_w: float = DEFAULT_CHEAP_CHARGE_POWER_W
+    bright_day_target_soc: float = DEFAULT_BRIGHT_DAY_TARGET_SOC
+    dark_day_target_soc: float = DEFAULT_DARK_DAY_TARGET_SOC
+    pv_forecast_low_kwh: float = DEFAULT_PV_FORECAST_LOW_KWH
 
 
 class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
@@ -169,6 +223,24 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # refresh via async_restore_hold_state().
         self._last_written_hold: bool | None = None
         self._hold_store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}_hold")
+        # Peak protection's two house outputs, same ownership rule as the hold: a
+        # value we never wrote is a value we never touch on release. Unlike the
+        # charger — which has a neutral state to hand back to — a number entity has
+        # no "nobody is driving me" position, so releasing one means putting back
+        # what was on it when we took over. That reading is captured on the first
+        # write and persisted beside the hold, because the moment it matters most is
+        # a restart: without it, turning peak protection off after a reboot would
+        # strand the ESS setpoint wherever the last shave left it (0 W at the hard
+        # tier) with nothing left that remembers the entity is ours to give back.
+        self._last_written_setpoint: float | None = None
+        self._last_written_min_soc: float | None = None
+        self._setpoint_before: float | None = None
+        self._min_soc_before: float | None = None
+        # The billing quarter-hour and the month record, persisted so a restart
+        # mid-window doesn't blind the guard or lose the number that gets billed.
+        # Saved at most every PEAK_SAVE_INTERVAL_S so this never churns the disk.
+        self._peak_store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}_peak")
+        self._peak_saved_at: datetime | None = None
         # True for the window after the user switches *into* Manual mode but before
         # they touch a manual control: we leave the charger exactly as it was — no
         # writes, no releases — so entering Manual never disturbs a running session.
@@ -186,6 +258,16 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """Hand the v1→v2 reserve seed to the reserve number, at most once."""
         seed, self._reserve_seed = self._reserve_seed, None
         return seed
+
+    @property
+    def engine_state(self) -> EngineState:
+        """The engine's carry-over memory, for sensors that surface it directly.
+
+        Read-only by convention: the month record and the completed-window history
+        live here because the engine maintains them, and the peak sensors would
+        otherwise have no way to reach them.
+        """
+        return self._state
 
     @property
     def has_phase_control(self) -> bool:
@@ -321,14 +403,27 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
     async def _async_update_data(self) -> Decision:
         connected = self.goe.car_connected
         grid_raw = self._get_float(CONF_GRID_POWER)
+        cfg = self._engine_config()
 
         # Required signals missing/stale → keep hands off rather than guess.
         if connected is None or grid_raw is None:
             # Still refresh the price cache so the price card renders without a car.
             self._read_price()
-            return Decision(
-                control=False,
-                reason="Waiting for charger / grid data",
+            # …and still advance the billing quarter-hour. This is exactly the path a
+            # dead grid sensor takes, which is precisely when a frozen accumulator
+            # would silently under-count the quarter-hour the failure is hiding.
+            # ``grid_w=None`` holds the last reading across the gap and marks the
+            # window degraded, so the guard may only tighten from here.
+            now = dt_util.utcnow()
+            window = update_peak_window(now, grid_raw, cfg, self._state)
+            tier = resolve_peak_tier(now, window, cfg, self._state)
+            await self._save_peak_state(now)
+            return attach_peak_status(
+                Decision(control=False, reason="Waiting for charger / grid data"),
+                cfg,
+                self._state,
+                window,
+                tier,
             )
 
         price_now, forecast = self._read_price()
@@ -347,11 +442,36 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             battery_power_w=self._get_float(CONF_BATTERY_POWER),
             price_now=price_now,
             price_forecast=forecast,
+            pv_forecast_kwh=self._get_float(CONF_PV_FORECAST),
             session_delivered_kwh=self._session_delivered_kwh(connected),
             now=dt_util.utcnow(),
         )
         self.last_inputs = inputs
-        cfg = EngineConfig(
+
+        decision = decide(inputs, cfg, self._state)
+        await self._save_peak_state(inputs.now)
+        # In the passive window right after switching into Manual, leave the
+        # *charger* exactly as it was: no force write, no release, until the user
+        # takes over via a manual control.
+        #
+        # The house is a different question. Peak protection answers to its own
+        # switch rather than to the charging mode, and the levers it uses to shave
+        # — the ESS setpoint, the minimum SoC, the battery hold — have nothing to
+        # do with what the wallbox is doing. Suppressing those here used to make
+        # the soft tier a no-op for as long as the passive window lasted: it would
+        # measure, report that it was shaving, and write nothing, until the
+        # projection escalated to hard. So the passive window now covers only what
+        # it is actually about — and even there the hard tier still gets through,
+        # because it may have turned this into an active stop (``control`` forced
+        # True), which is a safety decision and outranks the passive window.
+        await self._apply(
+            decision, charger=not self._manual_passive or decision.peak_tier == "hard"
+        )
+        return decision
+
+    def _engine_config(self) -> EngineConfig:
+        """Assemble the engine's settings from the live tunables + static constants."""
+        return EngineConfig(
             mode=self.settings.mode,
             smart_enabled=self.settings.smart_enabled,
             min_current_a=self.settings.min_current_a,
@@ -380,29 +500,73 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             discharge_release_s=BATTERY_DISCHARGE_RELEASE_S,
             start_confirm_s=START_CONFIRM_S,
             stop_ride_out_s=STOP_RIDE_OUT_S,
+            peak_guard_enabled=self.settings.peak_guard_enabled,
+            peak_soft_w=self.settings.peak_soft_w,
+            peak_target_w=self.settings.peak_target_w,
+            peak_hard_w=self.settings.peak_hard_w,
+            peak_follow_month=self.settings.peak_follow_month,
+            peak_month_buffer_w=self.settings.peak_month_buffer_w,
+            shaving_reserve_soc=self.settings.shaving_reserve_soc,
+            peak_min_soc=self.settings.peak_min_soc,
+            peak_confirm_s=PEAK_CONFIRM_S,
+            peak_release_s=PEAK_RELEASE_S,
+            peak_dwell_s=PEAK_DWELL_S,
+            grid_charge_enabled=self.settings.grid_charge_enabled,
+            grid_setpoint_w=self.settings.grid_setpoint_w,
+            cheap_charge_power_w=self.settings.cheap_charge_power_w,
+            bright_day_target_soc=self.settings.bright_day_target_soc,
+            dark_day_target_soc=self.settings.dark_day_target_soc,
+            pv_forecast_low_kwh=self.settings.pv_forecast_low_kwh,
+            # The engine works in UTC; the billed month and any clock time it puts
+            # in front of a user are the wall calendar's, so hand it ours.
+            local_tz=dt_util.DEFAULT_TIME_ZONE,
         )
 
-        decision = decide(inputs, cfg, self._state)
-        # In the passive window right after switching into Manual, leave the
-        # charger exactly as it was: skip applying entirely (no writes, no
-        # releases) until the user takes over via a manual control.
-        if not self._manual_passive:
-            await self._apply(decision)
-        return decision
+    async def _apply(self, decision: Decision, *, charger: bool = True) -> None:
+        """Write the decision out: house outputs first, then the charger.
 
-    async def _apply(self, decision: Decision) -> None:
-        """Write target current/phases to the go-e, avoiding redundant writes."""
+        Two permissions, deliberately separate. ``house_control`` governs the home
+        battery's levers (the ESS grid setpoint, the minimum-SoC number, the hold
+        switch); ``control`` governs the charger. Peak protection answers to its own
+        switch rather than to Smart control, so it can keep managing the house while
+        the wallbox is handed back to the app — and, at its hard tier, stop the
+        charger even when the brain is otherwise not driving it.
+
+        With peak protection and cheap-hour charging both off, ``house_control``
+        simply equals ``control`` and this behaves exactly as it always did.
+
+        ``charger=False`` is Manual's passive window: write the house, but leave the
+        wallbox untouched — not even a release — until the user takes over.
+        """
+        # House outputs first, and before the rate-limited charger writes below, so
+        # they are never starved by the throttle. Both are no-ops when no entity is
+        # mapped, and hand the entity back when the engine has nothing to say.
+        if decision.house_control:
+            await self._write_setpoint(decision.grid_setpoint_w)
+            await self._write_min_soc(decision.battery_min_soc)
+        else:
+            await self._release_setpoint()
+            await self._release_min_soc()
+
+        # The hold switch may gate the *whole house's* battery, so the long-standing
+        # rule holds: only drive it when we actually have an opinion — the car brain
+        # is driving, or peak protection is deliberately releasing the battery to
+        # shave. Otherwise release only what we know we turned on ourselves, and in
+        # the passive window not even that: releasing is still a write.
+        if decision.control or decision.hold_source == "peak":
+            await self._write_hold(decision.hold_battery)
+        elif charger:
+            await self._release_hold()
+
+        if not charger:
+            return
+
         if not decision.control:
             self._last_written_a = None  # we relinquished control
             await self._release_force()  # hand the charger back to manual/app
-            await self._release_hold()  # let the home battery discharge again
             return
 
         now = dt_util.utcnow()
-
-        # Drive the battery-hold switch every controlling cycle, before the
-        # rate-limited current write below so it is never starved by the throttle.
-        await self._write_hold(decision.hold_battery)
 
         # Start/stop via the go-e force-state (frc): the amp value floors at the
         # 6 A hardware minimum, so it can't actually pause charging. When pausing,
@@ -492,22 +656,35 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self._last_written_force = None
 
     async def async_restore_hold_state(self) -> None:
-        """Restore the last battery-hold state we wrote, persisted across restarts.
+        """Restore what we own on the house side, persisted across restarts.
 
         Call once during setup, before the first engine run. Without it a restart
-        forgets whether *we* turned the switch on: a hands-off first cycle would
-        then leave it on (``_release_hold`` only acts on a remembered on-state),
-        cutting the whole house off from the battery until a car reconnects. We
-        still only ever release a switch we set, so one you manage yourself is
-        left alone.
+        forgets whether *we* turned the hold switch on: a hands-off first cycle
+        would then leave it on (``_release_hold`` only acts on a remembered
+        on-state), cutting the whole house off from the battery until a car
+        reconnects. The same applies to peak protection's two number entities —
+        forgetting those means never giving them back. We still only ever release
+        something we set, so an entity you manage yourself is left alone.
         """
         try:
             data = await self._hold_store.async_load()
         except Exception as err:  # noqa: BLE001 - a bad store must never block setup
             _LOGGER.warning("Could not restore battery-hold state: %s", err)
             return
-        if data is not None:
-            self._last_written_hold = data.get("hold")
+        if data is None:
+            return
+        self._last_written_hold = data.get("hold")
+
+        def _float_or_none(value: object) -> float | None:
+            try:
+                return None if value is None else float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+
+        self._last_written_setpoint = _float_or_none(data.get("setpoint"))
+        self._setpoint_before = _float_or_none(data.get("setpoint_before"))
+        self._last_written_min_soc = _float_or_none(data.get("min_soc"))
+        self._min_soc_before = _float_or_none(data.get("min_soc_before"))
 
     async def _write_hold(self, hold: bool) -> None:
         """Drive the battery-hold switch so the car draws grid, not the battery.
@@ -531,7 +708,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             )
             self._last_written_hold = hold
             # Persist immediately so a restart can't forget we own an on-switch.
-            await self._hold_store.async_save({"hold": hold})
+            await self._save_house_ownership()
         except Exception as err:  # noqa: BLE001 - never let a write break the loop
             _LOGGER.warning("Failed to set battery-hold via %s: %s", hold_entity, err)
 
@@ -543,6 +720,225 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """
         if self._last_written_hold:
             await self._write_hold(False)
+
+    # --- Peak protection: the house outputs -------------------------------------
+    async def _write_number(
+        self, conf_key: str, value: float, last: float | None, deadband: float
+    ) -> float | None:
+        """Set a mapped ``number``/``input_number``, skipping redundant writes.
+
+        Returns the value now believed to be on the entity, or ``last`` when nothing
+        was written. A no-op (returning ``last``) when no entity is mapped, which is
+        what keeps an unconfigured setup completely untouched. The deadband matters
+        here: these entities sit on a Victron bus that we should not chatter at.
+        """
+        entity_id = self._cfg.get(conf_key)
+        if not entity_id:
+            return last
+        if last is not None and abs(value - last) < deadband:
+            return last
+        domain = entity_id.split(".", 1)[0]
+        try:
+            await self.hass.services.async_call(
+                domain,
+                "set_value",
+                {"entity_id": entity_id, "value": value},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001 - never let a write break the loop
+            _LOGGER.warning("Failed to set %s to %s: %s", entity_id, value, err)
+            return last
+        return value
+
+    async def _write_setpoint(self, value: float | None) -> None:
+        """Command the ESS grid setpoint (the total grid import we want).
+
+        ``None`` means the engine has nothing to say — peak protection and
+        cheap-hour charging are both off — so the entity goes back to whatever it
+        held before we first touched it, and is then left entirely alone.
+        """
+        if value is None:
+            await self._release_setpoint()
+            return
+        owned = self._last_written_setpoint is not None
+        if not owned:
+            self._setpoint_before = self._get_float(CONF_VICTRON_SETPOINT)
+        self._last_written_setpoint = await self._write_number(
+            CONF_VICTRON_SETPOINT, value, self._last_written_setpoint, _SETPOINT_DEADBAND_W
+        )
+        # Persist only on the cycle we actually take the entity over — which never
+        # happens when none is mapped, so an unconfigured setup writes no disk.
+        if not owned and self._last_written_setpoint is not None:
+            await self._save_house_ownership()
+
+    async def _write_min_soc(self, value: float | None) -> None:
+        """Command the ESS minimum SoC — the shaving reserve, or the peak floor.
+
+        While peak protection is on this entity is *owned*: it rests at the shaving
+        reserve so ordinary house loads can't drain the battery flat, and drops to
+        the peak floor while shaving. Those two values are the whole contract while
+        we hold it — we never try to blend a user's own edits into them — but the
+        contract does end, and :meth:`_release_min_soc` is how.
+        """
+        if value is None:
+            await self._release_min_soc()
+            return
+        owned = self._last_written_min_soc is not None
+        if not owned:
+            self._min_soc_before = self._get_float(CONF_VICTRON_MIN_SOC)
+        self._last_written_min_soc = await self._write_number(
+            CONF_VICTRON_MIN_SOC, value, self._last_written_min_soc, _MIN_SOC_DEADBAND_PCT
+        )
+        if not owned and self._last_written_min_soc is not None:
+            await self._save_house_ownership()
+
+    async def _release_setpoint(self) -> None:
+        """Hand the ESS grid setpoint back once nothing wants it any more.
+
+        The counterpart to :meth:`_release_force` and :meth:`_release_hold`: acts
+        only on an entity we know we took over, so one the user manages themselves
+        is never written. Without this, switching peak protection off at the hard
+        tier would leave the house permanently commanded to import 0 W.
+        """
+        if self._last_written_setpoint is None:
+            return
+        restore, self._setpoint_before = self._setpoint_before, None
+        self._last_written_setpoint = None
+        if restore is not None:
+            # Deadband 0 against a ``last`` of None: this write must not be skipped.
+            await self._write_number(CONF_VICTRON_SETPOINT, restore, None, 0.0)
+        await self._save_house_ownership()
+
+    async def _release_min_soc(self) -> None:
+        """Hand the ESS minimum SoC back — see :meth:`_release_setpoint`."""
+        if self._last_written_min_soc is None:
+            return
+        restore, self._min_soc_before = self._min_soc_before, None
+        self._last_written_min_soc = None
+        if restore is not None:
+            await self._write_number(CONF_VICTRON_MIN_SOC, restore, None, 0.0)
+        await self._save_house_ownership()
+
+    async def _save_house_ownership(self) -> None:
+        """Persist which house numbers are ours and what they held before.
+
+        Shares the hold store: it is the record of what we have taken over on the
+        house side, and all of it has the same failure mode if forgotten — an
+        entity left where we put it with nobody left who knows to give it back.
+        """
+        try:
+            await self._hold_store.async_save(self._house_ownership())
+        except Exception as err:  # noqa: BLE001 - never let a save break the loop
+            _LOGGER.warning("Could not persist house-lever ownership: %s", err)
+
+    def _house_ownership(self) -> dict[str, object]:
+        """Everything we have taken over on the house side, as one stored record.
+
+        A ``None`` last-written value means "not ours" — which is why the values go
+        in rather than a separate ownership flag: 0 W is a perfectly real setpoint
+        for us to be holding, and a boolean beside it could disagree with it.
+        """
+        return {
+            "hold": self._last_written_hold,
+            "setpoint": self._last_written_setpoint,
+            "setpoint_before": self._setpoint_before,
+            "min_soc": self._last_written_min_soc,
+            "min_soc_before": self._min_soc_before,
+        }
+
+    async def async_restore_peak_state(self) -> None:
+        """Restore the billing quarter-hour and the month record across a restart.
+
+        Without this a restart in the middle of a quarter-hour starts the window
+        from zero — blind to whatever was already drawn — and, worse, forgets the
+        month's peak, which is the number that actually gets billed. The restored
+        window is marked degraded, so the guard may only tighten until the next
+        clean boundary.
+        """
+        try:
+            data = await self._peak_store.async_load()
+        except Exception as err:  # noqa: BLE001 - a bad store must never block setup
+            _LOGGER.warning("Could not restore peak state: %s", err)
+            return
+        if not data:
+            return
+        try:
+            start = data.get("window_start")
+            if start:
+                self._state.peak_window_start = dt_util.parse_datetime(start)
+                self._state.peak_window_wh = float(data.get("window_wh", 0.0))
+                self._state.peak_window_degraded = True
+                # The sample clock belongs with the window it measured. Restoring
+                # the window without it leaves the engine unable to tell a two-second
+                # restart from a two-day outage, and the wrong answer there is the
+                # expensive one: it back-fills the missed quarter-hours from the
+                # first live reading and books the result as this month's peak.
+                sample_t = data.get("sample_t")
+                self._state.peak_sample_t = (
+                    dt_util.parse_datetime(sample_t) if sample_t else None
+                )
+                self._state.peak_sample_w = float(data.get("sample_w", 0.0))
+            self._state.month_key = data.get("month_key", "")
+            self._state.month_peak_w = float(data.get("month_peak_w", 0.0))
+            self._state.prev_month_peak_w = float(data.get("prev_month_peak_w", 0.0))
+            at = data.get("month_peak_at")
+            self._state.month_peak_at = dt_util.parse_datetime(at) if at else None
+            self._state.peak_history = [
+                (dt_util.parse_datetime(stamp), float(value))
+                for stamp, value in data.get("history", [])
+                if dt_util.parse_datetime(stamp) is not None
+            ]
+        except (TypeError, ValueError) as err:
+            _LOGGER.warning("Ignoring unreadable peak state: %s", err)
+
+    async def _save_peak_state(self, now: datetime | None) -> None:
+        """Persist the window + month record, at most every few dozen seconds."""
+        if now is None:
+            return
+        if (
+            self._peak_saved_at is not None
+            and (now - self._peak_saved_at).total_seconds() < _PEAK_SAVE_INTERVAL_S
+        ):
+            return
+        self._peak_saved_at = now
+        state = self._state
+        try:
+            await self._peak_store.async_save(
+                {
+                    "window_start": (
+                        state.peak_window_start.isoformat()
+                        if state.peak_window_start
+                        else None
+                    ),
+                    "window_wh": state.peak_window_wh,
+                    "sample_t": (
+                        state.peak_sample_t.isoformat() if state.peak_sample_t else None
+                    ),
+                    "sample_w": state.peak_sample_w,
+                    "month_key": state.month_key,
+                    "month_peak_w": state.month_peak_w,
+                    "month_peak_at": (
+                        state.month_peak_at.isoformat() if state.month_peak_at else None
+                    ),
+                    "prev_month_peak_w": state.prev_month_peak_w,
+                    "history": [
+                        (stamp.isoformat(), value)
+                        for stamp, value in state.peak_history[-_PEAK_SAVE_HISTORY:]
+                    ],
+                }
+            )
+        except Exception as err:  # noqa: BLE001 - never let a save break the loop
+            _LOGGER.warning("Could not persist peak state: %s", err)
+
+    def reset_month_peak(self) -> None:
+        """Forget this month's recorded peak (the *Reset* button).
+
+        For when the operator's own meter reading disagrees with ours, or after a
+        one-off that shouldn't shape the rest of the month's throttling.
+        """
+        self._state.month_peak_w = 0.0
+        self._state.month_peak_at = None
+        self._peak_saved_at = None
 
     def set_manual_passive(self, passive: bool) -> None:
         """Arm or clear the Manual-mode passive window.

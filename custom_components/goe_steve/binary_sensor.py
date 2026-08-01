@@ -27,8 +27,41 @@ async def async_setup_entry(
             BatteryHoldBinarySensor(coordinator),
             CarConnectedBinarySensor(coordinator),
             ChargingAllowedBinarySensor(coordinator),
+            PeakGuardActiveBinarySensor(coordinator),
         ]
     )
+
+
+class PeakGuardActiveBinarySensor(GoeSteveEntity, BinarySensorEntity):
+    """On while peak protection is actively holding this quarter-hour down.
+
+    The ``tier`` attribute distinguishes *soft* (easing off) from *hard* (cutting
+    now), which makes this the documented hook for your own load-shedding: the
+    brain can trim the wallbox and lean on the home battery, but it has no way to
+    turn off a sauna, so anything beyond that has to be your automation.
+    """
+
+    _attr_icon = "mdi:transmission-tower-off"
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "peak_guard_active")
+
+    @property
+    def is_on(self) -> bool:
+        data = self.coordinator.data
+        return bool(data and data.peak_tier in ("soft", "hard"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None:
+            return {}
+        return {
+            "tier": data.peak_tier,
+            "projected_w": round(data.peak_projected_w),
+            "allowed_w": round(data.peak_allowed_w),
+            "degraded": data.peak_degraded,
+        }
 
 
 class ControllingBinarySensor(GoeSteveEntity, BinarySensorEntity):

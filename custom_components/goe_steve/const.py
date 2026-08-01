@@ -23,6 +23,21 @@ CONF_BATTERY_POWER: Final = "battery_power_entity"
 CONF_BATTERY_HOLD: Final = "battery_hold_entity"
 CONF_PRICE: Final = "price_entity"
 CONF_PRICE_FORECAST_ATTR: Final = "price_forecast_attr"
+# --- Peak protection: optional Victron/ESS steering entities (all best-effort) ------
+# Deliberately generic number entities the user maps themselves rather than a tight
+# coupling to Victron's own integration. Each is a no-op when unmapped.
+#
+# The ESS grid setpoint ("hold grid import at X W"). On an ESS this *is* total grid
+# import, so writing it commands exactly the quantity a capacity tariff bills.
+CONF_VICTRON_SETPOINT: Final = "victron_setpoint_entity"
+# The ESS "Minimum SoC (unless grid fails)" number. Peak protection owns it while
+# enabled, holding it at the shaving reserve and dropping it to the peak floor while
+# actively shaving — that drop is what physically unlocks the discharge headroom.
+CONF_VICTRON_MIN_SOC: Final = "victron_min_soc_entity"
+# A solar-forecast sensor (Forecast.Solar / Solcast style, kWh expected tomorrow).
+# Its job is not "is it winter" but "don't fill the battery from the grid the night
+# before a bright day" — see the bright/dark targets below.
+CONF_PV_FORECAST: Final = "pv_forecast_entity"
 # --- Charger link: direct go-e MQTT (v4+) -----------------------------------------
 # The brain talks to the go-e charger over its native MQTT instead of mapping
 # entities from a separate go-e integration. Only the base topic is needed:
@@ -78,6 +93,67 @@ DEFAULT_PHASES: Final = 3
 DEFAULT_BATTERY_RESERVE_SOC: Final = 100.0
 DEFAULT_CHEAP_PRICE: Final = 0.15  # currency/kWh — at/below this, grid is "cheap"
 DEFAULT_TARGET_ENERGY_KWH: Final = 0.0  # kWh — 0 disables deadline planning
+
+# --- Peak protection (capacity tariff / Leistungstarif) ----------------------------
+# From 2027 Austrian grid operators bill households on the highest average grid
+# import over a *fixed clock quarter-hour* (:00/:15/:30/:45) in the month. The three
+# limits below are compared against the *projected* end-of-window average, so the
+# brain reacts to where the quarter-hour is heading rather than to a spike.
+#
+# Off by default: with it off the integration behaves exactly as it did before, and
+# the measurement still runs so you can watch your peaks for a month before acting.
+DEFAULT_PEAK_GUARD_ENABLED: Final = False
+DEFAULT_PEAK_SOFT_W: Final = 3300.0  # start easing the wallbox down
+DEFAULT_PEAK_TARGET_W: Final = 3700.0  # the steady-state ceiling we aim to hold
+DEFAULT_PEAK_HARD_W: Final = 3900.0  # cut immediately; pause the car if need be
+# Once a window has already set 5.2 kW, shaving to 3.7 kW for the rest of the month
+# saves nothing — the demand charge is booked. On by default; turn it off for a
+# strict ceiling regardless of what the month has already cost.
+DEFAULT_PEAK_FOLLOW_MONTH: Final = True
+# The allowance aims this far *below* the month's record instead of at it. Without
+# the gap it ratchets: a window aimed at the record eventually lands just over it,
+# that becomes the new record, and the ceiling creeps up all month. The hard limit
+# still sits on the record itself, so the buffer costs nothing but a little margin.
+DEFAULT_PEAK_MONTH_BUFFER_W: Final = 200.0
+# The SoC ladder. Normally the mapped Victron minimum-SoC sits at the shaving
+# reserve, so ordinary house loads can't drain the battery flat; while shaving it
+# drops to the peak floor, releasing that banked headroom exactly when it is worth
+# money. Clamped so the floor never sits above the reserve.
+DEFAULT_SHAVING_RESERVE_SOC: Final = 50.0
+DEFAULT_PEAK_MIN_SOC: Final = 35.0
+# Tier hysteresis. Escalation to *hard* is immediate (it is a safety stop);
+# everything else confirms first, and every release also waits out the dwell.
+PEAK_CONFIRM_S: Final = 120.0
+PEAK_RELEASE_S: Final = 120.0
+PEAK_DWELL_S: Final = 60.0
+# How far the projection must fall back below the soft limit before the tier
+# releases, so a projection hovering on the threshold doesn't chatter.
+PEAK_HYSTERESIS_W: Final = 150.0
+# A sample gap longer than this means part of the quarter-hour went unmeasured. The
+# last reading is still held across it (never under-count), but the window is marked
+# degraded and peak protection may then only tighten, never relax.
+PEAK_MAX_GAP_S: Final = 120.0
+# The billing window, and the floor on "time remaining" used when sizing the
+# remaining import budget — it both avoids a divide-by-zero as the window closes and
+# makes the last minute deliberately conservative.
+PEAK_WINDOW_S: Final = 900.0
+PEAK_MIN_REMAINING_S: Final = 60.0
+# How many completed quarter-hours to keep for the card's history strip (24 h).
+PEAK_HISTORY_LEN: Final = 96
+
+# --- Cheap-hour grid charging -------------------------------------------------------
+# Buy energy into the home battery (and run the house from the grid) while the price
+# is at/below the same "cheap price" threshold the car uses. The commanded ESS grid
+# setpoint *is* the total import, so this is capped by the live peak budget and
+# imports steadily instead of spiking — cheap energy without a demand charge.
+DEFAULT_GRID_CHARGE_ENABLED: Final = False
+DEFAULT_GRID_SETPOINT_W: Final = 50.0  # the normal ESS import setpoint
+DEFAULT_CHEAP_CHARGE_POWER_W: Final = 2000.0  # what we'd import in a cheap hour
+# Target SoC depends on tomorrow, not on the calendar: fill deep when the forecast
+# is poor, stop early when it is good so there is room for the PV to land in.
+DEFAULT_BRIGHT_DAY_TARGET_SOC: Final = 40.0
+DEFAULT_DARK_DAY_TARGET_SOC: Final = 80.0
+DEFAULT_PV_FORECAST_LOW_KWH: Final = 8.0  # below this, tomorrow counts as "dark"
 
 # --- Phase switching (static engine behaviour) -------------------------------------
 DEFAULT_AUTO_PHASE: Final = False  # off until the user maps a phase-control entity

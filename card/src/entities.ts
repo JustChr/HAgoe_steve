@@ -37,6 +37,27 @@ export interface ResolvedEntities {
   min_current?: string;
   price_forecast?: string;
   cheap_price?: string;
+  // Peak protection (the capacity tariff). All optional: the peak card degrades to
+  // whatever it can find, and the main card hides its strip entirely when absent.
+  peak_window_power?: string;
+  monthly_peak?: string;
+  rolling_grid_power?: string;
+  peak_status?: string;
+  peak_guard_active?: string;
+  peak_guard?: string;
+  peak_follow_month?: string;
+  grid_charge?: string;
+  peak_soft_limit?: string;
+  peak_target_limit?: string;
+  peak_hard_limit?: string;
+  peak_month_buffer?: string;
+  shaving_reserve_soc?: string;
+  peak_min_soc?: string;
+  grid_setpoint?: string;
+  cheap_charge_power?: string;
+  bright_day_target_soc?: string;
+  dark_day_target_soc?: string;
+  reset_monthly_peak?: string;
   active_transaction?: string;
   last_session_energy?: string;
   selected_tag?: string;
@@ -107,6 +128,26 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.min_current = find("min_current");
   result.price_forecast = find("price_forecast");
   result.cheap_price = find("cheap_price");
+
+  result.peak_window_power = find("peak_window_power");
+  result.monthly_peak = find("monthly_peak");
+  result.rolling_grid_power = find("rolling_grid_power");
+  result.peak_status = find("peak_status");
+  result.peak_guard_active = find("peak_guard_active");
+  result.peak_guard = find("peak_guard");
+  result.peak_follow_month = find("peak_follow_month");
+  result.grid_charge = find("grid_charge");
+  result.peak_soft_limit = find("peak_soft_limit");
+  result.peak_target_limit = find("peak_target_limit");
+  result.peak_hard_limit = find("peak_hard_limit");
+  result.peak_month_buffer = find("peak_month_buffer");
+  result.shaving_reserve_soc = find("shaving_reserve_soc");
+  result.peak_min_soc = find("peak_min_soc");
+  result.grid_setpoint = find("grid_setpoint");
+  result.cheap_charge_power = find("cheap_charge_power");
+  result.bright_day_target_soc = find("bright_day_target_soc");
+  result.dark_day_target_soc = find("dark_day_target_soc");
+  result.reset_monthly_peak = find("reset_monthly_peak");
   result.active_transaction = find("active_transaction");
   result.last_session_energy = find("last_session_energy");
   result.selected_tag = find("selected_tag");
