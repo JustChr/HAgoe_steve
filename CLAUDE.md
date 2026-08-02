@@ -76,6 +76,11 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
 - **Entity discovery in the cards** goes by registry `translation_key` (entity_id suffix
   as fallback). If you add/rename entities, update `card/src/entities.ts` and both
   `strings.json` and `translations/` (EN + DE are maintained in parallel).
+- **Cards may only use HA frontend components that a dashboard actually loads.** `ha-textfield`
+  is lazily registered and is *not* defined on a plain dashboard: the tag stays un-upgraded and
+  renders 0 px tall, so the row looks empty with no error anywhere (this cost v5.5.0's peak-card
+  number rows). `ha-entity-toggle`, `ha-icon-button` and `ha-control-number-buttons` are loaded;
+  when in doubt, check `customElements.get(...)` on a dashboard page or draw the control yourself.
 - **Safety invariant:** if the car isn't connected or required input data is stale, the
   brain must not write to the charger; with the *Smart control* switch off it is fully
   hands-off **as far as the charger goes**. Since peak protection, that switch no longer

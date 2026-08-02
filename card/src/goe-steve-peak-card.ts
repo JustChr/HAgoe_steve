@@ -1,5 +1,6 @@
 import { LitElement, html, css, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { ifDefined } from "lit/directives/if-defined.js";
 
 import "./goe-steve-peak-card-editor";
 import { resolveEntities, findDevices, type ResolvedEntities } from "./entities";
@@ -48,6 +49,12 @@ const HOUR_MS = 3600_000;
 const num = (v: unknown): number => {
   const n = Number(v);
   return Number.isNaN(n) ? NaN : n;
+};
+
+/** `min`/`max` only mean something if the entity actually reports them. */
+const bound = (v: unknown): string | undefined => {
+  const n = num(v);
+  return Number.isNaN(n) ? undefined : String(n);
 };
 
 /** Seconds → "3:07", for the countdown to the end of the quarter-hour. */
@@ -369,18 +376,34 @@ export class GoeStevePeakCard extends LitElement {
           </div>`
         : nothing;
 
-    const numberRow = (id: string | undefined) =>
-      id
-        ? html`<div class="setting">
-            <span class="setting-name">${this._friendlyName(id)}</span>
-            <ha-textfield
-              type="number"
-              .value=${this._stateObj(id)?.state ?? ""}
-              .step=${num(this._stateObj(id)?.attributes?.step) || 1}
-              @change=${(ev: Event) => this._setNumber(id, ev)}
-            ></ha-textfield>
-          </div>`
-        : nothing;
+    // A plain <input>, not `ha-textfield`: HA loads that component lazily, and on a
+    // dashboard it is never registered — the tag then stays un-upgraded and renders
+    // as a 0 px-tall nothing, leaving every number row looking empty. The card styles
+    // the input itself, so it works in every context (dashboard, preview, editor).
+    const numberRow = (id: string | undefined) => {
+      const stateObj = id ? this._stateObj(id) : undefined;
+      if (!id || !stateObj) return nothing;
+      const attrs = stateObj.attributes ?? {};
+      const unit = attrs.unit_of_measurement as string | undefined;
+      const unavailable = stateObj.state === "unavailable" || stateObj.state === "unknown";
+      return html`<div class="setting">
+        <span class="setting-name">${this._friendlyName(id)}</span>
+        <span class="numfield">
+          <input
+            type="number"
+            inputmode="decimal"
+            .value=${unavailable ? "" : stateObj.state}
+            step=${num(attrs.step) || 1}
+            min=${ifDefined(bound(attrs.min))}
+            max=${ifDefined(bound(attrs.max))}
+            ?disabled=${unavailable}
+            aria-label=${this._friendlyName(id)}
+            @change=${(ev: Event) => this._setNumber(id, ev)}
+          />
+          ${unit ? html`<span class="unit">${unit}</span>` : nothing}
+        </span>
+      </div>`;
+    };
 
     return html`<div class="settings">
       <div class="section-label">${this._t("peak.settings")}</div>
@@ -636,8 +659,49 @@ export class GoeStevePeakCard extends LitElement {
       .setting-name {
         font-size: 0.82rem;
       }
-      ha-textfield {
-        width: 108px;
+      .numfield {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex: 0 0 auto;
+        padding: 2px 8px;
+        border: 1px solid var(--divider-color);
+        border-radius: 8px;
+        background: var(--card-background-color, transparent);
+      }
+      .numfield:focus-within {
+        border-color: var(--goe-accent);
+      }
+      .numfield input {
+        width: 62px;
+        border: none;
+        padding: 4px 0;
+        background: none;
+        color: var(--primary-text-color);
+        font: inherit;
+        font-size: 0.86rem;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .numfield input:focus {
+        outline: none;
+      }
+      .numfield input:disabled {
+        color: var(--disabled-text-color, var(--secondary-text-color));
+      }
+      /* The spinners steal width and misfire on touch; the keyboard still steps. */
+      .numfield input::-webkit-outer-spin-button,
+      .numfield input::-webkit-inner-spin-button {
+        margin: 0;
+        -webkit-appearance: none;
+      }
+      .numfield input[type="number"] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+      }
+      .unit {
+        font-size: 0.76rem;
+        color: var(--secondary-text-color);
       }
       :focus-visible {
         outline: 2px solid var(--goe-accent);
