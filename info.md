@@ -35,6 +35,12 @@ limits**.
 - **Cheap-hour grid charging:** buy energy into the home battery while the price is low, deep
   when tomorrow looks dark and only shallow when it looks bright. Capped by the peak budget, so
   it imports steadily instead of in the spike that would set a monthly peak.
+- **Cheapest hours first, then any hour:** a battery on its floor can't shave anything, and in
+  a dark winter week the few cheap hours a day don't keep up. Set *Keep ready for peaks above*
+  and it's topped up below that level whatever the price — a floor, not a cap, so cheap hours
+  still fill deeper. Off by default.
+- **Stock up for tonight:** you know tonight is the sauna; the brain doesn't. One switch fills
+  the battery at any price *and holds it*, so the afternoon can't spend what the evening needs.
 - **Fast on the knob, slow on the switches:** the charging current follows the solar surplus
   within seconds, while starting, stopping and phase switching wait for it to hold — and the
   card's countdown before a solar start is a button, so you can skip that wait.

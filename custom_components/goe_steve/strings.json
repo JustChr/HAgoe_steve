@@ -173,7 +173,8 @@
       "auto_phase": { "name": "Automatic phase switching" },
       "peak_guard": { "name": "Peak protection" },
       "peak_follow_month": { "name": "Allow up to this month's peak" },
-      "grid_charge": { "name": "Cheap-hour grid charging" }
+      "grid_charge": { "name": "Cheap-hour grid charging" },
+      "stock_up": { "name": "Stock up for tonight" }
     },
     "number": {
       "manual_current": { "name": "Manual current" },
@@ -192,7 +193,9 @@
       "grid_setpoint": { "name": "Normal grid import" },
       "cheap_charge_power": { "name": "Cheap-hour import power" },
       "bright_day_target_soc": { "name": "Cheap-hour target, bright day" },
-      "dark_day_target_soc": { "name": "Cheap-hour target, dark day" }
+      "dark_day_target_soc": { "name": "Cheap-hour target, dark day" },
+      "peak_ready_soc": { "name": "Keep ready for peaks above" },
+      "stock_up_target_soc": { "name": "Stock-up target" }
     },
     "datetime": {
       "departure": { "name": "Departure time" }

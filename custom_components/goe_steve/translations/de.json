@@ -173,7 +173,8 @@
       "auto_phase": { "name": "Automatische Phasenumschaltung" },
       "peak_guard": { "name": "Lastspitzenschutz" },
       "peak_follow_month": { "name": "Monatsspitze ausschöpfen" },
-      "grid_charge": { "name": "Laden in günstigen Stunden" }
+      "grid_charge": { "name": "Laden in günstigen Stunden" },
+      "stock_up": { "name": "Für heute Abend vorladen" }
     },
     "number": {
       "manual_current": { "name": "Manueller Strom" },
@@ -192,7 +193,9 @@
       "grid_setpoint": { "name": "Normaler Netzbezug" },
       "cheap_charge_power": { "name": "Bezugsleistung in günstigen Stunden" },
       "bright_day_target_soc": { "name": "Zielstand, sonniger Tag" },
-      "dark_day_target_soc": { "name": "Zielstand, trüber Tag" }
+      "dark_day_target_soc": { "name": "Zielstand, trüber Tag" },
+      "peak_ready_soc": { "name": "Für Lastspitzen bereit ab" },
+      "stock_up_target_soc": { "name": "Zielstand beim Vorladen" }
     },
     "datetime": {
       "departure": { "name": "Abfahrtszeit" }

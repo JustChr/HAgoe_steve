@@ -104,6 +104,8 @@ const en: Dict = {
     "Planned cheap hour at {price}/kWh — {remaining} kWh to go by departure (protecting home battery → {amps} A)",
   "reason.deadline_urgent":
     "Charging now to make the departure target — {remaining} kWh to go",
+  "reason.deadline_urgent_peak":
+    "Charging at full power to make the departure target — {remaining} kWh to go, so this quarter-hour will go over your peak limit",
   "reason.target_reached": "Departure target reached — {delivered} kWh charged",
   "reason.plan_waiting": "Waiting for a planned cheap hour",
   "reason.waiting_battery_reserve":
@@ -192,6 +194,12 @@ const en: Dict = {
   "reason.grid_charge_bright":
     "Cheap hour at {price}/kWh, but tomorrow looks bright — filling the home battery only to {target}% so the sun has somewhere to go",
   "reason.grid_charge_full": "Home battery at {soc}% — nothing left to buy this cheaply",
+  "reason.grid_charge_ready":
+    "Home battery down to {soc}% and too low to hold the peak limit — importing {power} W to get it back to {target}%, cheap hour or not",
+  "reason.grid_charge_stock_up":
+    "Stocking up for tonight — importing {power} W to fill the home battery to {target}% and holding it there",
+  "reason.grid_charge_stocked":
+    "Stocked up: home battery at {soc}%, holding it for tonight",
 
   "price.title": "Electricity price",
   "price.avg": "avg",
@@ -303,6 +311,8 @@ const de: Dict = {
     "Geplante Günstig-Stunde zu {price}/kWh — noch {remaining} kWh bis zur Abfahrt (Hausbatterie geschützt → {amps} A)",
   "reason.deadline_urgent":
     "Lädt jetzt, um das Abfahrtsziel zu erreichen — noch {remaining} kWh",
+  "reason.deadline_urgent_peak":
+    "Lädt mit voller Leistung für das Abfahrtsziel — noch {remaining} kWh, daher überschreitet diese Viertelstunde die Lastspitzen-Grenze",
   "reason.target_reached": "Abfahrtsziel erreicht — {delivered} kWh geladen",
   "reason.plan_waiting": "Warten auf eine geplante Günstig-Stunde",
   "reason.waiting_battery_reserve":
@@ -393,6 +403,12 @@ const de: Dict = {
     "Günstige Stunde zu {price}/kWh, aber morgen wird es sonnig — füllt die Hausbatterie nur auf {target}%, damit die Sonne noch Platz hat",
   "reason.grid_charge_full":
     "Hausbatterie bei {soc}% — zu diesem Preis gibt es nichts mehr zu kaufen",
+  "reason.grid_charge_ready":
+    "Hausbatterie nur noch bei {soc}% und zu leer, um die Lastspitze zu halten — bezieht {power} W zurück auf {target}%, günstige Stunde hin oder her",
+  "reason.grid_charge_stock_up":
+    "Lädt für heute Abend vor — bezieht {power} W, um die Hausbatterie auf {target}% zu füllen und dort zu halten",
+  "reason.grid_charge_stocked":
+    "Vorgeladen: Hausbatterie bei {soc}%, wird für heute Abend gehalten",
 
   "price.title": "Strompreis",
   "price.avg": "Mittel",

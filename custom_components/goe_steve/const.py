@@ -154,6 +154,17 @@ DEFAULT_CHEAP_CHARGE_POWER_W: Final = 2000.0  # what we'd import in a cheap hour
 DEFAULT_BRIGHT_DAY_TARGET_SOC: Final = 40.0
 DEFAULT_DARK_DAY_TARGET_SOC: Final = 80.0
 DEFAULT_PV_FORECAST_LOW_KWH: Final = 8.0  # below this, tomorrow counts as "dark"
+# Cheapest hours first, then any hour. The two targets above are what a *cheap* hour
+# fills to; below this level the battery is topped up whatever the price, because a
+# pack sitting on its floor cannot hold a peak limit at all — and in a dark winter
+# week the five cheap hours a day do not keep up with the house. 0 disables it.
+DEFAULT_PEAK_READY_SOC: Final = 0.0
+# "Stock up for tonight": the user knows a sauna/oven/party evening is coming and the
+# brain cannot. Fills toward this level at any price **and holds it there**, so the
+# ordinary afternoon is served from the grid (far below the ceiling) instead of
+# quietly spending the stock before the event it was bought for.
+DEFAULT_STOCK_UP: Final = False
+DEFAULT_STOCK_UP_TARGET_SOC: Final = 95.0
 
 # --- Phase switching (static engine behaviour) -------------------------------------
 DEFAULT_AUTO_PHASE: Final = False  # off until the user maps a phase-control entity

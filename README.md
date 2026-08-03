@@ -66,6 +66,17 @@ See [`docs/concept`](#concept) for the full design.
   it looks bright so the sun still has somewhere to go. Capped by the peak budget, so it
   imports steadily instead of in the spike that would set a monthly peak — the cheap energy
   without the demand charge.
+- **Keep the battery able to shave — cheapest hours first, then any hour:** a pack sitting on
+  its floor defends nothing, and in a dark winter week the few cheap hours a day don't keep up
+  with the house. Set *Keep ready for peaks above* and the battery is topped up below that
+  level whatever the price, because an unshaved quarter-hour costs more than the difference
+  between a cheap kilowatt-hour and an ordinary one. It's a floor, not a cap: cheap hours
+  still fill deeper. Off by default.
+- **Stock up for tonight:** you know tonight is the sauna; the brain doesn't. One switch fills
+  the battery toward its target at any price **and holds it there**, so the afternoon's
+  ordinary load comes off the grid — far below your limit anyway — instead of quietly spending
+  the charge before the evening it was bought for. Filling without holding is the mistake that
+  looks like it works.
 - **Fast on the knob, slow on the switches:** the surplus is tracked at two speeds. The
   charging **current** follows a responsive signal, so a cloud or a switched-on oven reaches
   the amps within seconds and a clearing sky is used while it lasts. Whether to charge **at
@@ -208,6 +219,9 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Normal grid import | Your resting ESS grid setpoint (W) |
 | `number` Cheap-hour import power | What a cheap hour may import on top of the house load |
 | `number` Cheap-hour target, bright/dark day | How deep to fill the battery, chosen by tomorrow's solar forecast |
+| `number` Keep ready for peaks above | Below this the battery is topped up at *any* price, so it can still shave (0 = off) |
+| `switch` Stock up for tonight | Fill for a big evening and hold it, instead of letting the afternoon spend it |
+| `number` Stock-up target | How full that fills the battery (95%) |
 | `button` Reset this month's peak | Forget the recorded peak when the operator's meter disagrees |
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the reserve line |

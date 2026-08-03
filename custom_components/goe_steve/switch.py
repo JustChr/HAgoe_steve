@@ -28,6 +28,7 @@ async def async_setup_entry(
             PeakGuardSwitch(coordinator),
             PeakFollowMonthSwitch(coordinator),
             GridChargeSwitch(coordinator),
+            StockUpSwitch(coordinator),
         ]
     )
 
@@ -114,6 +115,25 @@ class GridChargeSwitch(_SettingSwitch):
     _attr_icon = "mdi:transmission-tower-import"
     _key = "grid_charge"
     _setting = "grid_charge_enabled"
+
+
+class StockUpSwitch(_SettingSwitch):
+    """Fill the home battery for a big evening, and hold it until then.
+
+    You know tonight is the sauna; the brain does not. Turn this on in the morning
+    and the battery fills toward its stock-up target at whatever the price is, and —
+    the half that actually matters — is *held* there: the afternoon's ordinary load
+    comes off the grid, which sits far below your peak limit anyway, instead of
+    quietly spending the charge before the evening it was bought for.
+
+    Turn it off again after the event. Unlike the settings around it this is a
+    control you use, not one you configure, so it is not filed under Configuration.
+    """
+
+    _attr_entity_category = None
+    _attr_icon = "mdi:battery-plus-variant"
+    _key = "stock_up"
+    _setting = "stock_up"
 
 
 class ManualChargeSwitch(GoeSteveEntity, RestoreEntity, SwitchEntity):

@@ -1953,3 +1953,349 @@ def test_without_a_clock_there_is_no_window_and_no_cap():
     assert d.peak_tier == "off"
     assert d.peak_window_ends is None
     assert d.grid_setpoint_w is None
+
+
+# --- Charging under the ceiling, not against it -------------------------------------
+#
+# A departure plan used to book the *cheapest* slots at *full* power: it minimised the
+# number of hours by maximising the kilowatts, which is exactly the quantity a capacity
+# tariff bills. These cover the plan, the request and the phase count now being sized
+# from the peak target instead — and the guarantee that still outranks it.
+
+def _slots(start, prices, minutes=60):
+    return [
+        PriceSlot(start=start + timedelta(minutes=minutes * i), price=p)
+        for i, p in enumerate(prices)
+    ]
+
+
+def test_a_cheap_hour_asks_for_what_fits_under_the_ceiling():
+    # 16 A x 3φ is 11 kW against a 3.7 kW target: asking for it only to be trimmed
+    # wastes the slot and quotes a current we never meant to write.
+    cfg = _peak_cfg(mode=ChargingMode.SMART, cheap_price=0.15, peak_follow_month=False)
+    state = EngineState()
+    inp = lambda t: _inputs(
+        grid_power_w=500.0, price_now=0.05, battery_soc=90.0, now=W0 + timedelta(seconds=t)
+    )
+    d = None
+    for t in range(0, 121, 20):
+        d = decide(inp(t), cfg, state)
+    assert d.should_charge
+    # 3.7 kW target − 0.5 kW of house = 3.2 kW → 4 A on three phases, floored at the
+    # 6 A the pilot signal cannot go below.
+    assert d.target_current_a == pytest.approx(engine.HARDWARE_MIN_CURRENT_A)
+
+
+def test_with_the_guard_off_a_cheap_hour_still_asks_for_full_power():
+    cfg = _peak_cfg(
+        mode=ChargingMode.SMART, cheap_price=0.15, peak_guard_enabled=False
+    )
+    d = decide(
+        _inputs(grid_power_w=500.0, price_now=0.05, battery_soc=90.0, now=W0),
+        cfg,
+        EngineState(),
+    )
+    assert d.target_current_a == pytest.approx(16.0)
+
+
+def test_the_plan_books_more_hours_rather_than_more_kilowatts():
+    # The same 8 kWh, planned with and without a ceiling. Under one it has to spread.
+    forecast = _slots(W0, [0.30, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11])
+    base = dict(
+        mode=ChargingMode.SMART,
+        target_energy_kwh=8.0,
+        departure=W0 + timedelta(hours=8),
+        peak_follow_month=False,
+    )
+    common = dict(
+        grid_power_w=500.0,
+        price_now=0.30,
+        price_forecast=forecast,
+        session_delivered_kwh=0.0,
+        battery_soc=90.0,
+        now=W0,
+    )
+    loose = decide(_inputs(**common), _peak_cfg(peak_guard_enabled=False, **base),
+                   EngineState())
+    tight = decide(_inputs(**common), _peak_cfg(**base), EngineState())
+    assert len(loose.plan) == 1  # one hour at 11 kW covers 8 kWh
+    assert len(tight.plan) > len(loose.plan)  # …but not under a 3.7 kW target
+
+
+def test_the_departure_guarantee_still_outranks_the_ceiling():
+    # Two hours left, 25 kWh owed: 16 A x 3φ delivers only 22 kWh in that time, so
+    # not even full power makes it. The ceiling loses and the reason has to admit the
+    # quarter-hour is going over.
+    cfg = _peak_cfg(
+        mode=ChargingMode.SMART,
+        target_energy_kwh=25.0,
+        departure=W0 + timedelta(hours=2),
+        peak_follow_month=False,
+    )
+    d = decide(
+        _inputs(
+            grid_power_w=500.0,
+            price_now=0.30,
+            session_delivered_kwh=0.0,
+            battery_soc=90.0,
+            now=W0,
+        ),
+        cfg,
+        EngineState(),
+    )
+    assert d.should_charge
+    assert d.target_current_a == pytest.approx(16.0)
+    assert d.reason_key == "deadline_urgent_peak"
+    assert "peak limit" in d.reason
+
+
+def test_a_low_ceiling_picks_one_phase_because_three_cannot_fit():
+    # 6 A x 3φ is 4.14 kW and simply does not go under a 3.7 kW target; 6 A x 1φ is
+    # 1.38 kW and does. Without the phase lever the guard's only options are 4.14 kW
+    # or nothing.
+    cfg = _peak_cfg(
+        mode=ChargingMode.FAST, auto_phase=True, max_phases=3, peak_follow_month=False,
+        phase_confirm_s=0.0, phase_dwell_s=0.0,
+    )
+    state = EngineState()
+    d = None
+    for t in range(0, 121, 20):
+        d = decide(
+            _inputs(grid_power_w=500.0, battery_soc=90.0, phases=3,
+                    now=W0 + timedelta(seconds=t)),
+            cfg,
+            state,
+        )
+    assert d.target_phases == 1
+    assert d.should_charge
+
+
+def test_a_generous_ceiling_still_uses_three_phases():
+    cfg = _peak_cfg(
+        mode=ChargingMode.FAST, auto_phase=True, max_phases=3,
+        peak_soft_w=20000.0, peak_target_w=22000.0, peak_hard_w=24000.0,
+        peak_follow_month=False, phase_confirm_s=0.0, phase_dwell_s=0.0,
+    )
+    state = EngineState()
+    d = None
+    for t in range(0, 121, 20):
+        d = decide(
+            _inputs(grid_power_w=500.0, battery_soc=90.0, phases=3,
+                    now=W0 + timedelta(seconds=t)),
+            cfg,
+            state,
+        )
+    assert d.target_phases == 3
+    assert d.target_current_a == pytest.approx(16.0)
+
+
+def test_a_car_on_pure_solar_is_not_squeezed_by_the_ceiling():
+    # The ceiling credits solar and battery power the car already has: it never
+    # crossed the grid meter, so withholding it would export the surplus, not
+    # reduce the import.
+    cfg = _peak_cfg(mode=ChargingMode.FAST, peak_follow_month=False)
+    state = EngineState()
+    d = None
+    for t in range(0, 121, 20):
+        d = decide(
+            _inputs(
+                grid_power_w=-2000.0,
+                pv_power_w=13000.0,
+                car_actual_power_w=11040.0,
+                battery_soc=95.0,
+                battery_power_w=0.0,
+                now=W0 + timedelta(seconds=t),
+            ),
+            cfg,
+            state,
+        )
+    assert d.target_current_a == pytest.approx(16.0)
+
+
+def test_the_ceiling_does_not_credit_home_battery_discharge():
+    # Crediting it is circular — charging harder makes the battery cover more, which
+    # raises the ceiling, which charges harder — and it plans to spend a battery the
+    # same cycle holds off the car. Left in, it walked the phase contactor for hours.
+    cfg = _peak_cfg(mode=ChargingMode.FAST, peak_follow_month=False)
+    window = engine.update_peak_window(W0, 500.0, cfg, EngineState())
+    idle = engine.peak_charge_ceiling_w(
+        _inputs(grid_power_w=500.0, car_actual_power_w=0.0, battery_power_w=0.0), cfg,
+        window,
+    )
+    # Same house, but the battery is now dumping 5 kW into a running car.
+    draining = engine.peak_charge_ceiling_w(
+        _inputs(grid_power_w=500.0, car_actual_power_w=5000.0, battery_power_w=-5000.0),
+        cfg,
+        window,
+    )
+    assert draining == pytest.approx(idle, abs=1.0)
+
+
+def test_the_ceiling_does_credit_solar_the_car_already_has():
+    # Solar never crossed the grid meter, so it is real head-room — this is what keeps
+    # a car on pure PV from being squeezed.
+    cfg = _peak_cfg(mode=ChargingMode.FAST, peak_follow_month=False)
+    window = engine.update_peak_window(W0, -2000.0, cfg, EngineState())
+    ceiling = engine.peak_charge_ceiling_w(
+        _inputs(
+            grid_power_w=-2000.0, pv_power_w=13000.0, car_actual_power_w=11040.0,
+            battery_power_w=0.0,
+        ),
+        cfg,
+        window,
+    )
+    assert ceiling >= 11040.0
+
+
+# --- Hysteresis, readiness and stocking up -------------------------------------------
+#
+# All three come out of a 15-day closed-loop simulation against a 4 kW ceiling
+# (tools/sim/peak15.py). See the notes on each test for what it actually cost.
+
+def test_grid_charging_does_not_chatter_once_it_reaches_its_target():
+    """Reaching the target must not hand the setpoint straight back.
+
+    Without a resume band the setpoint flips between "import hard" and "import
+    nothing" every cycle at the target, and the pack pays a round-trip loss on each
+    flip — 115 kWh over a simulated fortnight.
+    """
+    cfg = _grid_charge_cfg(dark_day_target_soc=80.0)
+    state = EngineState()
+
+    def at(soc: float):
+        return decide(
+            _inputs(
+                car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+                battery_soc=soc, price_now=0.08, pv_forecast_kwh=2.0, now=W0,
+            ),
+            cfg, state,
+        )
+
+    band = engine._GRID_CHARGE_RESUME_BAND_PCT
+    assert band > 0.0
+    assert at(60.0).grid_charging is True     # well below → buy
+    assert at(80.0).grid_charging is False    # target reached → stop
+    # Just under the target is exactly where the old code restarted. It must not.
+    assert at(80.0 - band / 2).grid_charging is False
+    assert at(80.0 - band - 1.0).grid_charging is True   # a real dip → buy again
+    # …and once buying again it runs all the way back up, rather than stopping the
+    # moment it re-crosses the resume point.
+    assert at(80.0 - band + 0.5).grid_charging is True
+
+
+def test_a_flat_battery_is_topped_up_even_when_the_price_is_not_cheap():
+    """Cheapest hours first, then any hour.
+
+    A pack sitting on its floor defends nothing, and in a dark winter week the few
+    cheap hours a day do not keep up with the house. Below the readiness level the
+    price stops being the question.
+    """
+    cfg = _grid_charge_cfg(peak_ready_soc=60.0)
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=30.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+        ),
+        cfg, EngineState(),
+    )
+    assert d.grid_charging is True
+    assert d.peak_reason_key == "grid_charge_ready"
+    # Still a *ceiling-aware* import: the setpoint is house + charge rate, capped.
+    assert d.grid_setpoint_w == pytest.approx(2400.0)
+
+
+def test_readiness_tops_up_only_to_its_own_level_outside_a_cheap_hour():
+    """Above the readiness level an expensive hour buys nothing — that is the point
+    of having two thresholds rather than one."""
+    cfg = _grid_charge_cfg(peak_ready_soc=60.0)
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=70.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+        ),
+        cfg, EngineState(),
+    )
+    assert d.grid_charging is False
+
+
+def test_readiness_is_ignored_when_peak_protection_is_off():
+    """It exists to keep the guard supplied; with nothing to defend it must not buy."""
+    cfg = _grid_charge_cfg(peak_ready_soc=60.0, peak_guard_enabled=False)
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=30.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+        ),
+        cfg, EngineState(),
+    )
+    assert d.grid_charging is False
+
+
+def test_a_cheap_hour_still_fills_deeper_than_the_readiness_level():
+    """Readiness is a floor, not a cap: the cheap-hour target still wins when it is
+    higher, or turning readiness on would make cheap hours buy *less*."""
+    cfg = _grid_charge_cfg(peak_ready_soc=60.0, dark_day_target_soc=80.0)
+    state = EngineState()
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=70.0, price_now=0.08, pv_forecast_kwh=2.0, now=W0,
+        ),
+        cfg, state,
+    )
+    assert d.grid_charging is True
+    assert d.peak_reason_key == "grid_charge_dark"
+
+
+def test_stocking_up_buys_at_any_price_and_holds_what_it_bought():
+    """The hold is the half that matters.
+
+    Filling before a known evening and then letting the ordinary afternoon serve
+    itself from the pack donates the whole stock to hours the grid could have
+    carried at a third of the ceiling. So the resting reserve rises with it.
+    """
+    cfg = _grid_charge_cfg(stock_up=True, stock_up_target_soc=95.0,
+                           shaving_reserve_soc=50.0)
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=60.0, price_now=0.42, pv_forecast_kwh=30.0, now=W0,
+        ),
+        cfg, EngineState(),
+    )
+    assert d.grid_charging is True
+    assert d.peak_reason_key == "grid_charge_stock_up"
+    assert d.battery_min_soc == pytest.approx(95.0)  # held, not spent
+
+
+def test_stocking_up_never_raises_the_floor_the_event_will_need():
+    """Holding at 95 % while resting must not stop the guard reaching the stock at
+    18:30 — the shaving floor still comes off the raw reserve."""
+    cfg = _peak_cfg(stock_up=True, stock_up_target_soc=95.0,
+                    shaving_reserve_soc=50.0, peak_min_soc=35.0)
+    assert engine._resting_reserve_soc(cfg) == pytest.approx(95.0)
+    assert engine._peak_soc_floor(cfg) == pytest.approx(35.0)
+
+
+def test_stocking_up_holds_the_battery_with_peak_protection_switched_off():
+    """The switch is a user action, not part of the guard: it has to work on its own
+    or the fill happens and the hold silently does not."""
+    cfg = _grid_charge_cfg(stock_up=True, stock_up_target_soc=95.0,
+                           peak_guard_enabled=False, shaving_reserve_soc=50.0)
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=60.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+        ),
+        cfg, EngineState(),
+    )
+    assert d.grid_charging is True
+    assert d.battery_min_soc == pytest.approx(95.0)
+
+
+def test_the_new_levers_are_all_off_by_default():
+    """Defaults must leave a existing install byte-for-byte where it was."""
+    cfg = EngineConfig()
+    assert cfg.peak_ready_soc == 0.0
+    assert cfg.stock_up is False
+    assert engine._resting_reserve_soc(cfg) == cfg.shaving_reserve_soc

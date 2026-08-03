@@ -60,7 +60,10 @@ from .const import (
     DEFAULT_PEAK_TARGET_W,
     DEFAULT_PHASES,
     DEFAULT_PRICE_FORECAST_ATTR,
+    DEFAULT_PEAK_READY_SOC,
     DEFAULT_PV_FORECAST_LOW_KWH,
+    DEFAULT_STOCK_UP,
+    DEFAULT_STOCK_UP_TARGET_SOC,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SHAVING_RESERVE_SOC,
     DEFAULT_TARGET_ENERGY_KWH,
@@ -168,6 +171,9 @@ class RuntimeSettings:
     bright_day_target_soc: float = DEFAULT_BRIGHT_DAY_TARGET_SOC
     dark_day_target_soc: float = DEFAULT_DARK_DAY_TARGET_SOC
     pv_forecast_low_kwh: float = DEFAULT_PV_FORECAST_LOW_KWH
+    peak_ready_soc: float = DEFAULT_PEAK_READY_SOC
+    stock_up: bool = DEFAULT_STOCK_UP
+    stock_up_target_soc: float = DEFAULT_STOCK_UP_TARGET_SOC
 
 
 class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
@@ -535,6 +541,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             bright_day_target_soc=self.settings.bright_day_target_soc,
             dark_day_target_soc=self.settings.dark_day_target_soc,
             pv_forecast_low_kwh=self.settings.pv_forecast_low_kwh,
+            peak_ready_soc=self.settings.peak_ready_soc,
+            stock_up=self.settings.stock_up,
+            stock_up_target_soc=self.settings.stock_up_target_soc,
             # The engine works in UTC; the billed month and any clock time it puts
             # in front of a user are the wall calendar's, so hand it ours.
             local_tz=dt_util.DEFAULT_TIME_ZONE,

@@ -253,6 +253,22 @@ class EngineConfig:
     bright_day_target_soc: float = 40.0  # stop here when tomorrow looks good
     dark_day_target_soc: float = 80.0  # …and fill to here when it doesn't
     pv_forecast_low_kwh: float = 8.0  # below this, tomorrow counts as "dark"
+    # --- Keeping the battery able to shave ------------------------------------------
+    # Cheap hours first, then any hour: the two targets above are what a *cheap* hour
+    # fills to, and this is the level below which the battery is topped up at **any**
+    # price. In a December week the binding constraint is not what the energy costs,
+    # it is having any stored energy at all — a pack sitting on its floor defends
+    # nothing, and the five cheap midday hours do not keep up with a house that draws
+    # 30–58 kWh a day against ~1 kWh of PV. Only consulted while peak protection is
+    # on; 0 disables it, which is exactly the old behaviour.
+    peak_ready_soc: float = 0.0
+    # --- Stocking up before a known event --------------------------------------------
+    # The user knows tonight is a sauna; the brain cannot. While this is set the
+    # battery fills toward its target at any price *and is held there* — ordinary
+    # afternoon load is served from the grid, which sits far below the ceiling anyway,
+    # instead of quietly spending the stock before the event it was bought for.
+    stock_up: bool = False
+    stock_up_target_soc: float = 95.0
     # --- The user's calendar and clock ---------------------------------------------
     # Everything else in here works in UTC, which is right for arithmetic and wrong
     # for two things a *person* reads: the month a demand charge is billed in, and
@@ -868,7 +884,7 @@ class _Plan:
 
 
 def _compute_plan(
-    inp: ChargerInputs, cfg: EngineConfig, phases: int
+    inp: ChargerInputs, cfg: EngineConfig, phases: int, ceiling_w: float | None = None
 ) -> _Plan | None:
     """Greedy cheapest-slots departure plan, or None when not planning.
 
@@ -877,11 +893,18 @@ def _compute_plan(
     the per-slot capacity is realistic (a 1φ-locked wallbox books three times the
     hours).
 
-    The target is a **hard guarantee**: the plan keeps booking the
-    least-expensive remaining slots until their capacity covers the remaining
-    energy, whether or not they are "cheap" — and if the remaining time barely
-    covers the remaining energy at full power, it charges regardless of the
-    forecast (``urgent``).
+    ``ceiling_w`` is the peak-protection head-room (see
+    :func:`peak_charge_ceiling_w`). Booking slots at full power is what makes a plan
+    peak-hostile: it minimises the *number of hours* by maximising the kilowatts,
+    which is precisely the quantity a capacity tariff bills. Sizing each slot at what
+    fits under the target instead books more, quieter hours for the same energy.
+
+    The target stays a **hard guarantee** and outranks the ceiling: the plan keeps
+    booking the least-expensive remaining slots until their capacity covers the
+    remaining energy, whether or not they are "cheap" — and if the remaining time
+    barely covers it *at full power*, it charges regardless of both the forecast and
+    the ceiling (``urgent``). A car that can't make the trip is worse than a demand
+    charge; the reason string says which one we bought.
     """
     remaining = _plan_remaining_kwh(inp, cfg)
     if remaining is None or remaining <= 0:
@@ -889,14 +912,24 @@ def _compute_plan(
     if inp.now >= cfg.departure:
         return None
 
-    max_power_kw = _current_to_power(cfg.max_current_a, phases, inp.voltage_v) / 1000.0
-    if max_power_kw <= 0:
+    full_power_kw = _current_to_power(cfg.max_current_a, phases, inp.voltage_v) / 1000.0
+    if full_power_kw <= 0:
         return None
+    max_power_kw = full_power_kw
+    if ceiling_w is not None:
+        max_power_kw = min(
+            max_power_kw,
+            _current_to_power(_ceiling_amps(ceiling_w, phases, inp), phases,
+                              inp.voltage_v) / 1000.0,
+        )
 
-    # Safety net (also covers a missing/short forecast): when every remaining
-    # hour is needed to make the target, price no longer matters.
+    # Safety net (also covers a missing/short forecast): when every remaining hour is
+    # needed to make the target, price no longer matters. Measured at **full** power,
+    # not at the ceiling — this is the test for "can it still be done at all", and
+    # answering it with the throttled figure would declare an emergency (and buy the
+    # peak) while there was still room to spread the charge.
     hours_left = (cfg.departure - inp.now).total_seconds() / 3600.0
-    if hours_left * max_power_kw <= remaining:
+    if hours_left * full_power_kw <= remaining:
         return _Plan(True, remaining, set(), None)
 
     if not inp.price_forecast:
@@ -1062,6 +1095,10 @@ _REASON_TEMPLATES: dict[str, str] = {
     "deadline_urgent": (
         "Charging now to make the departure target — {remaining} kWh to go"
     ),
+    "deadline_urgent_peak": (
+        "Charging at full power to make the departure target — {remaining} kWh to go, "
+        "so this quarter-hour will go over your peak limit"
+    ),
     "target_reached": "Departure target reached — {delivered} kWh charged",
     "plan_waiting": "Waiting for a planned cheap hour",
     "waiting_battery_reserve": (
@@ -1124,6 +1161,15 @@ _REASON_TEMPLATES: dict[str, str] = {
         "battery only to {target}% so the sun has somewhere to go"
     ),
     "grid_charge_full": "Home battery at {soc}% — nothing left to buy this cheaply",
+    "grid_charge_ready": (
+        "Home battery down to {soc}% and too low to hold the peak limit — importing "
+        "{power} W to get it back to {target}%, cheap hour or not"
+    ),
+    "grid_charge_stock_up": (
+        "Stocking up for tonight — importing {power} W to fill the home battery to "
+        "{target}% and holding it there"
+    ),
+    "grid_charge_stocked": "Stocked up: home battery at {soc}%, holding it for tonight",
 }
 
 
@@ -1220,8 +1266,26 @@ def _peak_thresholds(cfg: EngineConfig) -> tuple[float, float, float]:
 
 
 def _peak_soc_floor(cfg: EngineConfig) -> float:
-    """The SoC peak protection may discharge down to, never above its own reserve."""
+    """The SoC peak protection may discharge down to, never above its own reserve.
+
+    Deliberately reads the *raw* reserve, not :func:`_resting_reserve_soc`: stocking
+    up must not raise the floor, or the stock it just bought would be unreachable by
+    the very event it was bought for.
+    """
     return min(cfg.peak_min_soc, cfg.shaving_reserve_soc)
+
+
+def _resting_reserve_soc(cfg: EngineConfig) -> float:
+    """The minimum SoC to hold while *not* actively shaving.
+
+    Stocking up raises it, and that second half is what makes stocking up work at
+    all: filling the battery before a known event and then letting the ordinary
+    afternoon serve itself from the pack donates the whole stock to a few hours the
+    grid could have carried at a third of the ceiling.
+    """
+    if cfg.stock_up:
+        return max(cfg.shaving_reserve_soc, cfg.stock_up_target_soc)
+    return cfg.shaving_reserve_soc
 
 
 def _effective_targets(
@@ -1567,6 +1631,72 @@ def _peak_current_cap(
     return max(0.0, math.floor(min(amps, cfg.max_current_a) + _AMP_EPSILON))
 
 
+def peak_charge_ceiling_w(
+    inp: ChargerInputs, cfg: EngineConfig, window: PeakWindow
+) -> float | None:
+    """The car's steady share of the peak target — what *planning* should assume.
+
+    Deliberately distinct from :func:`_peak_current_cap`, which sizes the live trim
+    against the remaining quarter-hour budget: that number swings through the window
+    by design, and a departure plan rebuilt on it would rebook its slots every cycle.
+    This is the calm version — the target in force, minus the rest of the house — so
+    the plan can work out *how many hours* it needs while the budget still corrects
+    the amps inside each one.
+
+    Solar the car is already taking is credited — it never crossed the grid meter, so
+    it is genuine head-room. Home-battery discharge is **not**, and that difference is
+    the whole reason this is a separate function from the trim. Two reasons: a grid
+    strategy deliberately *holds* the battery off the car, so planning to spend it
+    plans for something the same cycle forbids; and crediting it is circular — charging
+    harder makes the battery cover more, which raises the ceiling, which charges harder
+    still. Left in, that loop walks the phase contactor back and forth for hours.
+
+    ``None`` means "no ceiling" — peak protection off, or no clock — and every caller
+    then behaves exactly as it did before.
+    """
+    if not cfg.peak_guard_enabled or window.start is None:
+        return None
+    split = compute_car_sources(compute_power_flow(inp))
+    non_car_w = max(0.0, inp.grid_power_w - split.grid_w)
+    return max(0.0, window.target_w - non_car_w) + split.solar_w
+
+
+def _ceiling_amps(ceiling_w: float, phases: int, inp: ChargerInputs) -> float:
+    """Whole amps that fit under ``ceiling_w``, never below the hardware minimum.
+
+    Floored, not rounded: a ceiling is a ceiling. It does not fall below 6 A because
+    a request under the pilot signal's floor is not a smaller charge, it is a stopped
+    one — deciding *that* is the hard tier's job, not the planner's.
+    """
+    fits = math.floor(
+        _power_to_current(max(0.0, ceiling_w), max(1, phases), inp.voltage_v)
+        + _AMP_EPSILON
+    )
+    return max(HARDWARE_MIN_CURRENT_A, float(fits))
+
+
+def _plan_phases(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState, ceiling_w: float | None
+) -> int:
+    """The phase count a grid charge would pick — **pure**, for sizing plan slots.
+
+    Mirrors :func:`_resolve_phases`' thresholds without touching its timers, because
+    the plan is computed before we know which strategy wins and must not spend the
+    contactor's confirmation window on a charge that never happens. The winning
+    branch makes the real, state-carrying call.
+    """
+    if not cfg.auto_phase or cfg.max_phases < 3:
+        return max(1, inp.phases)
+    if ceiling_w is None:
+        return cfg.max_phases
+    current = state.phases if state.phases in (1, 3) else 1
+    up = _current_to_power(_floor_current(cfg), 3, inp.voltage_v) + cfg.phase_up_margin_w
+    down = _current_to_power(cfg.max_current_a, 1, inp.voltage_v)
+    if current == 1:
+        return 3 if ceiling_w >= up else 1
+    return 1 if ceiling_w < down else 3
+
+
 def _rate_limit_cap(
     cap_a: float, now: datetime | None, cfg: EngineConfig, state: EngineState
 ) -> float:
@@ -1713,7 +1843,7 @@ def apply_peak_guard(
     # and drops to the floor while shaving. That drop is what actually releases the
     # headroom — and it works with no car anywhere near the house.
     decision.battery_min_soc = (
-        _peak_soc_floor(cfg) if engaged else cfg.shaving_reserve_soc
+        _peak_soc_floor(cfg) if engaged else _resting_reserve_soc(cfg)
     )
     decision.grid_setpoint_w = 0.0 if tier == "hard" else cfg.grid_setpoint_w
     if engaged:
@@ -1790,6 +1920,55 @@ def _grid_charge_target(cfg: EngineConfig, inp: ChargerInputs) -> float:
     return cfg.bright_day_target_soc
 
 
+#: Grid charging stops at its target and does not resume until the SoC has fallen
+#: this far below it. Without the band the setpoint flips between "import hard" and
+#: "import nothing" every cycle once the target is reached, and the pack pays a
+#: round-trip loss on each flip. Five cheap hours a day hides it; a battery kept
+#: ready around the clock does not.
+#:
+#: Two percent, and the size is measured rather than picked. Against a 100 % target —
+#: where the pack pins and chatters worst — a 15-day simulation gave: no band 864 kWh
+#: imported, 2 % → 776 kWh, 5 % → 771 kWh, 10 % → 769 kWh. So 2 % already captures 88
+#: of the 95 kWh available, and it is the widest band that costs *nothing* in peak
+#: performance: at 2 % the worst quarter-hour and the breach count are identical to
+#: no band at all, while 5 % and 10 % start giving both away. Wider is not safer here
+#: — it just means arriving at the evening with a flatter battery.
+_GRID_CHARGE_RESUME_BAND_PCT: float = 2.0
+
+
+def _grid_charge_goal(cfg: EngineConfig, inp: ChargerInputs) -> tuple[float, str]:
+    """How full to fill the home battery right now, and why — cheapest hours first.
+
+    Three reasons to buy, in descending order of urgency:
+
+    * **Stocking up** for an evening the user has told us about: fill to the stock-up
+      target at any price.
+    * **Readiness**, while peak protection is on: below ``peak_ready_soc`` the pack is
+      too flat to defend the limit, and an unshaved quarter-hour costs more than the
+      difference between a cheap kilowatt-hour and an ordinary one.
+    * **A cheap hour**, the original reason: fill to the bright/dark target.
+
+    Returns ``(0.0, "")`` when none of them applies, which is the common case and
+    means "don't touch the setpoint".
+    """
+    ready_soc = cfg.peak_ready_soc if cfg.peak_guard_enabled else 0.0
+    if cfg.stock_up:
+        return max(cfg.stock_up_target_soc, ready_soc), "stock_up"
+    if inp.price_now is not None and inp.price_now <= cfg.cheap_price:
+        cheap_target = _grid_charge_target(cfg, inp)
+        if cheap_target >= ready_soc:
+            key = (
+                "grid_charge_bright"
+                if cheap_target == cfg.bright_day_target_soc
+                and inp.pv_forecast_kwh is not None
+                and cfg.bright_day_target_soc != cfg.dark_day_target_soc
+                else "grid_charge_dark"
+            )
+            return cheap_target, key
+        return ready_soc, "ready"
+    return ready_soc, "ready"
+
+
 def apply_grid_charge(
     decision: Decision,
     inp: ChargerInputs,
@@ -1798,7 +1977,12 @@ def apply_grid_charge(
     window: PeakWindow,
     tier: str,
 ) -> Decision:
-    """Buy energy into the home battery while the price is low.
+    """Buy energy into the home battery — cheaply when we can, anyway when we must.
+
+    Three reasons to import, resolved by :func:`_grid_charge_goal`: a cheap hour, a
+    battery too flat to defend the peak limit, or an evening the user has told us to
+    stock up for. Only the first is about price; the other two are about *having*
+    stored energy, which in December is the scarcer thing.
 
     On an ESS the grid setpoint *is* total grid import, so what we command here is
     exactly the quantity a capacity tariff bills — which is the whole trick. Importing
@@ -1817,19 +2001,37 @@ def apply_grid_charge(
     decision.house_control = True
     if decision.grid_setpoint_w is None:
         decision.grid_setpoint_w = cfg.grid_setpoint_w
+    if cfg.stock_up and decision.battery_min_soc is None:
+        # Peak protection normally owns the minimum-SoC number, but it is switched
+        # off here — and stocking up without the hold is just an expensive way to
+        # heat the afternoon. Borrow it (the coordinator hands it back on release).
+        decision.battery_min_soc = _resting_reserve_soc(cfg)
 
-    if tier != "off" or inp.price_now is None or inp.price_now > cfg.cheap_price:
+    if tier != "off":
         state.grid_charging = False
         return decision
 
-    target_soc = _grid_charge_target(cfg, inp)
+    target_soc, why = _grid_charge_goal(cfg, inp)
     soc = inp.battery_soc
-    if soc is None or soc >= target_soc:
+    if soc is None or target_soc <= 0.0:
         state.grid_charging = False
-        if soc is not None:
-            decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
-                _reason("grid_charge_full", soc=f"{soc:.0f}")
+        return decision
+
+    # Hysteresis: run up to the target, then stay off until the SoC has fallen a band
+    # below it. Testing ``soc >= target`` on both edges makes the setpoint chatter
+    # once the target is reached — see ``_GRID_CHARGE_RESUME_BAND_PCT``.
+    stop_at = (
+        target_soc if state.grid_charging
+        else target_soc - _GRID_CHARGE_RESUME_BAND_PCT
+    )
+    if soc >= stop_at:
+        state.grid_charging = False
+        decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+            _reason(
+                "grid_charge_stocked" if why == "stock_up" else "grid_charge_full",
+                soc=f"{soc:.0f}",
             )
+        )
         return decision
 
     # What the grid must serve regardless of the battery (house + car − PV): the
@@ -1846,20 +2048,23 @@ def apply_grid_charge(
     decision.grid_setpoint_w = setpoint_w
     decision.grid_charging = True
     state.grid_charging = True
-    key = (
-        "grid_charge_bright"
-        if target_soc == cfg.bright_day_target_soc
-        and inp.pv_forecast_kwh is not None
-        and cfg.bright_day_target_soc != cfg.dark_day_target_soc
-        else "grid_charge_dark"
-    )
-    decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
-        _reason(
-            key,
+    if why == "stock_up":
+        params = dict(power=f"{setpoint_w:.0f}", target=f"{target_soc:.0f}")
+        key = "grid_charge_stock_up"
+    elif why == "ready":
+        params = dict(
+            soc=f"{soc:.0f}", power=f"{setpoint_w:.0f}", target=f"{target_soc:.0f}"
+        )
+        key = "grid_charge_ready"
+    else:
+        params = dict(
             price=f"{inp.price_now:.3f}",
             power=f"{setpoint_w:.0f}",
             target=f"{target_soc:.0f}",
         )
+        key = why
+    decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+        _reason(key, **params)
     )
     return decision
 
@@ -2112,12 +2317,24 @@ def decide(
     window = update_peak_window(inp.now, inp.grid_power_w, cfg, state)
     tier = resolve_peak_tier(inp.now, window, cfg, state)
 
+    # The ceiling only means anything where a grid strategy could actually run, and
+    # computing it elsewhere would hand Manual and the hands-off gates a number they
+    # must not act on.
+    ceiling_w: float | None = None
+    if (
+        cfg.smart_enabled
+        and cfg.mode is not ChargingMode.MANUAL
+        and inp.car_connected
+    ):
+        ceiling_w = peak_charge_ceiling_w(inp, cfg, window)
+
     plan: _Plan | None = None
     if cfg.smart_enabled and cfg.mode is ChargingMode.SMART and inp.car_connected:
-        grid_phases = cfg.max_phases if cfg.auto_phase else max(1, inp.phases)
-        plan = _compute_plan(inp, cfg, grid_phases)
+        plan = _compute_plan(
+            inp, cfg, _plan_phases(inp, cfg, state, ceiling_w), ceiling_w
+        )
 
-    decision = _decide(inp, cfg, state, plan)
+    decision = _decide(inp, cfg, state, plan, ceiling_w)
     decision = _finalize(decision, inp, cfg, state, plan)
     decision = apply_peak_guard(decision, inp, cfg, state, window, tier)
     return apply_grid_charge(decision, inp, cfg, state, window, tier)
@@ -2165,7 +2382,11 @@ def _finalize(
 
 
 def _decide(
-    inp: ChargerInputs, cfg: EngineConfig, state: EngineState, plan: _Plan | None
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    plan: _Plan | None,
+    ceiling_w: float | None = None,
 ) -> Decision:
     """The core arbiter — see :func:`decide` for the public wrapper."""
     # --- Master gates ------------------------------------------------------------
@@ -2306,9 +2527,28 @@ def _decide(
         if winner.kind == "floor":
             phases = _resolve_phases(avail.commit_w, inp, cfg, state)
             base_amps = _floor_current(cfg)
+        elif ceiling_w is not None:
+            # Under a peak ceiling the phase count is part of the answer, not a
+            # setting: 6 A × 3φ is 4.14 kW, so a low ceiling cannot fit three phases
+            # at all while 6 A × 1φ (1.38 kW) fits easily. Routed through the same
+            # resolver as solar so the contactor keeps its hysteresis, confirmation
+            # and dwell — this is the one state-carrying phase call this cycle.
+            phases = _resolve_phases(ceiling_w, inp, cfg, state)
+            base_amps = cfg.max_current_a
         else:
             phases = grid_phases
             base_amps = cfg.max_current_a
+        # Peak protection shapes the *request*, not only the correction after it.
+        # Asking for 16 A under a 2 kW ceiling just to be trimmed to 6 A wastes a
+        # booked slot and quotes the user a current we never meant to write. The
+        # departure guarantee is the deliberate exception: it has already decided the
+        # peak is worth buying, so it asks for everything and says so.
+        ceiling_a = (
+            _ceiling_amps(ceiling_w, phases, inp) if ceiling_w is not None else None
+        )
+        ceiling_bound = ceiling_a is not None and ceiling_a < base_amps
+        if ceiling_bound and winner.kind != "urgent":
+            base_amps = ceiling_a
         # "free" lets the home battery feed the car, so the fallback guard must
         # not trim; the finalizer then leaves the hold switch off. Auto/Hold both
         # protect the battery during a deliberate grid charge.
@@ -2326,7 +2566,9 @@ def _decide(
             if guarded:
                 params["amps"] = f"{amps:.0f}"
         elif winner.kind == "urgent":
-            key = "deadline_urgent"
+            # Overriding the ceiling is a decision the user has to be told about, not
+            # a detail: this is the one path that knowingly buys a demand charge.
+            key = "deadline_urgent_peak" if ceiling_bound else "deadline_urgent"
         elif winner.kind == "fast":
             key = "fast"
             params["amps"] = f"{amps:.0f}"

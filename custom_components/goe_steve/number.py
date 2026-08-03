@@ -230,6 +230,30 @@ NUMBERS: tuple[GoeNumberDescription, ...] = (
         getter=lambda s: s.dark_day_target_soc,
         setter=lambda s, v: setattr(s, "dark_day_target_soc", v),
     ),
+    GoeNumberDescription(
+        key="peak_ready_soc",
+        attr="peak_ready_soc",
+        icon="mdi:battery-heart-outline",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.peak_ready_soc,
+        setter=lambda s, v: setattr(s, "peak_ready_soc", v),
+    ),
+    GoeNumberDescription(
+        key="stock_up_target_soc",
+        attr="stock_up_target_soc",
+        icon="mdi:battery-plus-outline",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.stock_up_target_soc,
+        setter=lambda s, v: setattr(s, "stock_up_target_soc", v),
+    ),
 )
 
 

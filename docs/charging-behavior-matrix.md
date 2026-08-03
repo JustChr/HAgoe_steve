@@ -215,10 +215,13 @@ which is written under its own deadband and rate limit while charging.
 * Remaining = target − energy delivered this session (anchored at plug-in), so the plan
   shrinks as the car fills and stops at the target. Solar surplus and cheap hours still
   charge beyond it — the target is a floor, not a cap.
-* Slot capacity uses the phases charging can actually use (respects auto-phase off).
+* Slot capacity uses the phases charging can actually use (respects auto-phase off) and, with
+  peak protection on, the power that fits under the peak target — see
+  [Charging under the ceiling](#charging-under-the-ceiling-not-against-it).
 * **Hard guarantee**: the plan books the least-expensive remaining slots until the remaining
   energy is covered, whether or not they beat the cheap threshold. If the remaining time only
-  just covers the remaining energy at full power, it charges regardless of the forecast.
+  just covers the remaining energy at full power, it charges regardless of the forecast — and
+  regardless of the peak ceiling.
 
 ## Phases (with auto-phase on)
 
@@ -314,14 +317,19 @@ hold the charger on through a demand-charge breach.
 
 ### The SoC ladder
 
-Peak protection *owns* the mapped minimum-SoC number, with two values:
+Peak protection *owns* the mapped minimum-SoC number, with two values (three while
+stocking up):
 
 ```
 100 % ┤
+ 95 % ┤◄══ Stock-up target ═══ fill to here at any price while the switch is on,
+      │      and REST here too, so the afternoon can't spend what tonight needs
       │
  80 % ┤◄══ Keep home battery above ═══ the CAR may not drain below this (the reserve line)
-      │◄══ Cheap-hour target, dark day ═══ how deep cheap grid fills it when tomorrow is poor
+      │◄══ Cheap-hour target, dark day ═══ how deep a cheap hour fills it when tomorrow is poor
       │
+ 60 % ┤◄── Keep ready for peaks above ─── example: below this, top up at ANY price,
+      │      because a flat battery cannot shave (0 % = off, the default)
  50 % ┤◄══ Keep in reserve for peaks ═══ where minimum-SoC RESTS
       │      ordinary house loads cannot drain the battery below this, so there is
       │      always something banked for a peak nobody saw coming
@@ -332,6 +340,10 @@ Peak protection *owns* the mapped minimum-SoC number, with two values:
       │      that drop is what actually frees the headroom, and it is the only lever
   0 % ┤      that works with no car anywhere near the house
 ```
+
+Stocking up raises only the *resting* value. `May discharge to` is computed from the
+reserve you set, never from the stock-up target — otherwise the charge just bought would
+be locked away from the very evening it was bought for.
 
 Those two numbers are the whole contract *while peak protection is on* — no attempt is made
 to blend your own edits into them. But the contract ends when you switch it off: the
@@ -398,6 +410,86 @@ operator's own meter reading disagrees. There is deliberately no way to type a p
 hand — the record is what was measured, so a peak that happened while Home Assistant was
 down is not one the guard will spend.
 
+### Aim as low as the battery can actually carry
+
+The bill is one quarter-hour a month. You can always give up on a target; you can never
+un-buy a peak. So the right posture is **ambitious early, resigned late** — start each month
+aiming at the lowest line that is worth anything, and let it rise only when it has to. The
+month allowance above is already the "resigned late" half; this is the other one.
+
+The lowest line worth anything is the **minimum billing base**. Operators charge for at least
+20 % of your agreed connection capacity, and never less than 2 kW, whatever you actually
+draw — so shaving below that buys nothing at all. Set **Agreed connection capacity** from your
+network bill and the target is clamped there; the card says when the clamp is what's binding.
+
+But "aim low and find out" is not free. Defending a line the battery *cannot* hold spends the
+charge on the morning peak and leaves nothing for the evening one — and since the allowance
+only ever floats up, one lost window relaxes the target for the rest of the month. Aiming too
+low can genuinely cost more than aiming sensibly. So the guard works out, every cycle, the
+lowest line it could actually sustain:
+
+```
+available = (SoC − May discharge to) / 100 · battery capacity
+demand    = grid import + battery discharge − the car's share   ← the part we can't turn down
+holdable  = demand − available / Hold out for
+```
+
+**Peak target in force** is then the highest of three numbers, and the card shows which one is
+binding:
+
+| Candidate | Meaning |
+|---|---|
+| Your setting, floored at the billing base | what you asked for, minus what's pointless |
+| This month's peak − the buffer | no point defending below what's already bought |
+| The holdable line | no point defending below what the battery can carry |
+
+The car is deliberately **not** counted in `demand`: it is a load we can turn down, and
+letting it raise the line would mean accommodating something we should simply trim.
+
+`Hold out for` (2 hours by default) is how long a shave has to stay survivable. Shorter is
+more ambitious — it defends a lower line and spends the battery faster. It is not a cliff:
+the line is recomputed every cycle, so an over-ambitious horizon shows up as the target
+drifting *upward* as the charge falls, not as a sudden collapse.
+
+With no battery SoC, or before the capacity is known, there is **no holdable line at all** and
+your configured target stands — the same rule as everywhere else here: never act on a
+calculation you can't actually do. The three limits move together, exactly as with the month
+allowance, and the line is quantised to 100 W and rises at once but falls only after the dwell,
+so a moving target can't set the tier thresholds chattering.
+
+### Charging under the ceiling, not against it
+
+A departure plan used to book the **cheapest** slots at **full power** — it minimised the
+number of hours by maximising the kilowatts, which is precisely backwards for a demand charge.
+The peak guard was then left undoing its own planner, quarter-hour by quarter-hour.
+
+Now every grid strategy — cheap hour, departure plan, Fast, the *Solar + minimum* floor —
+asks for the current that **fits under the target in force**, from the start:
+
+```
+ceiling = Peak target in force − everything in the house that isn't the car
+          + whatever the car is already taking from solar and the battery
+```
+
+Three consequences:
+
+* **The plan books more, cheaper-per-hour slots.** Covering 11 kWh takes one hour at 11 kW or
+  eight at 1.4 kW; only the second one is invisible to the tariff.
+* **The phase count follows the ceiling.** This is not a detail: 6 A × 3φ is 4.14 kW, so under
+  a low line three-phase charging *cannot fit at all*, while 6 A × 1φ is 1.38 kW and does. Grid
+  charging therefore picks its phases from the ceiling, through the same hysteresis,
+  confirmation and dwell that solar charging uses — the contactor is no busier than before.
+* **The live budget still corrects within the window.** Planning aims at the target; the
+  quarter-hour budget is what actually trims the amps. Nothing about the tiers changes.
+
+**The departure guarantee still wins.** If spreading the charge under the ceiling can't deliver
+your target energy by departure, the plan reverts to full power and buys the peak — a car that
+can't make the trip is worse than a demand charge. The status reason says so rather than
+quietly missing the target. The *Never exceed* limit remains the last stop even then.
+
+With peak protection off there is no ceiling and every one of these paths behaves exactly as
+it did before.
+
 ### When the measurement can't be trusted
 
 If the grid reading disappears or Home Assistant restarts mid-window, part of the
@@ -422,21 +514,67 @@ not the one that just ended. Any clock time in a status line is local for the sa
 
 ---
 
-## Cheap-hour grid charging
+## Grid charging the home battery
 
-Buys energy into the home battery — and runs the house from the grid — while the price is at
-or below the same **Cheap price threshold** the car uses. Off by default, and it needs a
-mapped grid-setpoint entity to do anything at all.
+Buys energy into the home battery — and runs the house from the grid — for one of three
+reasons, in descending order of urgency. Off by default, and it needs a mapped
+grid-setpoint entity to do anything at all.
+
+| Reason | When | Fills to | Price? |
+|---|---|---|---|
+| **Stock up for tonight** | you turned the switch on | **Stock-up target** (95 %) | ignored |
+| **Keep ready for peaks** | peak protection on and SoC below the level | **Keep ready for peaks above** (0 % = off) | ignored |
+| **A cheap hour** | price ≤ **Cheap price threshold** | the bright/dark target below | that's the point |
 
 On an ESS the grid setpoint *is* total grid import, so what is commanded here is exactly the
 quantity a capacity tariff bills:
 
 ```
-cheap now      → setpoint = min(house load + car − PV + cheap-hour import power, budget)
-not cheap      → setpoint = your normal grid import (~50 W): the battery covers the house
-SoC ≥ target   → stop
+something wants to buy  → setpoint = min(house load + car − PV + import power, budget)
+nothing does            → setpoint = your normal grid import (~50 W): the battery covers the house
+SoC ≥ target            → stop, and don't resume until it drops 2 % below (see below)
 peak protection engaged → abandoned outright
 ```
+
+### Cheapest hours first, then any hour
+
+*Keep ready for peaks* exists because a battery sitting on its floor defends nothing, and
+in a dark winter week the few cheap hours a day do not keep up: a 15-day simulation of a
+heat-pump house at −9 °C found the pack pinned to its floor through almost every breach,
+with PV contributing about 1 kWh against 30–58 kWh of daily consumption. Below this level
+the price stops being the question — an unshaved quarter-hour costs more than the
+difference between a cheap kilowatt-hour and an ordinary one.
+
+It is a **floor, not a cap**: a cheap hour still fills deeper if its own target is higher,
+so turning readiness on never makes cheap hours buy *less*. Set it to 0 to switch the whole
+behaviour off, which is the default and the old behaviour exactly.
+
+### Stocking up has two halves
+
+You know tonight is the sauna; the brain does not. *Stock up for tonight* fills toward its
+target at any price **and holds it there** — while it is on, the resting minimum SoC rises
+to the stock-up target, so the afternoon's ordinary load is served from the grid (far below
+your limit anyway) instead of quietly spending the charge before the evening it was bought
+for. Filling without holding is the common mistake: in simulation it gave the whole stock
+away to the afternoon and arrived at 18:30 barely better off than doing nothing.
+
+The **shaving floor is deliberately unaffected** — holding at 95 % while resting must not
+stop peak protection reaching that stock when the sauna actually starts. Turn the switch
+off after the event; unlike the settings around it, this is a control you use rather than
+one you configure.
+
+### Why charging stops with a 2 % band
+
+Grid charging stops at its target and does not resume until the SoC has fallen 2 % below
+it. Without the band the setpoint flips between "import hard" and "import nothing" on
+every cycle once the target is reached, and the pack pays a round-trip loss on each flip.
+Five cheap hours a day hides this; a battery kept ready around the clock does not — against
+a 100 % target, 15 simulated days imported **864 kWh with no band and 776 kWh with 2 %**.
+
+The width is measured, not chosen: 2 % captures 88 of the 95 kWh available, and it is the
+widest band that costs *nothing* in peak performance (identical worst quarter-hour and
+breach count to no band at all). 5 % and 10 % save a further ~7 kWh but start giving
+breaches back — a wider band just means arriving at the evening with a flatter battery.
 
 **The two features belong together.** Importing hard in a cheap hour is precisely how a
 demand charge gets bought by accident. Because the command is capped by

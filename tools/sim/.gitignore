@@ -1,0 +1,10 @@
+# Everything here is pulled from a live Home Assistant instance: real household
+# consumption, a full entity dump, and an access token. None of it belongs in a public
+# repository. Regenerate the snapshots with pull_winter.py instead of committing them.
+*.json
+# The built readout embeds the same real consumption/price data inline.
+peak15_chart.html
+token.txt
+out.txt
+wout.txt
+__pycache__/
