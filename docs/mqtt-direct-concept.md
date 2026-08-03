@@ -62,6 +62,21 @@ Going direct: one dependency fewer, exact enum values instead of label-matching,
 > **`nrg` layout** (index): `U` L1,L2,L3,N = 0‑3 · `I` L1,L2,L3 = 4‑6 ·
 > `P` L1,L2,L3,N,**Total** = 7‑11 · `pf` L1,L2,L3,N = 12‑15. Total power = **`nrg[11]`**.
 
+> **`frc` is cleared by the charger when the car is unplugged — verified live.** On
+> 2026‑08‑03 the brain was holding a car off with `frc = 1`; the car was unplugged at
+> 07:44:56 UTC and the charger moved `frc` to `0` (Neutral) on its own at **07:45:01**,
+> ~4 s later. Nothing on our side asked for it: the *Control active* and *Charging
+> requested* sensors never changed across the whole window, so the decision stayed
+> "in control, don't charge" throughout and `_release_force` was never reached.
+>
+> This is why charger writes are **closed-loop** (`goe_parse.should_publish`): a write
+> path that trusts its own memory believes it is still holding a pause that the charger
+> silently dropped, and the next car to plug in charges at whatever `amp` was left in the
+> register. It resets **once per disconnect**, not continuously — `frc` stayed Neutral for
+> hours afterwards — so re-asserting it costs one write per unplug and cannot turn into a
+> fight with the box. Note the RFID card is *not* involved: in the verified case the tag
+> was only registered ~80 s after `frc` had already been cleared.
+
 > **`amp` write frequency — not a constraint.** Verified in practice: the charger takes
 > **more than one write per second**, sustained, without complaint. The brain writes far
 > less than that (~4/min on a fluctuating day, with a 2 s post-write settle), so when

@@ -238,3 +238,13 @@ FAST_BACKOFF_DELTA_A: Final = 2.0
 # Note this quantizes the loop: at 3φ/230 V one amp is ~690 W, so the deadband, not
 # the timing, is what ignores small surplus wobbles.
 MIN_WRITE_DELTA_A: Final = 1.0
+
+# How long to let one of our own writes echo back before we believe the charger's
+# reported value again (see goe_parse.should_publish). We publish `<key>/set`, the
+# box applies it and republishes `<key>`; until that lands, its retained value is
+# still the *old* one and re-asserting against it would just spam the broker.
+# Both directions of being wrong are bounded and mild: too short costs a duplicate
+# write, too long lets a force-state someone else changed stand for that much
+# longer. Ten seconds is generous for a local broker and still cuts an
+# unauthorized charge well inside a minute.
+ECHO_SETTLE_S: Final = 10.0

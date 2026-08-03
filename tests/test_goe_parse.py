@@ -36,6 +36,10 @@ key_from_message_topic = goe_parse.key_from_message_topic
 normalize_base_topic = goe_parse.normalize_base_topic
 phase_count_to_psm = goe_parse.phase_count_to_psm
 power_from_nrg = goe_parse.power_from_nrg
+should_publish = goe_parse.should_publish
+FRC_OFF = goe_parse.FRC_OFF
+FRC_ON = goe_parse.FRC_ON
+FRC_NEUTRAL = goe_parse.FRC_NEUTRAL
 
 
 def test_normalize_base_topic_keeps_leading_slash_drops_trailing():
@@ -97,6 +101,48 @@ def test_phase_count_to_psm():
     # 1 phase -> psm 1 (single); anything else -> psm 2 (three).
     assert phase_count_to_psm(1) == PSM_SINGLE
     assert phase_count_to_psm(3) == PSM_THREE
+
+
+def test_should_publish_writes_whenever_the_intent_changed():
+    # A changed intent is written regardless of what the charger reports, and
+    # regardless of how recently we wrote something else.
+    assert should_publish(FRC_OFF, FRC_ON, FRC_ON, 0.0, 10.0) is True
+    assert should_publish(FRC_ON, FRC_ON, FRC_OFF, 0.0, 10.0) is True
+    # Nothing written yet this session.
+    assert should_publish(FRC_OFF, FRC_OFF, None, None, 10.0) is True
+
+
+def test_should_publish_stays_quiet_when_memory_and_charger_agree():
+    assert should_publish(FRC_OFF, FRC_OFF, FRC_OFF, 999.0, 10.0) is False
+
+
+def test_should_publish_reasserts_a_value_that_drifted_at_the_charger():
+    # The scenario this exists for: we hold the car off, something at the box
+    # (an RFID swipe, the app) clears frc, and nothing in our own memory changed.
+    assert should_publish(FRC_OFF, FRC_NEUTRAL, FRC_OFF, 999.0, 10.0) is True
+    assert should_publish(FRC_OFF, FRC_ON, FRC_OFF, 999.0, 10.0) is True
+
+
+def test_should_publish_waits_for_our_own_write_to_echo_back():
+    # Inside the settle window the charger's retained value is still the old one,
+    # so re-asserting against it would just spam the broker.
+    assert should_publish(FRC_OFF, FRC_NEUTRAL, FRC_OFF, 2.0, 10.0) is False
+    # Once the echo is overdue, the disagreement is real.
+    assert should_publish(FRC_OFF, FRC_NEUTRAL, FRC_OFF, 10.0, 10.0) is True
+
+
+def test_should_publish_trusts_memory_when_the_charger_never_reports_the_key():
+    # A firmware that doesn't publish this key would otherwise be rewritten every
+    # single cycle, forever.
+    assert should_publish(FRC_OFF, None, FRC_OFF, 999.0, 10.0) is False
+    assert should_publish(PSM_THREE, None, PSM_THREE, None, 10.0) is False
+
+
+def test_should_publish_treats_psm_auto_as_a_value_to_correct():
+    # psm 0 is the charger's own auto mode: not the phase count we asked for, so
+    # a box that fell back to it gets our value put back.
+    assert should_publish(PSM_SINGLE, goe_parse.PSM_AUTO, PSM_SINGLE, 999.0, 10.0) is True
+    assert should_publish(PSM_THREE, PSM_THREE, PSM_THREE, 999.0, 10.0) is False
 
 
 def test_coerce_rejects_bools():

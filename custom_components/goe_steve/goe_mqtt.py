@@ -55,6 +55,7 @@ from .goe_parse import (
     normalize_base_topic,
     phase_count_to_psm,
     power_from_nrg,
+    should_publish,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +71,8 @@ __all__ = [
     "GoeMqttClient",
     "async_discover_chargers",
     "normalize_base_topic",
+    "phase_count_to_psm",
+    "should_publish",
 ]
 
 

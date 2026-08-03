@@ -179,6 +179,36 @@ minimum current, so it can never start a charge the sun can't pay for.
 Grid strategies are exempt in both directions: a cheap hour / plan slot / Fast starts
 immediately and stops immediately at its boundary — no ride-out on expensive grid.
 
+### A pause is held, not just announced
+
+Pausing is the charger's force-state (`frc = Off`), never a current of zero — the requested
+current floors at 6 A and so cannot stop anything on its own.
+
+That force-state is **re-asserted, not set once**. The charger can move it without telling
+us — verified: **unplugging a car clears `frc` to Neutral** a few seconds later, whatever the
+brain wanted (see [mqtt-direct-concept.md](mqtt-direct-concept.md)); the go-e app can change
+it too. So the brain checks what the charger *reports* alongside what it last wrote, and puts
+its value back (within ~10 s) whenever the two disagree.
+
+Without that, a pause quietly stops pausing. Swapping cars is the ordinary way to hit it: the
+brain holds car A off, you unplug it, the charger drops the hold, you plug in car B — and
+because the brain's decision never changed ("still don't charge"), it never writes again. The
+Status sensor goes on reading *waiting for the home battery* at 0 A while the car charges at
+the minimum, and nothing in the UI contradicts it.
+
+Two consequences worth knowing:
+
+* Setting **Force state** by hand is authoritative only while the brain isn't controlling the
+  charger. With Smart control on, the brain owns it and will take it back. To drive the box
+  yourself, use Manual mode; to hand it over entirely, turn Smart control off.
+* While paused, the requested current is parked at the minimum. It changes nothing on its
+  own — the force-state is what holds the car — but if the charger is ever released or
+  cleared behind our back, an unplanned session starts at 6 A rather than at whatever the
+  previous car was drawing.
+
+The same read-back covers the phase mode (`psm`). It does **not** cover the requested current,
+which is written under its own deadband and rate limit while charging.
+
 ## The departure plan (Smart)
 
 * Set **target energy** and **departure**; 0 kWh disables planning.

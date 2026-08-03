@@ -66,6 +66,7 @@ from .const import (
     DEFAULT_TARGET_ENERGY_KWH,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    ECHO_SETTLE_S,
     FAST_BACKOFF_DELTA_A,
     INPUT_SETTLE_S,
     MIN_UPDATE_INTERVAL_S,
@@ -85,6 +86,7 @@ from .const import (
     SURPLUS_TRACK_RISE_TAU_S,
 )
 from .engine import (
+    HARDWARE_MIN_CURRENT_A,
     ChargerInputs,
     ChargingMode,
     Decision,
@@ -97,7 +99,14 @@ from .engine import (
     update_peak_window,
 )
 from .forecast import dedupe_slots, parse_forecast
-from .goe_mqtt import FRC_NEUTRAL, FRC_OFF, FRC_ON, GoeMqttClient
+from .goe_mqtt import (
+    FRC_NEUTRAL,
+    FRC_OFF,
+    FRC_ON,
+    GoeMqttClient,
+    phase_count_to_psm,
+    should_publish,
+)
 from .steve_api import SteVeApiClient, SteVeApiError, SteVeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -212,7 +221,16 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self._last_written_phases: int | None = None
         # Last force-state we wrote: True=charge, False=don't charge, None=released
         # or never touched. Lets us skip redundant writes and release on handoff.
+        # It is *memory*, not truth: the charger's own `frc` is checked alongside it
+        # (see _write_force), because an RFID swipe or the go-e app can move the real
+        # value without us ever hearing about it. The timestamps below are what stop
+        # that read-back from re-writing before our own write has echoed back.
         self._last_written_force: bool | None = None
+        self._force_written_at: datetime | None = None
+        self._phases_written_at: datetime | None = None
+        # True once the requested current has been parked at the hardware minimum for
+        # the current pause, so parking costs one write per pause and not one a cycle.
+        self._amp_parked = False
         # Last battery-hold state we wrote: True=held (no discharge), False=off,
         # None=never touched. Skips redundant writes and releases on handoff so a
         # switch we never set is left alone. Persisted across restarts (the store
@@ -563,6 +581,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         if not decision.control:
             self._last_written_a = None  # we relinquished control
+            self._amp_parked = False  # …so the next pause we *do* own parks again
             await self._release_force()  # hand the charger back to manual/app
             return
 
@@ -570,14 +589,20 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         # Start/stop via the go-e force-state (frc): the amp value floors at the
         # 6 A hardware minimum, so it can't actually pause charging. When pausing,
-        # frc=1 holds the car off and we leave the amp where it is.
+        # frc=1 holds the car off and the amp value is parked at that floor.
         await self._write_force(decision.should_charge)
         if not decision.should_charge:
+            # Park the requested current at the minimum. Holding the car off is
+            # frc's job and stays frc's job — this is only about what a car would
+            # find if frc were ever cleared behind our back: 6 A rather than
+            # whatever the last session happened to leave in the register.
+            await self._park_amp()
             # Forget the last written current: while paused the go-e may clamp/alter
             # the amp value, so the first write after resuming must not be
             # deadband-compared against a stale reading.
             self._last_written_a = None
             return
+        self._amp_parked = False
 
         target = round(decision.target_current_a) if decision.should_charge else 0
 
@@ -627,21 +652,77 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         """
         if not self.settings.auto_phase and not decision.write_phases:
             return
-        if self._last_written_phases == decision.target_phases:
+        want = phase_count_to_psm(decision.target_phases)
+        last = (
+            None
+            if self._last_written_phases is None
+            else phase_count_to_psm(self._last_written_phases)
+        )
+        if not should_publish(
+            want, self.goe.phase_mode, last, self._since(self._phases_written_at),
+            ECHO_SETTLE_S,
+        ):
             return
         await self.goe.set_phase_count(decision.target_phases)
         self._last_written_phases = decision.target_phases
+        self._phases_written_at = dt_util.utcnow()
 
     async def _write_force(self, want_charge: bool) -> None:
         """Force the charger on/off via the go-e ``frc`` key.
 
         ``want_charge=True`` forces charging on (frc=2 / On); False forces it off
-        (frc=1 / Off). Skips redundant writes by remembering the last state we set.
+        (frc=1 / Off).
+
+        Closed-loop on purpose. Skipping the write whenever *we* last wrote the same
+        value is open-loop, and frc is the one key something else can plausibly move:
+        an RFID swipe at the box, the go-e app, the charger's own session handling.
+        The brain would go on believing it was holding the car off while the charger
+        sat in Neutral — a pause that isn't pausing anything, with nothing in the UI
+        disagreeing. So the charger's reported frc has to agree too, and when it
+        doesn't we put ours back. That is the contract the Force-state select already
+        documents: setting it by hand is authoritative only when the brain isn't
+        controlling.
         """
-        if self._last_written_force is want_charge:
+        want = FRC_ON if want_charge else FRC_OFF
+        last = (
+            None
+            if self._last_written_force is None
+            else (FRC_ON if self._last_written_force else FRC_OFF)
+        )
+        if not should_publish(
+            want, self.goe.force_state, last, self._since(self._force_written_at),
+            ECHO_SETTLE_S,
+        ):
             return
-        await self.goe.set_force(FRC_ON if want_charge else FRC_OFF)
+        await self.goe.set_force(want)
         self._last_written_force = want_charge
+        self._force_written_at = dt_util.utcnow()
+
+    async def _park_amp(self) -> None:
+        """Leave the requested current at the hardware minimum while paused.
+
+        Defence in depth, not the pause itself: :meth:`_write_force` is what holds
+        the car off, and if it is doing its job this never matters. It matters when
+        it *can't* — the charger is in Neutral because we deliberately released it
+        (Smart control off, a stale-input cycle), and someone authorizes a session at
+        the box. Then the amp register is the only thing deciding how hard that
+        charge pulls, and leaving the previous session's 16 A in it is how an
+        unplanned charge gets to be a fast one.
+
+        Written once per pause: re-checking every cycle would fight the app for a
+        register that is, by then, no longer ours to defend.
+        """
+        if self._amp_parked:
+            return
+        self._amp_parked = True
+        live = self.goe.requested_current_a
+        if live is not None and live <= HARDWARE_MIN_CURRENT_A:
+            return
+        await self.goe.set_amp(int(HARDWARE_MIN_CURRENT_A))
+
+    def _since(self, stamp: datetime | None) -> float | None:
+        """Seconds since ``stamp``, or None if we never wrote that key."""
+        return None if stamp is None else (dt_util.utcnow() - stamp).total_seconds()
 
     async def _release_force(self) -> None:
         """Return ``frc`` to neutral so manual/app control resumes.
@@ -654,6 +735,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             return
         await self.goe.set_force(FRC_NEUTRAL)
         self._last_written_force = None
+        # Released means we have no opinion left to re-assert, so the read-back in
+        # _write_force must not resurrect one: clearing the stamp with the state
+        # keeps the two from ever describing different charge sessions.
+        self._force_written_at = None
 
     async def async_restore_hold_state(self) -> None:
         """Restore what we own on the house side, persisted across restarts.

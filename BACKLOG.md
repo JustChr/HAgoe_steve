@@ -258,6 +258,35 @@ it absolutely.
     measured, so a peak drawn while HA was down is not one the guard will spend. *Reset this
     month's peak* is the escape hatch when the operator's meter disagrees.
 
+## Closed-loop charger writes ✅ (v5.5.2)
+
+A pause could stop pausing without anything noticing. `_write_force` skipped the write
+whenever *we* had last written the same value — open-loop — so a `frc` moved at the charger
+was invisible. Verified on the live instance (2026‑08‑03): unplugging a car makes the go-e
+clear `frc` to Neutral ~4 s later; the brain's decision never changes across a car swap
+("in control, don't charge" throughout), so it never wrote again, and the next car charged
+at whatever `amp` was left in the register while the Status sensor read 0 A. Timestamps and
+the full state trace are in `docs/mqtt-direct-concept.md`.
+
+- `goe_parse.should_publish` (pure, unit-tested) decides whether a key needs writing from
+  intent + the charger's reported value + our memory + time since our last write.
+  `ECHO_SETTLE_S` absorbs the lag before our own write echoes back; a key the charger never
+  reports falls back to memory so it can't be rewritten forever.
+- Applied to `frc` and `psm`. **Not** to `amp`, which has its own deadband and rate limit.
+- Pausing now parks `amp` at the hardware minimum (once per pause), so a charge we didn't
+  authorize can't inherit the previous session's 16 A.
+- Enforces what the Force-state select's docstring already promised: setting it by hand is
+  authoritative only while the brain isn't controlling.
+
+  Follow-ups worth revisiting:
+  - A charger that *can't* honour a write is now re-asked every `ECHO_SETTLE_S` instead of
+    once. For `frc` that is the wanted behaviour (persistent retry on a safety hold); for
+    `psm` on a box without a phase-switching relay it would be pointless chatter. Nothing
+    reports such a box today (`has_phase_control` is unconditionally true over MQTT), but if
+    one turns up, `psm` wants its own longer settle or an attempt cap.
+  - The reset is one-shot per disconnect (verified: `frc` stayed Neutral for hours after),
+    so re-asserting costs one write per unplug and cannot become a fight with the charger.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

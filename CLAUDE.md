@@ -66,6 +66,15 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
   map, not an identity — keep it that way.
 - **`frc`** is the start/stop channel: `0` neutral, `1` force-off, `2` force-on. Pausing
   is done via `frc`, never by writing current 0.
+- **Charger writes are closed-loop, and must stay that way.** "Did *I* last write this?"
+  is not the same question as "does the charger hold this?" — **unplugging a car clears
+  `frc` to Neutral at the charger** (verified live, see `docs/mqtt-direct-concept.md`), and
+  the go-e app can move `frc`/`psm` too, with nothing to tell us. So
+  `_write_force` / `_write_phases` skip a write only when our memory *and* the charger's
+  reported value agree (`goe_parse.should_publish`, with `ECHO_SETTLE_S` absorbing the lag
+  before our own write echoes back). Open-loop, a pause can silently stop pausing while
+  the Status sensor still reads 0 A. `_release_force` keeps its ownership guard: released
+  means no opinion to re-assert, so it clears the stamp along with the state.
 - **`nrg`** is a 16-element array; index 11 is total power in W. `wh` is session energy
   (resets at plug-in).
 - **SteVe auth:** HTTP Basic with a web user's **API password** (set under *Users* in

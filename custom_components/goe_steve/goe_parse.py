@@ -115,6 +115,39 @@ def phase_count_to_psm(phases: int) -> int:
     return PSM_SINGLE if int(phases) == 1 else PSM_THREE
 
 
+def should_publish(
+    want: int,
+    live: int | None,
+    last_written: int | None,
+    since_write_s: float | None,
+    settle_s: float,
+) -> bool:
+    """Whether a charger key needs (re-)publishing to reach ``want``.
+
+    Writing on "did *I* last write this?" alone is open-loop: anything that moves
+    the value at the charger — an RFID swipe, the go-e app, the box's own session
+    handling — is invisible, and the brain keeps believing a value it no longer
+    holds. Since the charger republishes every key it owns, ``live`` closes the
+    loop: we skip the write only when our memory *and* the charger agree.
+
+    The four cases, in order:
+
+    * intent changed → always write, whatever the charger currently says;
+    * no reading (``live is None``) → trust the memory, because a firmware that
+      never publishes this key would otherwise be rewritten forever;
+    * we published within ``settle_s`` → wait, the echo hasn't landed yet and
+      ``live`` is still the old value;
+    * otherwise the value drifted at the charger → re-assert it.
+    """
+    if last_written != want:
+        return True
+    if live is None or live == want:
+        return False
+    if since_write_s is not None and since_write_s < settle_s:
+        return False
+    return True
+
+
 def coerce_int(value: Any) -> int | None:
     """int() a value, rejecting bools and non-numerics."""
     if value is None or isinstance(value, bool):
