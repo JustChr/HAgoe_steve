@@ -413,9 +413,14 @@ export class GoeStevePeakCard extends LitElement {
       ${numberRow(ent.peak_hard_limit)} ${numberRow(ent.peak_month_buffer)}
       <div class="group-label">${this._t("peak.battery")}</div>
       ${numberRow(ent.shaving_reserve_soc)} ${numberRow(ent.peak_min_soc)}
+      ${numberRow(ent.peak_ready_soc)}
       <div class="group-label">${this._t("peak.cheap")}</div>
       ${numberRow(ent.grid_setpoint)} ${numberRow(ent.cheap_charge_power)}
       ${numberRow(ent.bright_day_target_soc)} ${numberRow(ent.dark_day_target_soc)}
+      ${ent.stock_up || ent.stock_up_target_soc
+        ? html`<div class="group-label">${this._t("peak.stockUp")}</div>
+            ${row(ent.stock_up)} ${numberRow(ent.stock_up_target_soc)}`
+        : nothing}
       ${ent.reset_monthly_peak
         ? html`<div class="setting">
             <span class="setting-name">${this._friendlyName(ent.reset_monthly_peak)}</span>

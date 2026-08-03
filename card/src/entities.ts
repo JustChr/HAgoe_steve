@@ -57,6 +57,9 @@ export interface ResolvedEntities {
   cheap_charge_power?: string;
   bright_day_target_soc?: string;
   dark_day_target_soc?: string;
+  peak_ready_soc?: string;
+  stock_up?: string;
+  stock_up_target_soc?: string;
   reset_monthly_peak?: string;
   active_transaction?: string;
   last_session_energy?: string;
@@ -147,6 +150,9 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.cheap_charge_power = find("cheap_charge_power");
   result.bright_day_target_soc = find("bright_day_target_soc");
   result.dark_day_target_soc = find("dark_day_target_soc");
+  result.peak_ready_soc = find("peak_ready_soc");
+  result.stock_up = find("stock_up");
+  result.stock_up_target_soc = find("stock_up_target_soc");
   result.reset_monthly_peak = find("reset_monthly_peak");
   result.active_transaction = find("active_transaction");
   result.last_session_energy = find("last_session_energy");

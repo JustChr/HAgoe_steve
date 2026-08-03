@@ -171,6 +171,7 @@ const en: Dict = {
   "peak.limits": "Limits",
   "peak.battery": "Home battery",
   "peak.cheap": "Cheap hours",
+  "peak.stockUp": "Stocking up",
 
   "reason.peak_off": "Peak protection is off",
   "reason.peak_ok": "This quarter-hour is heading for {projected} kW — comfortable",
@@ -378,6 +379,7 @@ const de: Dict = {
   "peak.limits": "Grenzen",
   "peak.battery": "Hausbatterie",
   "peak.cheap": "Günstige Stunden",
+  "peak.stockUp": "Vorladen",
 
   "reason.peak_off": "Lastspitzenschutz ist aus",
   "reason.peak_ok": "Diese Viertelstunde läuft auf {projected} kW zu — entspannt",

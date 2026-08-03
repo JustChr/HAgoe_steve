@@ -222,6 +222,9 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Keep ready for peaks above | Below this the battery is topped up at *any* price, so it can still shave (0 = off) |
 | `switch` Stock up for tonight | Fill for a big evening and hold it, instead of letting the afternoon spend it |
 | `number` Stock-up target | How full that fills the battery (95%) |
+
+All three appear in the peak card's settings block — the first under *Home battery*, the
+other two under *Stocking up*.
 | `button` Reset this month's peak | Forget the recorded peak when the operator's meter disagrees |
 | `sensor` Status | **Plain-language reason** for the current decision |
 | `sensor` Surplus for car | Power available under the reserve line |
