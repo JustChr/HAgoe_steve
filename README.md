@@ -90,9 +90,11 @@ See [`docs/concept`](#concept) for the full design.
   still has to be met.
 - **Mode-aware 1↔3 phase switching** with anti-flap hysteresis, a confirmation window and dwell
   timers: a threshold crossing must hold for ~2 minutes and the contactor moves at most once
-  every 5 minutes. Power modes
+  every 5 minutes — *whatever* asks for the switch. Power modes
   (Fast, cheap-grid, deadline charging) use the full phase count, while solar-surplus charging
-  prefers a single phase so a small surplus still charges. Enable the **Auto phase** switch —
+  prefers a single phase so a small surplus still charges. A power mode that starts inside the
+  dwell charges at full current on the phases already live and picks up the rest when it
+  expires. Enable the **Auto phase** switch —
   phase control (`psm`) is always available over MQTT.
 - **Three Lovelace cards:** a main *answer-strip* card — a live charging figure with a ring + source
   bar splitting the car's power into **solar / battery / grid**, a one-line PV/house/grid/battery

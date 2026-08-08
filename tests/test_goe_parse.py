@@ -35,6 +35,8 @@ decode_payload = goe_parse.decode_payload
 key_from_message_topic = goe_parse.key_from_message_topic
 normalize_base_topic = goe_parse.normalize_base_topic
 phase_count_to_psm = goe_parse.phase_count_to_psm
+psm_to_phase_count = goe_parse.psm_to_phase_count
+phases_from_nrg = goe_parse.phases_from_nrg
 power_from_nrg = goe_parse.power_from_nrg
 should_publish = goe_parse.should_publish
 FRC_OFF = goe_parse.FRC_OFF
@@ -97,10 +99,48 @@ def test_car_connected(car_state, expected):
     assert car_connected(car_state) is expected
 
 
+def test_phases_from_nrg_counts_the_phases_the_car_actually_draws():
+    # A live three-phase charge, straight off the wire (fw 60.5, 16 A requested).
+    three = [
+        230.02, 227.85, 230.64, 2.48,
+        15.048, 15.124, 15.086,
+        3447.9, 3431.8, 3457.1, 0, 10336.8,
+        99.6, 99.6, 99.4, 100,
+    ]
+    assert phases_from_nrg(three) == 3
+    # The same charge on one phase: L1 only.
+    single = list(three)
+    single[5] = single[6] = 0.0
+    assert phases_from_nrg(single) == 1
+    # Two live phases have no name of their own — the charger only switches 1↔3.
+    two = list(three)
+    two[6] = 0.0
+    assert phases_from_nrg(two) == 3
+
+
+def test_phases_from_nrg_says_nothing_when_no_current_flows():
+    # Idle: there is no phase count to measure, so the caller must fall back to
+    # psm rather than be told "1".
+    idle = [230.02, 230.02, 230.33, 2.48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert phases_from_nrg(idle) is None
+    # Meter noise on an unused phase must not read as a live one.
+    assert phases_from_nrg([230, 230, 230, 0, 0.06, 0.04, 0.05] + [0] * 9) is None
+    assert phases_from_nrg([1, 2, 3]) is None  # too short
+    assert phases_from_nrg(None) is None
+
+
 def test_phase_count_to_psm():
     # 1 phase -> psm 1 (single); anything else -> psm 2 (three).
     assert phase_count_to_psm(1) == PSM_SINGLE
     assert phase_count_to_psm(3) == PSM_THREE
+
+
+def test_psm_to_phase_count_is_the_inverse_and_refuses_to_guess_at_auto():
+    assert psm_to_phase_count(PSM_SINGLE) == 1
+    assert psm_to_phase_count(PSM_THREE) == 3
+    # psm 0 means the charger decides; the mode alone doesn't say how many.
+    assert psm_to_phase_count(goe_parse.PSM_AUTO) is None
+    assert psm_to_phase_count(None) is None
 
 
 def test_should_publish_writes_whenever_the_intent_changed():

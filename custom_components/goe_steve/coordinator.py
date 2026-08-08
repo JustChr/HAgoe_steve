@@ -333,10 +333,13 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
     def _read_phases(self) -> int:
         """Actual phase count the car is charging on, best-effort.
 
-        Prefer the charger's reported ``pnp`` (phases actually charging): it keeps
-        the engine's ``P = I·φ·V`` math grounded in reality and catches a failed
-        write or a manual/app override. When the charger hasn't reported it (e.g.
-        idle), fall back to the engine's intended phase, then the configured count.
+        Prefer what the charger reports (``GoeMqttClient.phases``: measured phase
+        currents, else the ``psm`` mode): it keeps the engine's ``P = I·φ·V`` math
+        grounded in reality and catches a failed write or a manual/app override.
+        Only when the charger says nothing at all do we fall back to the engine's
+        own intended phase, then the configured count — that fallback is a guess,
+        and it is the reason a stale solar-strategy phase once had the card
+        reporting a three-phase charge as single-phase.
         """
         phases = self.goe.phases
         if phases in (1, 3):

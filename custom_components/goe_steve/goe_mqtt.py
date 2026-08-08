@@ -54,7 +54,9 @@ from .goe_parse import (
     key_from_message_topic,
     normalize_base_topic,
     phase_count_to_psm,
+    phases_from_nrg,
     power_from_nrg,
+    psm_to_phase_count,
     should_publish,
 )
 
@@ -181,8 +183,22 @@ class GoeMqttClient:
 
     @property
     def phases(self) -> int | None:
-        """Phases actually charging (``pnp``), or None."""
-        return coerce_int(self.get(KEY_PNP))
+        """Phases actually charging (1 or 3), or None when nothing says.
+
+        Three sources, best first. ``pnp`` would answer directly, but no firmware
+        we have seen publishes it (V4 / 57.1 and 60.5 both omit the key), so on its
+        own it left the brain with no reading at all. The ``nrg`` per-phase currents
+        are the real ground truth while charging — they show what the *car* takes,
+        which is the number ``P = I·φ·V`` needs. Idle there is no current to count,
+        so the configured ``psm`` mode answers for what the next charge will use.
+        """
+        pnp = coerce_int(self.get(KEY_PNP))
+        if pnp in (1, 3):
+            return pnp
+        live = phases_from_nrg(self.get(KEY_NRG))
+        if live is not None:
+            return live
+        return psm_to_phase_count(coerce_int(self.get(KEY_PSM)))
 
     @property
     def allowed_current_a(self) -> int | None:

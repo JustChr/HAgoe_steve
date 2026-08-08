@@ -235,7 +235,24 @@ which is written under its own deadband and rate limit while charging.
   the crossing must **hold for 2 minutes**, and at least **5 minutes** must have passed
   since the last switch. A spike or a momentary dip re-arms the 2-minute window from
   scratch, so it costs nothing.
-* Grid charging always runs at the full phase count.
+* The hysteresis is measured against **where the contactor actually is**, not where solar
+  last put it. While the car is drawing, the phase count comes from the measured phase
+  currents, so a cheap-grid hour, the go-e app or a restart can all have moved it and the
+  next solar decision still starts from the truth. Idle there is nothing to measure, and
+  the remembered phase — with its 1φ preference for a fresh start — is used instead.
+* Grid charging runs at the full phase count, but it **answers to the dwell timer** like
+  everything else — the contactor is one piece of hardware, and a strategy allowed to throw
+  it the instant a price crosses would undo the rate limit the solar path obeys. A cheap
+  hour that opens inside the 5-minute window charges at full current on the phases already
+  live and picks the others up when the window expires. Worst case that defers about
+  0.6 kWh. It never *drops* a phase it already has: at 3φ the dwell has nothing to protect.
+* Grid switches also **arm** the dwell timer, so the next solar decision waits its
+  5 minutes too. Before this, grid-path switches were invisible to the timer and to the
+  card's phase-lock countdown, which showed nothing while the contactor was throwing.
+* While a switch is settling, the brain trusts **its own intent** over the measurement for
+  the length of the dwell. The contactor takes a moment and the car keeps drawing on the
+  old phases meanwhile; re-reading the measurement there would see the phases it just left,
+  switch back, and double-throw the contactor within seconds.
 * With auto-phase off the brain never touches the phase switch (except Manual, where you
   pick the phases explicitly).
 

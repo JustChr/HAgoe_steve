@@ -288,7 +288,11 @@ class EngineState:
 
     # Phase hysteresis/dwell memory. ``phase_want`` is the switch we are currently
     # confirming (see ``_resolve_phases``), armed at ``phase_want_since``.
+    # ``phases`` is what the *solar* strategy last chose; ``phases_targeted`` is what
+    # the finalized decision last asked the charger for, whichever strategy won, so
+    # the dwell timer sees grid-path switches too (see ``_stamp_phase_change``).
     phases: int | None = None
+    phases_targeted: int | None = None
     phase_changed_at: datetime | None = None
     phase_want: int | None = None
     phase_want_since: datetime | None = None
@@ -988,6 +992,73 @@ def _deadline_now(plan: _Plan | None, inp: ChargerInputs) -> tuple[str, dict[str
 
 # --- Phase resolution --------------------------------------------------------------
 
+# Above this the car is drawing enough for the per-phase currents to say how many
+# phases are live; below it ``inp.phases`` is only the configured mode.
+_PHASE_MEASURED_MIN_W = 500.0
+
+
+def _actual_phases(inp: ChargerInputs, cfg: EngineConfig, state: EngineState) -> int:
+    """Where the contactor is right now, best-effort.
+
+    While the car is drawing, ``inp.phases`` is measured off the per-phase currents
+    (see ``goe_parse.phases_from_nrg``) and is the truth, whoever last moved the
+    contactor — a cheap-grid hour, the go-e app, a restart that forgot. Idle it
+    degrades to the configured ``psm`` mode, so the phase the solar strategy last
+    chose is the better guess, and 1φ the better default: a fresh surplus should be
+    usable from ~1.4 kW rather than waiting for a three-phase minimum.
+
+    One exception, and it is load-bearing: while *our own* switch is still settling,
+    our intent beats the measurement. The contactor takes a moment to move and the
+    car keeps drawing on the old phases meanwhile, so a decision that re-read the
+    measurement would see the phases it just left, decide to switch back, and stamp
+    a fresh change — flip-flopping the contactor on every cycle instead of moving it
+    once. The dwell window is exactly that settling period, so it doubles as the
+    guard. Once it expires the measurement is authoritative again, and a
+    disagreement then is a real external override worth reacting to.
+    """
+    if _phase_dwell_active(inp, cfg, state) and state.phases_targeted in (1, 3):
+        return state.phases_targeted
+    if inp.car_actual_power_w > _PHASE_MEASURED_MIN_W and inp.phases in (1, 3):
+        return inp.phases
+    return state.phases if state.phases in (1, 3) else 1
+
+
+def _phase_dwell_active(inp: ChargerInputs, cfg: EngineConfig, state: EngineState) -> bool:
+    """Whether the contactor is still inside its minimum time between switches.
+
+    With ``now`` unknown (stateless one-shot reasoning) there is no time to measure,
+    so the dwell never blocks — the convention every other timer here follows.
+    """
+    if inp.now is None or state.phase_changed_at is None:
+        return False
+    return (inp.now - state.phase_changed_at).total_seconds() < cfg.phase_dwell_s
+
+
+def _grid_phases(inp: ChargerInputs, cfg: EngineConfig, state: EngineState) -> int:
+    """The phase count the grid strategies may charge on.
+
+    Grid charging wants the full count — it is buying power, not tracking a
+    surplus, so there is no hysteresis to apply and no crossing to confirm. It does
+    answer to the **dwell** timer, though: the contactor is one piece of hardware,
+    and a strategy that may throw it the instant a price crosses undoes the rate
+    limit the solar path is obeying. Inside the dwell the grid runs on whatever
+    phases are already live and picks the third one up when the window expires.
+
+    The cost is bounded and deliberate: at worst a cheap window opens seconds after
+    a solar phase switch and spends up to ``phase_dwell_s`` at 1φ — around 0.6 kWh
+    of deferred charging, against a contactor that would otherwise have no rate
+    limit at all on the cheapest path to move it.
+
+    Never *downshifts*: with the contactor already at 3φ the dwell has nothing to
+    protect, and dropping the grid to one phase to honour a timer would be pure loss.
+    """
+    if not cfg.auto_phase:
+        return max(1, inp.phases)
+    if _phase_dwell_active(inp, cfg, state):
+        return min(max(1, _actual_phases(inp, cfg, state)), cfg.max_phases)
+    return cfg.max_phases
+
+
 def _resolve_phases(
     surplus_w: float, inp: ChargerInputs, cfg: EngineConfig, state: EngineState
 ) -> int:
@@ -1014,11 +1085,21 @@ def _resolve_phases(
     Surplus charging *prefers* a single phase: with no remembered phase yet we
     start at 1φ so a small surplus is used immediately, climbing to 3φ only
     once it sustains the higher minimum.
+
+    ``current`` is where the contactor *is*, not where this strategy last wanted
+    it to be. While the car is drawing, ``inp.phases`` is measured off the phase
+    currents and is the truth — and it may well have been set by someone else:
+    a cheap-grid hour that took 3φ, the go-e app, a restart that forgot. Reading
+    our own memory instead means the down-switch branch never fires (we believe
+    we are already at 1φ), the early return below skips both timers, and the
+    contactor drops out of 3φ unconfirmed. Idle there is no current to measure,
+    ``inp.phases`` degrades to the configured ``psm`` mode, and the remembered
+    phase — with its 1φ preference for a fresh solar start — is the better guess.
     """
     if not cfg.auto_phase or cfg.max_phases < 3:
         return max(1, inp.phases)
 
-    current = state.phases if state.phases in (1, 3) else 1
+    current = _actual_phases(inp, cfg, state)
     up_threshold = (
         _current_to_power(_floor_current(cfg), 3, inp.voltage_v)
         + cfg.phase_up_margin_w
@@ -1049,11 +1130,7 @@ def _resolve_phases(
             return current
 
     # Honour the dwell timer before toggling the contactor.
-    if (
-        inp.now is not None
-        and state.phase_changed_at is not None
-        and (inp.now - state.phase_changed_at).total_seconds() < cfg.phase_dwell_s
-    ):
+    if _phase_dwell_active(inp, cfg, state):
         return current
 
     state.phases = desired
@@ -2374,11 +2451,42 @@ def _finalize(
         decision.pause_not_before = state.ride_out_since + timedelta(
             seconds=cfg.stop_ride_out_s
         )
+    _stamp_phase_change(decision, inp, state)
     if state.phase_changed_at is not None:
         decision.phase_locked_until = state.phase_changed_at + timedelta(
             seconds=cfg.phase_dwell_s
         )
     return decision
+
+
+def _stamp_phase_change(
+    decision: Decision, inp: ChargerInputs, state: EngineState
+) -> None:
+    """Record that the contactor moved, whichever strategy moved it.
+
+    ``_resolve_phases`` stamps its own switches, but it is only consulted on the
+    solar path: a cheap-grid hour simply takes ``max_phases``, and a departure plan
+    or the minimum floor pick their own count. Those switches reached the charger
+    without the dwell timer ever hearing about them, so the next solar decision
+    believed the contactor had been sitting still — and the card's phase-lock
+    countdown showed nothing while the contactor was in fact throwing.
+
+    Stamped off our own intent rather than the measurement: ``inp.phases`` changes
+    source between charging and idle (measured currents vs. the ``psm`` mode), and
+    a car that charges single-phase on a three-phase supply would make that flip
+    look like a contactor move it never was.
+    """
+    if not decision.control:
+        # Not driving the charger, so nothing of ours moves it; forget the target
+        # rather than compare against a stale one when control comes back.
+        state.phases_targeted = None
+        return
+    target = decision.target_phases
+    if target not in (1, 3):
+        return
+    if state.phases_targeted is not None and state.phases_targeted != target:
+        state.phase_changed_at = inp.now
+    state.phases_targeted = target
 
 
 def _decide(
@@ -2411,7 +2519,7 @@ def _decide(
 
     # --- Collect proposals ---------------------------------------------------------
     avail = compute_availability(inp, cfg, state)
-    grid_phases = cfg.max_phases if cfg.auto_phase else max(1, inp.phases)
+    grid_phases = _grid_phases(inp, cfg, state)
     floor_phases = 1 if cfg.auto_phase else max(1, inp.phases)
     min_solar_w = _current_to_power(_floor_current(cfg), floor_phases, inp.voltage_v)
 

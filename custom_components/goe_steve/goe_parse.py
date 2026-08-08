@@ -35,6 +35,12 @@ KEY_MCC = "mcc"  # MQTT connected (bool)
 # Index of total active power (W) inside the ``nrg`` array:
 # U(L1,L2,L3,N)=0-3, I(L1,L2,L3)=4-6, P(L1,L2,L3,N,Total)=7-11, pf=12-15.
 NRG_TOTAL_POWER_INDEX = 11
+NRG_PHASE_CURRENT_INDEXES = (4, 5, 6)
+
+# A phase counts as carrying the car when it draws more than this. Well below the
+# 6 A minimum a car may ever pull, well above the idle noise the meter reports on
+# an unused phase.
+PHASE_LIVE_CURRENT_A = 1.0
 
 # carState values that mean a car is physically plugged in.
 _CONNECTED_CAR_STATES = frozenset({2, 3, 4})
@@ -103,6 +109,31 @@ def power_from_nrg(nrg: Any) -> float | None:
     return None
 
 
+def phases_from_nrg(nrg: Any) -> int | None:
+    """Phase count the car is actually drawing on, from the ``nrg`` currents.
+
+    The ground truth for ``P = I·φ·V``: indices 4-6 are the per-phase currents, so
+    counting the live ones says what the car takes right now, not what the charger
+    was told to offer. A car that charges single-phase on a three-phase supply is
+    reported as 1 — which is the number the maths needs.
+
+    Returns None when nothing is flowing (idle, or the array is unusable); the
+    caller falls back to the configured phase mode then. Two live phases are
+    reported as 3, because the charger only switches between single and three and
+    the engine has no other vocabulary.
+    """
+    if not isinstance(nrg, list) or len(nrg) <= max(NRG_PHASE_CURRENT_INDEXES):
+        return None
+    live = 0
+    for index in NRG_PHASE_CURRENT_INDEXES:
+        amps = coerce_float(nrg[index])
+        if amps is not None and amps > PHASE_LIVE_CURRENT_A:
+            live += 1
+    if live == 0:
+        return None
+    return 1 if live == 1 else 3
+
+
 def car_connected(car_state: int | None) -> bool | None:
     """True when carState says a car is plugged in (2/3/4); None if unknown."""
     if car_state is None:
@@ -113,6 +144,19 @@ def car_connected(car_state: int | None) -> bool | None:
 def phase_count_to_psm(phases: int) -> int:
     """Map an engine phase *count* (1 or 3) to psm (1 single / 2 three)."""
     return PSM_SINGLE if int(phases) == 1 else PSM_THREE
+
+
+def psm_to_phase_count(psm: int | None) -> int | None:
+    """Map psm (1 single / 2 three) back to an engine phase *count* (1 or 3).
+
+    ``PSM_AUTO`` and anything unknown return None: auto means the charger decides,
+    so the mode alone doesn't say how many phases are in use.
+    """
+    if psm == PSM_SINGLE:
+        return 1
+    if psm == PSM_THREE:
+        return 3
+    return None
 
 
 def should_publish(

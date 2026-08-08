@@ -979,6 +979,139 @@ def test_auto_phase_off_leaves_phases_alone():
     assert d.write_phases is False
 
 
+def test_solar_does_not_drop_a_grid_hours_third_phase_without_confirming():
+    # The handover a stale phase memory used to get wrong: a cheap hour put the car
+    # on three phases, the price jumps, and the surplus alone cannot hold them. The
+    # switch down is real and must serve the confirmation window — reading our own
+    # remembered phase instead made the engine believe it was on 1φ already and drop
+    # the contactor the same second.
+    cfg = _cfg(mode=ChargingMode.SMART, cheap_price=0.19, auto_phase=True,
+               max_phases=3, start_confirm_s=0.0)
+    state = EngineState(charging=True, active_source="grid", avail_zone="buffer")
+    grid_hour = _inputs(now=T0, price_now=0.10, grid_power_w=7200.0,
+                        pv_power_w=5400.0, battery_soc=90.0,
+                        car_actual_power_w=10300.0, phases=3)
+    assert decide(grid_hour, cfg, state).target_phases == 3
+
+    def after(seconds):
+        return _inputs(now=T0 + timedelta(seconds=seconds), price_now=0.30,
+                       grid_power_w=7200.0, pv_power_w=5400.0, battery_soc=90.0,
+                       car_actual_power_w=10300.0, phases=3)
+
+    # Solar has taken over and wants one phase, but the contactor holds meanwhile.
+    assert decide(after(30), cfg, state).target_phases == 3
+    assert state.phase_want == 1  # the switch is armed, not executed
+    assert decide(after(90), cfg, state).target_phases == 3
+    assert decide(after(180), cfg, state).target_phases == 1
+
+
+def test_a_grid_hour_that_moved_the_contactor_arms_the_dwell_timer():
+    # Cheap grid takes three phases without consulting _resolve_phases, so the move
+    # used to be invisible: the dwell timer stayed unarmed and the card's phase-lock
+    # countdown showed nothing while the contactor was throwing.
+    cfg = _cfg(mode=ChargingMode.SMART, cheap_price=0.19, auto_phase=True,
+               max_phases=3, start_confirm_s=0.0)
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer",
+                        phases=1)
+    solar = _inputs(now=T0, price_now=0.30, grid_power_w=1000.0, pv_power_w=5400.0,
+                    battery_soc=90.0, car_actual_power_w=3400.0, phases=1)
+    assert decide(solar, cfg, state).target_phases == 1
+    assert state.phase_changed_at is None
+
+    cheap = _inputs(now=T0 + timedelta(seconds=30), price_now=0.10,
+                    grid_power_w=1000.0, pv_power_w=5400.0, battery_soc=90.0,
+                    car_actual_power_w=3400.0, phases=1)
+    d = decide(cheap, cfg, state)
+    assert d.target_phases == 3
+    assert state.phase_changed_at == T0 + timedelta(seconds=30)
+    assert d.phase_locked_until == T0 + timedelta(seconds=330)  # +300 s dwell
+
+
+def test_a_hands_off_decision_never_stamps_a_contactor_move():
+    # With the brain switched off nothing of ours reaches psm, so no phase change
+    # may be recorded — and the stale target must not survive to be compared against.
+    cfg = _cfg(smart_enabled=False, auto_phase=True, max_phases=3)
+    state = EngineState(phases_targeted=1)
+    d = decide(_inputs(now=T0, phases=3), cfg, state)
+    assert d.control is False
+    assert state.phase_changed_at is None
+    assert state.phases_targeted is None
+
+
+def _cheap_hour_state():
+    """Solar has just switched the contactor to one phase at T0."""
+    return EngineState(charging=True, active_source="solar", avail_zone="buffer",
+                       phases=1, phases_targeted=1, phase_changed_at=T0)
+
+
+def _cheap_hour_inputs(seconds, phases=1):
+    return _inputs(now=T0 + timedelta(seconds=seconds), price_now=0.10,
+                   grid_power_w=1000.0, pv_power_w=5400.0, battery_soc=90.0,
+                   car_actual_power_w=3400.0, phases=phases)
+
+
+def test_a_cheap_hour_waits_out_the_phase_dwell_before_taking_the_third_phase():
+    # The contactor is one piece of hardware: a price crossing may not throw it any
+    # faster than the surplus may. The cheap hour still charges throughout — at 16 A
+    # on the phase it already has — and picks the other two up when the dwell ends.
+    cfg = _cfg(mode=ChargingMode.SMART, cheap_price=0.19, auto_phase=True,
+               max_phases=3, start_confirm_s=0.0)
+    state = _cheap_hour_state()
+    for seconds in (30, 120, 299):
+        d = decide(_cheap_hour_inputs(seconds), cfg, state)
+        assert d.reason_key == "cheap_grid"
+        assert d.target_phases == 1, seconds
+        assert d.target_current_a == 16.0  # blocked from 3φ, not from charging
+    d = decide(_cheap_hour_inputs(301), cfg, state)
+    assert d.target_phases == 3
+
+
+def test_a_grid_upshift_does_not_flip_back_while_the_contactor_is_still_settling():
+    # The trap the dwell block opens: the upshift stamps a fresh dwell, and for a
+    # few cycles the car is still drawing on the old phase, so a decision that
+    # re-read the measurement would see 1φ, "block" itself back down to it and stamp
+    # again — throwing the contactor twice in 1.5 s and never reaching three phases.
+    cfg = _cfg(mode=ChargingMode.SMART, cheap_price=0.19, auto_phase=True,
+               max_phases=3, start_confirm_s=0.0)
+    state = _cheap_hour_state()
+    assert decide(_cheap_hour_inputs(301), cfg, state).target_phases == 3
+    locked_until = state.phase_changed_at
+    # The charger still reports one phase while the contactor moves.
+    for tick in range(1, 5):
+        d = decide(_cheap_hour_inputs(301 + 1.5 * tick, phases=1), cfg, state)
+        assert d.target_phases == 3, tick
+    assert state.phase_changed_at == locked_until  # not re-stamped each cycle
+
+
+def test_the_grid_never_drops_a_phase_it_already_has_to_honour_the_dwell():
+    # The block is one-directional. Sitting at 3φ there is nothing for the dwell to
+    # protect, and giving up two thirds of a cheap window to a timer is pure loss.
+    cfg = _cfg(mode=ChargingMode.SMART, cheap_price=0.19, auto_phase=True,
+               max_phases=3, start_confirm_s=0.0)
+    state = EngineState(charging=True, active_source="solar", avail_zone="buffer",
+                        phases=3, phases_targeted=3, phase_changed_at=T0)
+    d = decide(
+        _inputs(now=T0 + timedelta(seconds=30), price_now=0.10, grid_power_w=1000.0,
+                pv_power_w=5400.0, battery_soc=90.0, car_actual_power_w=10300.0,
+                phases=3),
+        cfg, state,
+    )
+    assert d.target_phases == 3
+
+
+def test_an_idle_three_phase_charger_still_starts_solar_on_one_phase():
+    # The seed only trusts inp.phases while current is actually flowing. Idle it is
+    # merely the psm mode the last session left behind — usually 3 — and letting that
+    # seed the hysteresis would cost the 1φ preference a fresh small surplus needs.
+    d = decide(
+        _inputs(grid_power_w=-2500.0, battery_soc=85.0, phases=3,
+                car_actual_power_w=0.0),
+        _cfg(auto_phase=True, max_phases=3),
+        EngineState(),
+    )
+    assert d.target_phases == 1
+
+
 # --- Modes & migration -------------------------------------------------------------------
 
 def test_supported_modes_are_the_five_presets():

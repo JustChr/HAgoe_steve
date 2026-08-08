@@ -62,6 +62,21 @@ Going direct: one dependency fewer, exact enum values instead of label-matching,
 > **`nrg` layout** (index): `U` L1,L2,L3,N = 0‑3 · `I` L1,L2,L3 = 4‑6 ·
 > `P` L1,L2,L3,N,**Total** = 7‑11 · `pf` L1,L2,L3,N = 12‑15. Total power = **`nrg[11]`**.
 
+> **`pnp` does not exist — verified live.** The go-e docs list `pnp` as "number of phases",
+> and we built `_read_phases` on it. It is not published: a full dump of every retained
+> topic on 2026‑08‑08 (287 keys across two boxes, a V4 on **fwv 60.5** and a second on
+> **57.1**) contains no `pnp` at all, so `GoeMqttClient.phases` returned `None` on every
+> read and the coordinator silently fell through to its guess — the auto-phase strategy's
+> remembered phase. A three-phase cheap-grid charge (`psm 2`, 3 × 15 A) was therefore
+> reported as **1 phase**, and the card, dividing 10.3 kW by one phase, drew "45 A".
+>
+> The phase count is measured instead, off the `nrg` currents (`goe_parse.phases_from_nrg`):
+> indices 4‑6 are the per‑phase amps, and the live ones are exactly the phases the *car* is
+> drawing on — the number `P = I·φ·V` needs, and truer than `psm`, which only says what the
+> charger offers. Idle there is no current to count, so `psm` answers for the next charge
+> (`psm 1→1`, `psm 2→3`; `psm 0` auto says nothing). `pnp` is still read first, in case a
+> firmware ever starts sending it.
+
 > **`frc` is cleared by the charger when the car is unplugged — verified live.** On
 > 2026‑08‑03 the brain was holding a car off with `frc = 1`; the car was unplugged at
 > 07:44:56 UTC and the charger moved `frc` to `0` (Neutral) on its own at **07:45:01**,
@@ -94,7 +109,9 @@ Going direct: one dependency fewer, exact enum values instead of label-matching,
 
 - `acu` — amps the car is *actually allowed* right now
 - `alw` — allowed to charge at all (bool)
-- `pnp` — phases actually charging → replaces the read-back guessing in `_read_phases`
+- phases actually charging → replaces the read-back guessing in `_read_phases`. Intended to
+  come from `pnp`; that key turned out not to exist, so it is measured from the `nrg`
+  currents with `psm` as the idle fallback (see the `pnp` note above)
 - `modelStatus` — go-e's own reason code (`ChargingBecausePvSurplus`,
   `NotChargingBecauseForceStateOff`, …) → feeds the card's reason line
 - `eto` lifetime energy, `cbl` cable current limit, `fwv`/`fna`/`mcc` diagnostics
