@@ -47,7 +47,7 @@ including Manual and Fast, and every branch including "no car connected". See be
 |---|---|---|
 | **Smart** | surplus + cheap grid + departure plan | Solar first, cheap grid opportunistically, target guaranteed by departure. |
 | **Solar only** | surplus | No sun, no charge. Starts as soon as the surplus carries 6 A. |
-| **Solar + minimum** | surplus + floor | Solar surplus, but never below the minimum current (tops up from grid). |
+| **Solar + minimum** | surplus + floor | Solar surplus, but never below the minimum current (topped up from the home battery or the grid — see below). |
 | **Fast** | full power | Full power now, no questions. |
 | **Manual** | — (bypasses the arbiter) | You drive: start/stop, current, phases from the card. |
 
@@ -125,6 +125,23 @@ as soon as solar carries the session again or the brain lets go. As a fallback w
 switch is mapped, the current is trimmed by whatever the battery discharges.
 
 With the battery SoC unknown, the brain is conservative: genuine solar excess only.
+
+### Who actually pays for the *Solar + minimum* top-up?
+
+The arbiter files the minimum floor under the *grid* strategies, but that label means
+"beyond the surplus" — **not** "out of the meter". Where the extra watts really come from is
+the battery policy's answer, and the status reason names the one that is actually true:
+
+| Home-battery policy | Who covers the shortfall | Status reason says |
+|---|---|---|
+| **Auto** / **Hold** | the grid — the hold switch blocks discharge (or the fallback trim keeps the car down to the real surplus) | *…the last 520 W come from the grid* |
+| **Free** | the home battery, while it has charge to give; the grid only once it hasn't | *…the last 520 W come from the home battery* |
+| either, surplus lands on the floor | nobody — there is no shortfall | *the 3680 W surplus covers it* |
+
+With the battery free, the sentence is read off the **same allocation the card's source bar
+draws**, so the "why" line and the bar underneath it can never contradict each other. With
+the battery held, the intent settles it directly — otherwise the line would flicker to
+"home battery" for the seconds the inverter takes to obey a freshly-set hold.
 
 ### Which side of the surplus do we land on?
 
@@ -262,6 +279,11 @@ Every decision carries a plain-language reason (localized on the card): what's c
 why (`Solar surplus 5200 W → 8 A`, `Planned cheap hour…`), what it's waiting for
 (`confirming before start`, `battery below reserve`, `waiting for a planned cheap hour`), or
 what just finished (`Departure target reached`).
+
+A reason that names an energy **source** names the one that is really supplying it, not the
+strategy's label — see [Who actually pays for the *Solar + minimum* top-up?](#who-actually-pays-for-the-solar--minimum-top-up)
+above. The "why" line sits directly over the card's source bar; the two are not allowed to
+tell different stories.
 
 Peak protection has its own second line (the *Peak status* sensor) so the two never compete
 for the one the card shows, but it will not let the first one lie about the charge:

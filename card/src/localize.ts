@@ -60,7 +60,7 @@ const en: Dict = {
   "mode_hint.manual": "You set current and phases — the charger holds them.",
   "mode_hint.solar": "Charges only from solar surplus.",
   "mode_hint.solar_min":
-    "Uses solar surplus, topping up from grid to a minimum rate.",
+    "Uses solar surplus, topping up to a minimum rate from the home battery or the grid.",
   "mode_hint.smart":
     "Targets the cheapest hours to reach your goal by departure.",
   "mode_hint.fast": "Charges at full power right now.",
@@ -119,8 +119,11 @@ const en: Dict = {
     "Solar surplus {surplus} W → {amps} A (easing off home battery)",
   "reason.solar_surplus_battery_topup":
     "Solar surplus {surplus} W → {amps} A — the last {gap} W come from the home battery instead of being exported",
+  "reason.solar_min_covered": "Minimum {amps} A — the {surplus} W surplus covers it",
   "reason.solar_min_topup":
-    "Minimum {amps} A (surplus only {surplus} W, topping up from grid)",
+    "Minimum {amps} A — surplus is only {surplus} W, so the last {gap} W come from the grid",
+  "reason.solar_min_topup_battery":
+    "Minimum {amps} A — surplus is only {surplus} W, so the last {gap} W come from the home battery",
 
   "session.none": "No active session",
   "session.charging": "Charging: {state}",
@@ -268,7 +271,7 @@ const de: Dict = {
   "mode_hint.manual": "Du gibst Strom und Phasen vor — die Wallbox hält sie.",
   "mode_hint.solar": "Lädt nur aus Solarüberschuss.",
   "mode_hint.solar_min":
-    "Nutzt Solarüberschuss und stockt bis zu einer Mindestrate aus dem Netz auf.",
+    "Nutzt Solarüberschuss und stockt bis zu einer Mindestrate aus Hausbatterie oder Netz auf.",
   "mode_hint.smart":
     "Steuert die günstigsten Stunden an, um dein Ziel bis zur Abfahrt zu erreichen.",
   "mode_hint.fast": "Lädt jetzt mit voller Leistung.",
@@ -327,8 +330,11 @@ const de: Dict = {
     "Solarüberschuss {surplus} W → {amps} A (Hausbatterie wird entlastet)",
   "reason.solar_surplus_battery_topup":
     "Solarüberschuss {surplus} W → {amps} A — die letzten {gap} W kommen aus der Hausbatterie statt ins Netz zu gehen",
+  "reason.solar_min_covered": "Minimum {amps} A — {surplus} W Überschuss decken das",
   "reason.solar_min_topup":
-    "Minimum {amps} A (nur {surplus} W Überschuss, Aufstockung aus dem Netz)",
+    "Minimum {amps} A — nur {surplus} W Überschuss, die letzten {gap} W kommen aus dem Netz",
+  "reason.solar_min_topup_battery":
+    "Minimum {amps} A — nur {surplus} W Überschuss, die letzten {gap} W kommen aus der Hausbatterie",
 
   "session.none": "Kein aktiver Ladevorgang",
   "session.charging": "Lädt: {state}",

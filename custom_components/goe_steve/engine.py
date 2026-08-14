@@ -853,6 +853,35 @@ def _battery_guard_current(
     return guarded_a, guarded_a < full_current_a
 
 
+# Below this a "top-up" is rounding dust, not a source worth naming.
+_TOPUP_NAMING_TOLERANCE_W: float = 50.0
+
+
+def _topup_source_key(inp: ChargerInputs, gap_w: float, *, hold: bool) -> str:
+    """Name the *true* source of a minimum-floor top-up.
+
+    The arbiter files the minimum floor under ``source="grid"``, but that label
+    means "beyond the surplus", not "out of the meter". Where the extra watts
+    really come from is the home battery's decision: held, the battery is blocked
+    and the grid supplies them; free, the battery covers them and the grid stays
+    at zero. Saying "topping up from grid" while the battery quietly does the
+    work contradicts the very source bar drawn underneath the sentence.
+
+    So: the hold is the intent and settles it on its own (and avoids flickering
+    while the inverter catches up with a freshly-set hold). With the battery free
+    the answer is a measured fact, read through the *same* allocation the card
+    draws — the two can then never disagree.
+    """
+    if gap_w < _TOPUP_NAMING_TOLERANCE_W:
+        return "solar_min_covered"
+    if hold:
+        return "solar_min_topup"
+    split = compute_car_sources(compute_power_flow(inp))
+    if split.battery_w > split.grid_w:
+        return "solar_min_topup_battery"
+    return "solar_min_topup"
+
+
 # --- The departure plan -----------------------------------------------------------
 
 def _slot_minutes(forecast: list[PriceSlot], index: int) -> float:
@@ -1193,8 +1222,14 @@ _REASON_TEMPLATES: dict[str, str] = {
         "Solar surplus {surplus} W → {amps} A — the last {gap} W come from the "
         "home battery instead of being exported"
     ),
+    "solar_min_covered": "Minimum {amps} A — the {surplus} W surplus covers it",
     "solar_min_topup": (
-        "Minimum {amps} A (surplus only {surplus} W, topping up from grid)"
+        "Minimum {amps} A — surplus is only {surplus} W, so the last {gap} W "
+        "come from the grid"
+    ),
+    "solar_min_topup_battery": (
+        "Minimum {amps} A — surplus is only {surplus} W, so the last {gap} W "
+        "come from the home battery"
     ),
     # --- Peak protection: the second reason line, on its own sensor ----------------
     "peak_off": "Peak protection is off",
@@ -2681,9 +2716,16 @@ def _decide(
             key = "fast"
             params["amps"] = f"{amps:.0f}"
         else:  # floor
-            key = "solar_min_topup"
+            # What the floor asks for beyond the surplus, and who actually pays
+            # for it — see :func:`_topup_source_key`.
+            gap_w = max(
+                0.0, _current_to_power(amps, phases, inp.voltage_v) - avail.power_w
+            )
             params["amps"] = f"{amps:.0f}"
             params["surplus"] = f"{avail.power_w:.0f}"
+            key = _topup_source_key(inp, gap_w, hold=hold)
+            if key != "solar_min_covered":
+                params["gap"] = f"{gap_w:.0f}"
         reason, rkey, rparams = _reason(key, **params)
         return Decision(
             control=True,

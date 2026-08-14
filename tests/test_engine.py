@@ -718,6 +718,87 @@ def test_floor_tops_up_from_grid_and_holds():
     assert d.reason_key == "solar_min_topup"
 
 
+def test_floor_names_the_home_battery_when_it_is_the_one_topping_up():
+    # A real snapshot: Solar + minimum at a 16 A floor, home battery "free", sun
+    # a few hundred watts short. Nothing is being imported — the grid is even
+    # exporting a little — and the battery covers the shortfall. The status line
+    # used to say "topping up from grid" flat out, contradicting the source bar
+    # drawn right underneath it, which correctly showed no grid share at all.
+    inp = _inputs(
+        phases=1,
+        pv_power_w=4531.0,
+        grid_power_w=-44.0,
+        battery_power_w=-325.0,
+        battery_soc=86.0,
+        car_actual_power_w=3429.0,
+    )
+    cfg = _cfg(
+        mode=ChargingMode.SOLAR_MIN,
+        min_current_a=16.0,
+        max_current_a=16.0,
+        battery_hold_mode="free",
+        auto_phase=False,
+    )
+    d = decide(inp, cfg, EngineState(charging=True, active_source="grid"))
+    assert d.should_charge is True
+    assert d.target_current_a == 16.0
+    assert d.hold_battery is False
+    assert d.reason_key == "solar_min_topup_battery"
+    assert "home battery" in d.reason
+    # …and the sentence agrees with the bar the card draws below it.
+    split = engine.compute_car_sources(compute_power_flow(inp))
+    assert split.grid_w == 0.0
+    assert split.battery_w > 0.0
+
+
+def test_floor_still_names_the_grid_when_the_battery_is_held():
+    # Same shortfall, but the battery is held (the default): now the grid really
+    # does pay for the top-up, and the reason has to say so.
+    inp = _inputs(
+        phases=1,
+        pv_power_w=4531.0,
+        grid_power_w=-44.0,
+        battery_power_w=-325.0,
+        battery_soc=86.0,
+        car_actual_power_w=3429.0,
+    )
+    cfg = _cfg(
+        mode=ChargingMode.SOLAR_MIN,
+        min_current_a=16.0,
+        max_current_a=16.0,
+        battery_reserve_soc=80.0,
+        auto_phase=False,
+    )
+    d = decide(inp, cfg, EngineState(charging=True, active_source="grid"))
+    assert d.hold_battery is True
+    assert d.reason_key == "solar_min_topup"
+    assert "grid" in d.reason
+
+
+def test_floor_claims_no_top_up_when_the_surplus_covers_it():
+    # The surplus lands on the floor almost exactly: there is no top-up to
+    # attribute, so the reason must not invent one.
+    inp = _inputs(
+        phases=1,
+        pv_power_w=5100.0,
+        grid_power_w=-3680.0,
+        battery_power_w=0.0,
+        battery_soc=86.0,
+        car_actual_power_w=0.0,
+    )
+    cfg = _cfg(
+        mode=ChargingMode.SOLAR_MIN,
+        min_current_a=16.0,
+        max_current_a=16.0,
+        battery_hold_mode="free",
+        auto_phase=False,
+    )
+    d = decide(inp, cfg, EngineState(charging=True, active_source="grid"))
+    assert d.target_current_a == 16.0
+    assert d.reason_key == "solar_min_covered"
+    assert "grid" not in d.reason
+
+
 def test_raised_minimum_only_binds_in_solar_min():
     # A minimum raised for Solar + minimum used to follow the user into Solar
     # only — where the card doesn't even show the knob — and hold the start
