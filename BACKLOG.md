@@ -287,6 +287,28 @@ the full state trace are in `docs/mqtt-direct-concept.md`.
   - The reset is one-shot per disconnect (verified: `frc` stayed Neutral for hours after),
     so re-asserting costs one write per unplug and cannot become a fight with the charger.
 
+## A full car hands the battery back; OCPP results read ✅ (v5.7.2)
+
+- The grid strategies (and Manual) held the home battery for as long as they *wanted* to
+  charge, so a full car left plugged in kept it blocked from the house. `_release_hold_for_idle_car`
+  lets the **Auto** hold go once the charger has been allowed for `_CAR_IDLE_RELEASE_S` (180 s)
+  with the car under `_CAR_DRAWING_MIN_W` (300 W); reason `car_not_drawing`. Power-based on
+  purpose — it also covers a car waiting on its own timer.
+- SteVe answers HTTP 200 once it has *tried*; the charger's verdict is in the
+  `OcppOperationResponse` body. `operation_failure` now reads it for remote start/stop.
+  Without a configured charge box the services fall back to `SteVeData.only_charge_box`
+  (learned from the sessions — the v1 API has no charge-box listing). Remote start from the
+  card confirmed working on the live instance afterwards (2026-10-24), so the remote
+  start/stop payload follow-up under Phase 3 is settled.
+
+  Follow-ups worth revisiting:
+  - Not yet seen live: the release with an actually full car — check the reason string and
+    the hold switch the next time a car finishes while plugged in.
+  - An explicit **Hold** deliberately still holds for a full car. If that turns out to be
+    the case users hit, decide whether Hold should mean "always while the car charges".
+  - The card has no way to authorize/block a tag (the picker lists only allowed tags);
+    `authorize_tag` / `block_tag` are automation-only. Add a blocked-tags control if wanted.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).
