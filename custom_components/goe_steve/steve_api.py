@@ -110,6 +110,17 @@ class SteVeData:
     energy_by_tag: dict[str, float] = field(default_factory=dict)
     last_session: SteVeTransaction | None = None
 
+    @property
+    def only_charge_box(self) -> str | None:
+        """The charge box SteVe's sessions name, when they all name the same one.
+
+        The v1 API has no charge-box listing, so this is the one place we can learn
+        it from: a home install has a single wallbox, and every session it ever ran
+        carries its id. None when there are no sessions yet, or more than one box.
+        """
+        boxes = {tx.charge_box_id for tx in self.transactions if tx.charge_box_id}
+        return next(iter(boxes)) if len(boxes) == 1 else None
+
     def name_for_tag(self, id_tag: str | None) -> str | None:
         """Friendly name for an id-tag, or the raw id-tag if it has no note."""
         if not id_tag:
@@ -228,6 +239,40 @@ def recent_completed(
         reverse=True,
     )
     return finished[:limit]
+
+
+def operation_failure(raw: object, action: str) -> str | None:
+    """Why an OCPP operation failed, from SteVe's ``OcppOperationResponse``; else None.
+
+    SteVe answers HTTP 200 as soon as it has *tried*: whether the charger was
+    reachable, refused the call, or said ``Rejected`` is all in the body
+    (``exceptions`` / ``errorResponses`` / ``successResponses[].response``). A body
+    we can't read is not taken as a failure — older builds may answer empty.
+    """
+    if not isinstance(raw, dict):
+        return None
+    for exc in raw.get("exceptions") or []:
+        message = (exc or {}).get("exceptionMessage") or "no details"
+        return f"SteVe couldn't reach the charger for {action}: {message}"
+    for err in raw.get("errorResponses") or []:
+        err = err or {}
+        details = " — ".join(
+            str(part)
+            for part in (err.get("errorCode"), err.get("errorDescription"))
+            if part
+        )
+        return f"The charger refused {action}: {details or 'no details'}"
+    successes = raw.get("successResponses") or []
+    for ok in successes:
+        status = str((ok or {}).get("response") or "")
+        if status and status.lower() != "accepted":
+            return (
+                f"The charger answered {status} to {action} — is a car plugged in "
+                "and the connector free?"
+            )
+    if raw.get("taskFinished") is False and not successes:
+        return f"The charger didn't answer {action} in time"
+    return None
 
 
 def build_steve_data(
@@ -382,14 +427,16 @@ class SteVeApiClient:
         body: dict = {"chargeBoxIdList": [charge_box_id], "idTag": id_tag}
         if connector_id:
             body["connectorId"] = connector_id
-        await self._request(
+        result = await self._request(
             "POST", "operations/RemoteStartTransaction", json_body=body
         )
+        if (failure := operation_failure(result, "the remote start")) is not None:
+            raise SteVeApiError(failure)
 
     async def async_remote_stop(
         self, charge_box_id: str, transaction_id: int
     ) -> None:
-        await self._request(
+        result = await self._request(
             "POST",
             "operations/RemoteStopTransaction",
             json_body={
@@ -397,3 +444,5 @@ class SteVeApiClient:
                 "transactionId": transaction_id,
             },
         )
+        if (failure := operation_failure(result, "the remote stop")) is not None:
+            raise SteVeApiError(failure)

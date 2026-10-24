@@ -305,6 +305,9 @@ class EngineState:
     # now button): skip the remaining start-confirmation wait on the next cycle.
     # Consumed by that cycle whatever it decides — see ``_decide``.
     start_override: bool = False
+    # Since when the car has been allowed to charge but drawing nothing (see
+    # :func:`_release_hold_for_idle_car`). None while it draws, or isn't allowed to.
+    car_idle_since: datetime | None = None
     # Battery-buffer memory.
     discharge_high_since: datetime | None = None
     avail_zone: str | None = None  # "protect" | "buffer" the samples belong to
@@ -442,6 +445,14 @@ _BATTERY_DRAIN_TOLERANCE_W: float = 100.0
 # Manual charging counts as grid-assisted (→ hold the battery) once the
 # requested power exceeds the available surplus by more than this margin.
 _MANUAL_GRID_MARGIN_W: float = 100.0
+
+# A car that is allowed to charge but draws less than this is not charging — it
+# is full, or waiting on its own timer. Well under the 1.4 kW a single phase at the
+# 6 A minimum delivers, well over the standby trickle of a car that has finished.
+_CAR_DRAWING_MIN_W: float = 300.0
+# How long the car has to sit there not drawing before the battery hold lets go.
+# Long enough for a freshly started (or freshly woken) car to ramp up.
+_CAR_IDLE_RELEASE_S: float = 180.0
 
 # How far the SoC may fall back below the generous-rounding threshold before the
 # rounding turns conservative again (see :func:`_generous_rounding`). Rounding up
@@ -1185,7 +1196,11 @@ _REASON_TEMPLATES: dict[str, str] = {
         "Manual charging at {amps} A (protecting home battery)"
     ),
     "no_car": "No car connected",
-    "fast": "Fast charging at {amps} A",
+    "car_not_drawing": (
+        "The car isn't taking power (full, or waiting on its own timer) — "
+        "home battery released"
+    ),
+    "fast":"Fast charging at {amps} A",
     "cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
     "cheap_grid_guarded": (
         "Cheap grid {price}/kWh ≤ {threshold} → full power "
@@ -2473,6 +2488,7 @@ def _finalize(
             decision.hold_source = "free"
         else:
             decision.hold_source = "auto"
+    _release_hold_for_idle_car(decision, inp, state)
 
     decision.plan = _plan_window_starts(inp, plan)
 
@@ -2492,6 +2508,41 @@ def _finalize(
             seconds=cfg.phase_dwell_s
         )
     return decision
+
+
+def _release_hold_for_idle_car(
+    decision: Decision, inp: ChargerInputs, state: EngineState
+) -> None:
+    """Hand the home battery back when the car has stopped taking power.
+
+    The grid strategies hold the battery for as long as they *want* to charge, and
+    a full car that stays plugged in never stops them wanting to: Full power keeps
+    asking for 16 A into a car that takes nothing, and the hold — there to keep
+    the battery out of the car — ends up keeping it out of the house all evening.
+    So once the charger has been allowed to charge for a while and the car still
+    isn't drawing, the Auto hold lets go. The moment the car draws again (a top-up,
+    preconditioning) the timer clears and the hold is back on the next cycle.
+
+    Only the Auto hold: an explicit *Hold* means always, and is the user's to lift.
+    """
+    if (
+        not decision.control
+        or not decision.should_charge
+        or inp.car_actual_power_w >= _CAR_DRAWING_MIN_W
+    ):
+        state.car_idle_since = None
+        return
+    if inp.now is None:
+        return
+    if state.car_idle_since is None:
+        state.car_idle_since = inp.now
+    if (inp.now - state.car_idle_since).total_seconds() < _CAR_IDLE_RELEASE_S:
+        return
+    if decision.hold_source == "auto" and decision.hold_battery:
+        decision.hold_battery = False
+        decision.reason, decision.reason_key, decision.reason_params = _reason(
+            "car_not_drawing"
+        )
 
 
 def _stamp_phase_change(

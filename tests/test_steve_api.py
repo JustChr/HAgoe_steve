@@ -172,3 +172,59 @@ def test_normalize_base_url_variants():
         steve.normalize_base_url("http://h:8080/steve/api/v1")
         == "http://h:8080/steve/api/v1"
     )
+
+
+# --- The charge box, learned from the sessions --------------------------------------
+
+def test_the_only_charge_box_is_learned_from_the_sessions():
+    data = steve.build_steve_data([], [_tx(0, 1000), _tx(0, 2000)])
+    assert data.only_charge_box == "GOE1"
+
+
+def test_no_single_charge_box_without_sessions_or_with_several():
+    assert steve.build_steve_data([], []).only_charge_box is None
+    other = dict(_tx(0, 1000), chargeBoxId="GOE2")
+    assert steve.build_steve_data([], [_tx(0, 1000), other]).only_charge_box is None
+
+
+# --- OCPP operation results ---------------------------------------------------------
+#
+# SteVe answers HTTP 200 once it has tried; whether the charger accepted is in the body.
+
+def _op(**kw):
+    base = dict(taskId=1, taskFinished=True, successResponses=[], errorResponses=[],
+                exceptions=[])
+    base.update(kw)
+    return base
+
+
+def test_an_accepted_operation_is_no_failure():
+    raw = _op(successResponses=[{"chargeBoxId": "GOE1", "response": "Accepted"}])
+    assert steve.operation_failure(raw, "the remote start") is None
+
+
+def test_an_unreadable_body_is_no_failure():
+    assert steve.operation_failure(None, "the remote start") is None
+
+
+def test_a_rejected_start_is_a_failure():
+    raw = _op(successResponses=[{"chargeBoxId": "GOE1", "response": "Rejected"}])
+    assert "Rejected" in steve.operation_failure(raw, "the remote start")
+
+
+def test_an_unreachable_charger_is_a_failure():
+    raw = _op(exceptions=[{"chargeBoxId": "GOE1",
+                           "exceptionMessage": "No session context for chargeBoxId 'GOE1'"}])
+    msg = steve.operation_failure(raw, "the remote start")
+    assert "couldn't reach" in msg and "GOE1" in msg
+
+
+def test_a_call_error_is_a_failure():
+    raw = _op(errorResponses=[{"chargeBoxId": "GOE1", "errorCode": "NotSupported",
+                               "errorDescription": "Unknown action"}])
+    assert "NotSupported" in steve.operation_failure(raw, "the remote start")
+
+
+def test_a_timeout_is_a_failure():
+    raw = _op(taskFinished=False)
+    assert "in time" in steve.operation_failure(raw, "the remote start")

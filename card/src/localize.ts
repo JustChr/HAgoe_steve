@@ -94,6 +94,8 @@ const en: Dict = {
   "reason.manual_charging_guarded":
     "Manual charging at {amps} A (protecting home battery)",
   "reason.no_car": "No car connected",
+  "reason.car_not_drawing":
+    "The car isn't taking power (full, or waiting on its own timer) — home battery released",
   "reason.fast": "Fast charging at {amps} A",
   "reason.cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
   "reason.cheap_grid_guarded":
@@ -305,6 +307,8 @@ const de: Dict = {
   "reason.manual_charging_guarded":
     "Manuelles Laden mit {amps} A (Hausbatterie geschützt)",
   "reason.no_car": "Kein Auto verbunden",
+  "reason.car_not_drawing":
+    "Das Auto nimmt keine Leistung auf (voll oder eigener Ladetimer) — Hausbatterie freigegeben",
   "reason.fast": "Schnellladen mit {amps} A",
   "reason.cheap_grid": "Günstiger Netzstrom {price}/kWh ≤ {threshold} → volle Leistung",
   "reason.cheap_grid_guarded":

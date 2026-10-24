@@ -672,6 +672,61 @@ def test_fast_charges_at_max_and_holds_the_battery():
     assert d.reason_key == "fast"
 
 
+def _run_idle_car(cfg, seconds, power_w=0.0, state=None):
+    """Replay ``seconds`` of a plugged-in car drawing ``power_w``, 20 s per cycle."""
+    state = state if state is not None else EngineState()
+    d = None
+    for t in range(0, seconds + 1, 20):
+        d = decide(
+            _inputs(battery_soc=90.0, car_actual_power_w=power_w,
+                    now=T0 + timedelta(seconds=t)),
+            cfg,
+            state,
+        )
+    return d, state
+
+
+def test_a_full_car_hands_the_battery_back():
+    # Full power into a car that takes nothing: the hold has nothing left to protect.
+    d, _ = _run_idle_car(_cfg(mode=ChargingMode.FAST), 200)
+    assert d.should_charge is True  # the car may still start a top-up
+    assert d.hold_battery is False
+    assert d.reason_key == "car_not_drawing"
+
+
+def test_a_car_that_is_still_ramping_keeps_the_hold():
+    d, _ = _run_idle_car(_cfg(mode=ChargingMode.FAST), 120)
+    assert d.hold_battery is True
+    assert d.reason_key == "fast"
+
+
+def test_the_hold_returns_the_moment_the_car_draws_again():
+    cfg = _cfg(mode=ChargingMode.FAST)
+    _, state = _run_idle_car(cfg, 200)
+    d = decide(
+        _inputs(battery_soc=90.0, car_actual_power_w=11000.0,
+                now=T0 + timedelta(seconds=220)),
+        cfg,
+        state,
+    )
+    assert d.hold_battery is True
+    assert state.car_idle_since is None
+
+
+def test_a_full_car_in_manual_hands_the_battery_back_too():
+    d, _ = _run_idle_car(
+        _cfg(mode=ChargingMode.MANUAL, manual_charge=True, manual_current_a=16.0), 200
+    )
+    assert d.hold_battery is False
+    assert d.reason_key == "car_not_drawing"
+
+
+def test_an_explicit_hold_stays_on_for_a_full_car():
+    d, _ = _run_idle_car(_cfg(mode=ChargingMode.FAST, battery_hold_mode="hold"), 200)
+    assert d.hold_battery is True
+    assert d.hold_source == "hold"
+
+
 def test_cheap_grid_holds_battery_and_guards():
     d = decide(
         _inputs(price_now=0.10, battery_soc=90.0, battery_power_w=-2300.0),

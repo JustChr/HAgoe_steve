@@ -124,6 +124,13 @@ Manual whenever the requested power exceeds the surplus), the brain turns the ma
 as soon as solar carries the session again or the brain lets go. As a fallback when no hold
 switch is mapped, the current is trimmed by whatever the battery discharges.
 
+It is also released when the **car stops taking power** — full, or waiting on its own
+charge timer. Once the charger has been allowed to charge for **3 minutes** with the car
+drawing under 300 W, the Auto hold lets go (*"The car isn't taking power … home battery
+released"*); the charger stays allowed, so a top-up or preconditioning can still start, and
+the hold is back the moment the car draws again. An explicit **Hold** stays on — that
+setting means always.
+
 With the battery SoC unknown, the brain is conservative: genuine solar excess only.
 
 ### Who actually pays for the *Solar + minimum* top-up?

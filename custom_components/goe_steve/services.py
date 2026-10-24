@@ -132,10 +132,15 @@ async def _async_set_tag_name(hass: HomeAssistant, call: ServiceCall) -> None:
 async def _async_remote_start(hass: HomeAssistant, call: ServiceCall) -> None:
     coordinator = _steve_coordinator(hass, call)
     cfg = coordinator.config_entry.data
-    charge_box = call.data.get(ATTR_CHARGE_BOX_ID) or cfg.get(CONF_STEVE_CHARGEBOX)
+    charge_box = (
+        call.data.get(ATTR_CHARGE_BOX_ID)
+        or cfg.get(CONF_STEVE_CHARGEBOX)
+        or (coordinator.data.only_charge_box if coordinator.data else None)
+    )
     if not charge_box:
         raise ServiceValidationError(
-            "No charge box configured — set one in options or pass 'charge_box_id'."
+            "No charge box configured — set the SteVe charge box ID in the "
+            "integration options, or pass 'charge_box_id'."
         )
     connector = call.data.get(
         ATTR_CONNECTOR_ID,
@@ -155,7 +160,11 @@ async def _async_remote_stop(hass: HomeAssistant, call: ServiceCall) -> None:
     coordinator = _steve_coordinator(hass, call)
     cfg = coordinator.config_entry.data
     transaction_id = call.data.get(ATTR_TRANSACTION_ID)
-    charge_box = call.data.get(ATTR_CHARGE_BOX_ID) or cfg.get(CONF_STEVE_CHARGEBOX)
+    charge_box = (
+        call.data.get(ATTR_CHARGE_BOX_ID)
+        or cfg.get(CONF_STEVE_CHARGEBOX)
+        or (coordinator.data.only_charge_box if coordinator.data else None)
+    )
 
     # Default to the single active session when not told which one to stop.
     if transaction_id is None:

@@ -18,7 +18,8 @@ limits**.
   Solar only, Solar + minimum, Fast, and Manual.
 - **One home-battery rule:** *"Keep home battery above X %"* — below the line the battery
   comes first; at/above it it buffers surplus fluctuations for the car, and deliberate grid
-  charging never drains it (100 % = always protect). An **Auto / Hold / Free** control lets you
+  charging never drains it (100 % = always protect) — and once the car is full, the battery is
+  handed back to the house. An **Auto / Hold / Free** control lets you
   override the brain's discharge decision when you want to.
 - **No more pointless export:** once the battery is comfortably charged (halfway between your
   reserve line and full), the whole-amp charging current rounds *up* rather than down — the

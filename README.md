@@ -46,7 +46,9 @@ See [`docs/concept`](#concept) for the full design.
 - **Battery-hold for grid charging:** map an optional "stop discharge" switch (e.g. a Victron
   helper) and the brain flips it on whenever it deliberately charges from the grid (cheap
   hours, the departure plan, Fast) so the car draws from the grid instead of draining your
-  home battery. Solar surplus still charges the battery. An **Auto / Hold / Free** control (and
+  home battery. Solar surplus still charges the battery. Once the car stops taking power (full,
+  or waiting on its own timer) the hold lets go after a few minutes, so a full car left plugged
+  in doesn't keep the battery away from the house. An **Auto / Hold / Free** control (and
   a *Home battery held* sensor) lets you see and override that decision, and the card shows it
   as a shield chip.
 - **Peak protection for the 2027 capacity tariff:** Austrian grid operators will bill on the
@@ -136,7 +138,8 @@ The config flow has three steps:
    power, session/total energy, …) itself.
 3. **SteVe (optional)** — base URL, an API user + its **API password** (set under *Users* in
    SteVe, not the login password), and an optional default charge box / connector for the
-   remote start/stop services. Leave the URL blank to skip — the brain works without it.
+   remote start/stop services (left blank, the charge box is taken from SteVe's past sessions).
+   Leave the URL blank to skip — the brain works without it.
 
 Everything can be re-mapped later via the integration's *Configure* (options) dialog.
 
