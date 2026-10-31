@@ -474,12 +474,17 @@ class ChargerPowerSensor(GoeMqttEntity, SensorEntity):
 
 
 class ChargerSessionEnergySensor(GoeMqttEntity, SensorEntity):
-    """Energy delivered since the car connected (``wh``)."""
+    """Energy delivered since the car connected (``wh``).
+
+    ``total_increasing``: it only climbs within a session and drops to zero at the
+    next plug-in, which HA's statistics read as a meter reset (an energy sensor
+    may not be a ``measurement``).
+    """
 
     _attr_icon = "mdi:battery-charging"
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator) -> None:
@@ -567,12 +572,17 @@ class ActiveTransactionSensor(SteVeEntity, SensorEntity):
 
 
 class LastSessionEnergySensor(SteVeEntity, SensorEntity):
-    """Energy delivered in the most recently finished session."""
+    """Energy delivered in the most recently finished session.
+
+    No state class: the value is one session's total that jumps to the next
+    session's, not a meter, so there is nothing for long-term statistics to sum
+    (and an energy sensor may not be a ``measurement``). The per-RFID sensors
+    are the meters.
+    """
 
     _attr_icon = "mdi:history"
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator: SteVeCoordinator) -> None:
