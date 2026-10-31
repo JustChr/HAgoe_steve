@@ -37,6 +37,7 @@ normalize_base_topic = goe_parse.normalize_base_topic
 phase_count_to_psm = goe_parse.phase_count_to_psm
 psm_to_phase_count = goe_parse.psm_to_phase_count
 phases_from_nrg = goe_parse.phases_from_nrg
+awaiting_card = goe_parse.awaiting_card
 power_from_nrg = goe_parse.power_from_nrg
 should_publish = goe_parse.should_publish
 FRC_OFF = goe_parse.FRC_OFF
@@ -97,6 +98,22 @@ def test_power_from_nrg_uses_index_11():
 )
 def test_car_connected(car_state, expected):
     assert car_connected(car_state) is expected
+
+
+@pytest.mark.parametrize(
+    "acs, trx_reported, trx, expected",
+    [
+        (1, True, None, True),  # card required, nothing authorized this plug-in yet
+        (1, True, 2, False),  # a card in slot 2 authorized it
+        (1, True, 0, False),  # already running without a card: nothing left to prevent
+        (1, False, None, False),  # trx not reported yet: unknown, not waiting
+        (0, True, None, False),  # open access: no card involved
+        (None, True, None, False),
+        ("1", True, None, True),
+    ],
+)
+def test_awaiting_card(acs, trx_reported, trx, expected):
+    assert awaiting_card(acs, trx_reported, trx) is expected
 
 
 def test_phases_from_nrg_counts_the_phases_the_car_actually_draws():
