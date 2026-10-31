@@ -85,6 +85,51 @@ def test_no_car_stops_and_resets_the_session():
     assert state.ride_out_since is None
 
 
+# --- Waiting for an RFID card -------------------------------------------------------
+# Forcing the charger on before a card authorized the plug-in starts a session without
+# a card (no OCPP transaction, taps refused until unplugged), so every mode holds off.
+
+@pytest.mark.parametrize(
+    "cfg_kw",
+    [
+        dict(mode=ChargingMode.FAST),
+        dict(mode=ChargingMode.MANUAL, manual_charge=True),
+    ],
+)
+def test_waiting_for_a_card_holds_the_charger_off(cfg_kw):
+    d = decide(_inputs(awaiting_card=True, battery_soc=90.0), _cfg(**cfg_kw))
+    assert d.control is True
+    assert d.should_charge is False
+    assert d.reason_key == "awaiting_card"
+
+
+def test_waiting_for_a_card_resets_the_start_stop_machine():
+    # Like "no car": the session the machine remembers never really began.
+    state = EngineState(charging=True, active_source="solar", ride_out_since=T0)
+    decide(_inputs(awaiting_card=True), _cfg(), state)
+    assert state.charging is False
+    assert state.ride_out_since is None
+
+
+def test_a_card_tap_lets_the_charge_start():
+    d = decide(_inputs(awaiting_card=False, battery_soc=90.0), _cfg(mode=ChargingMode.FAST))
+    assert d.should_charge is True
+    assert d.reason_key == "fast"
+
+
+def test_waiting_for_a_card_leaves_manual_passive_hands_off():
+    d = decide(
+        _inputs(awaiting_card=True),
+        _cfg(mode=ChargingMode.MANUAL, manual_passive=True, manual_charge=True),
+    )
+    assert d.control is False
+
+
+def test_no_car_wins_over_a_stale_card_wait():
+    d = decide(_inputs(car_connected=False, awaiting_card=True), _cfg())
+    assert d.reason_key == "no_car"
+
+
 # --- Manual mode --------------------------------------------------------------------
 
 def test_manual_paused_controls_but_does_not_charge():

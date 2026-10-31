@@ -139,6 +139,10 @@ class ChargerInputs:
     """A snapshot of the world, assembled by the coordinator from HA states."""
 
     car_connected: bool
+    # The charger requires a card (access control) and none has authorized this
+    # plug-in yet. Forcing it on now would start a session without a card, which
+    # bypasses RFID/OCPP for the whole plug-in, so the brain holds it off instead.
+    awaiting_card: bool = False
     # Present charger state.
     car_actual_power_w: float = 0.0
     phases: int = 3
@@ -1196,6 +1200,7 @@ _REASON_TEMPLATES: dict[str, str] = {
         "Manual charging at {amps} A (protecting home battery)"
     ),
     "no_car": "No car connected",
+    "awaiting_card": "Waiting for an RFID card — tap it at the wallbox to start",
     "car_not_drawing": (
         "The car isn't taking power (full, or waiting on its own timer) — "
         "home battery released"
@@ -2363,6 +2368,10 @@ def _decide_manual(
             reason_params=rparams,
         )
 
+    if (waiting := _awaiting_card_decision(inp, phases)) is not None:
+        waiting.write_phases = True
+        return waiting
+
     if not cfg.manual_charge:
         reason, rkey, rparams = _reason("manual_paused")
         return Decision(
@@ -2403,6 +2412,26 @@ def _decide_manual(
         write_phases=True,
         surplus_w=avail.power_w,
         hold_battery=hold,
+        reason=reason,
+        reason_key=rkey,
+        reason_params=rparams,
+    )
+
+
+def _awaiting_card_decision(inp: ChargerInputs, phases: int) -> Decision | None:
+    """Hold the charger off until a card has authorized the plug-in, else None.
+
+    Off, not hands-off: a neutral charger would start a car that is plugged in
+    while it is still forced on from before, which is exactly the card-less
+    session this gate exists to prevent. Forced off, a card tap still authorizes.
+    """
+    if not (inp.car_connected and inp.awaiting_card):
+        return None
+    reason, rkey, rparams = _reason("awaiting_card")
+    return Decision(
+        control=True,
+        should_charge=False,
+        target_phases=phases,
         reason=reason,
         reason_key=rkey,
         reason_params=rparams,
@@ -2602,6 +2631,9 @@ def _decide(
             reason_key=rkey,
             reason_params=rparams,
         )
+    if (waiting := _awaiting_card_decision(inp, max(1, inp.phases))) is not None:
+        _reset_session_state(state)
+        return waiting
 
     # --- Collect proposals ---------------------------------------------------------
     avail = compute_availability(inp, cfg, state)

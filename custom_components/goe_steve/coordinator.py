@@ -460,6 +460,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # car power separately — is invariant to the car's own current changes.
         inputs = ChargerInputs(
             car_connected=connected,
+            awaiting_card=self.goe.awaiting_card,
             car_actual_power_w=self.goe.power_w or 0.0,
             phases=self._read_phases(),
             voltage_v=self._voltage,

@@ -31,6 +31,8 @@ KEY_CBL = "cbl"  # cable current limit, A
 KEY_FWV = "fwv"  # firmware version (string)
 KEY_FNA = "fna"  # friendly name (string)
 KEY_MCC = "mcc"  # MQTT connected (bool)
+KEY_ACS = "acs"  # accessControl: 0 Open / 1 Wait (a card or the app must authorize)
+KEY_TRX = "trx"  # transaction: null none yet / 0 started without a card / n = card slot
 
 # Index of total active power (W) inside the ``nrg`` array:
 # U(L1,L2,L3,N)=0-3, I(L1,L2,L3)=4-6, P(L1,L2,L3,N,Total)=7-11, pf=12-15.
@@ -49,6 +51,10 @@ _CONNECTED_CAR_STATES = frozenset({2, 3, 4})
 FRC_NEUTRAL = 0
 FRC_OFF = 1
 FRC_ON = 2
+
+# accessControl values.
+ACS_OPEN = 0
+ACS_WAIT = 1
 
 # phaseSwitchMode values (note: 1 = single phase, 2 = three phase).
 PSM_AUTO = 0
@@ -139,6 +145,20 @@ def car_connected(car_state: int | None) -> bool | None:
     if car_state is None:
         return None
     return car_state in _CONNECTED_CAR_STATES
+
+
+def awaiting_card(acs: Any, trx_reported: bool, trx: Any) -> bool:
+    """True when the charger wants a card and none has authorized this plug-in yet.
+
+    With access control on (``acs`` = Wait), a plug-in starts with ``trx`` null;
+    a card tap (or the app, or an OCPP remote start) sets it. Forcing the charger
+    on before that makes it open a transaction *without a card* (``trx`` 0): no
+    OCPP StartTransaction, and card taps are refused until the car is unplugged.
+
+    False when access control is off, or when ``trx`` hasn't been reported yet
+    (unknown is not "waiting": the brain then behaves as it always did).
+    """
+    return coerce_int(acs) == ACS_WAIT and trx_reported and trx is None
 
 
 def phase_count_to_psm(phases: int) -> int:

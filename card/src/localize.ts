@@ -94,6 +94,7 @@ const en: Dict = {
   "reason.manual_charging_guarded":
     "Manual charging at {amps} A (protecting home battery)",
   "reason.no_car": "No car connected",
+  "reason.awaiting_card": "Waiting for an RFID card — tap it at the wallbox to start",
   "reason.car_not_drawing":
     "The car isn't taking power (full, or waiting on its own timer) — home battery released",
   "reason.fast": "Fast charging at {amps} A",
@@ -307,6 +308,7 @@ const de: Dict = {
   "reason.manual_charging_guarded":
     "Manuelles Laden mit {amps} A (Hausbatterie geschützt)",
   "reason.no_car": "Kein Auto verbunden",
+  "reason.awaiting_card": "Warte auf eine RFID-Karte — an der Wallbox hinhalten zum Starten",
   "reason.car_not_drawing":
     "Das Auto nimmt keine Leistung auf (voll oder eigener Ladetimer) — Hausbatterie freigegeben",
   "reason.fast": "Schnellladen mit {amps} A",

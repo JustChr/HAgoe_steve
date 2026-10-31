@@ -280,6 +280,20 @@ which is written under its own deadband and rate limit while charging.
 * With auto-phase off the brain never touches the phase switch (except Manual, where you
   pick the phases explicitly).
 
+## Waiting for an RFID card
+
+When the charger's own access control asks for a card (`acs` = Wait) and no card has
+authorized the plug-in yet (`trx` still null), every mode — Manual included — holds the
+charger **off** with *Waiting for an RFID card*. Forcing it on at that moment would make the
+go-e start a session *without a card* (`trx` 0): no OCPP StartTransaction, so SteVe never
+sees the session, and card taps are refused until the car is unplugged. Held off, a tap
+authorizes as usual; as soon as `trx` reports the card, the normal decision takes over.
+
+Not affected: chargers with open access, a session that already runs without a card, and
+the hands-off states (Smart control off, Manual's passive window). Until `trx` has been
+reported at least once after a restart the gate stays open, so an unknown never blocks a
+charge.
+
 ## Status reasons
 
 Every decision carries a plain-language reason (localized on the card): what's charging and

@@ -28,6 +28,7 @@ from .goe_parse import (
     FRC_OFF,
     FRC_ON,
     GOE_DEFAULT_PREFIX,
+    KEY_ACS,
     KEY_ACU,
     KEY_ALW,
     KEY_AMP,
@@ -42,10 +43,12 @@ from .goe_parse import (
     KEY_NRG,
     KEY_PNP,
     KEY_PSM,
+    KEY_TRX,
     KEY_WH,
     PSM_AUTO,
     PSM_SINGLE,
     PSM_THREE,
+    awaiting_card as _awaiting_card,
     base_topic_from_message_topic,
     car_connected as _car_connected,
     coerce_float,
@@ -166,6 +169,13 @@ class GoeMqttClient:
     def car_connected(self) -> bool | None:
         """True when a car is plugged in (carState 2/3/4), None if unknown."""
         return _car_connected(self.car_state)
+
+    @property
+    def awaiting_card(self) -> bool:
+        """True while access control waits for a card to authorize this plug-in."""
+        return _awaiting_card(
+            self.get(KEY_ACS), KEY_TRX in self._values, self.get(KEY_TRX)
+        )
 
     @property
     def power_w(self) -> float | None:
