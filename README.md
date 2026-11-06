@@ -130,7 +130,9 @@ The config flow has three steps:
 1. **Energy sources** — grid power (required; + import / − export), optionally PV production,
    home-battery charge level and battery power, an electricity-price sensor, and an optional
    home-battery **hold switch** (turned on to stop the battery discharging while charging the car
-   from the grid). The price forecast is auto-detected from the sensor (Nordpool, EPEX Spot,
+   from the grid). Optionally your grid operator's **import energy counter** (a smart-meter
+   reader's total-import register): the tariff bills each quarter-hour's import energy, so with it
+   the quarter-hour figure and the month's peak come from the meter you're billed on. The price forecast is auto-detected from the sensor (Nordpool, EPEX Spot,
    EnergyZero, Tibber, …) — leave the override blank unless detection fails.
 2. **go-e charger** — the charger's **MQTT base topic** (e.g. `go-eCharger/123456`),
    auto-discovered from your broker so you can pick it from a list, plus grid voltage and phase

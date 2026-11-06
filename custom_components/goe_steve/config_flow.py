@@ -25,6 +25,7 @@ from .const import (
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_GOE_BASE_TOPIC,
+    CONF_GRID_IMPORT_ENERGY,
     CONF_GRID_POWER,
     CONF_PHASES,
     CONF_PRICE,
@@ -52,6 +53,9 @@ _POWER_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="power")
 )
 _OPTIONAL_POWER_SENSOR = _POWER_SENSOR
+_ENERGY_SENSOR = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+)
 _BATTERY_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="battery")
 )
@@ -131,6 +135,11 @@ def _energy_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_GRID_POWER, default=defaults.get(CONF_GRID_POWER)
             ): _POWER_SENSOR,
+            # The billing meter's import register: optional, peak bookkeeping only.
+            vol.Optional(
+                CONF_GRID_IMPORT_ENERGY,
+                description={"suggested_value": defaults.get(CONF_GRID_IMPORT_ENERGY)},
+            ): _ENERGY_SENSOR,
             vol.Optional(
                 CONF_PV_POWER,
                 description={"suggested_value": defaults.get(CONF_PV_POWER)},
@@ -324,7 +333,20 @@ class GoeSteveOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         entry = self.config_entry
         if user_input is not None:
-            merged = {**entry.data, **_normalize(user_input)}
+            # A field cleared in the form is *absent* from ``user_input``, so merging
+            # alone would keep the old mapping forever — there would be no way to
+            # unmap an optional entity. Drop every key this form offers before
+            # merging; whatever the user left filled in comes straight back.
+            offered = {
+                str(key)
+                for key in (
+                    _energy_schema({})
+                    .extend(_charger_schema({}, {}).schema)
+                    .extend(_steve_schema({}).schema)
+                ).schema
+            }
+            kept = {k: v for k, v in entry.data.items() if k not in offered}
+            merged = {**kept, **_normalize(user_input)}
             _apply_forecast_autodetect(self.hass, merged)
             self.hass.config_entries.async_update_entry(entry, data=merged)
             return self.async_create_entry(title="", data={})

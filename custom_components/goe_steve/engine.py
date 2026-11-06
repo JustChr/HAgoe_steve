@@ -145,6 +145,11 @@ class ChargerInputs:
     voltage_v: float = 230.0
     # Energy environment. ``grid_power_w``: + import, - export.
     grid_power_w: float = 0.0
+    # The billing meter's cumulative import register, kWh — optional. When present
+    # it settles how much the quarter-hour has drawn (see :func:`_apply_meter`);
+    # ``grid_power_w`` still drives everything that has to react, including the
+    # projection of the rest of the window.
+    grid_import_kwh: float | None = None
     pv_power_w: float | None = None
     # Home battery. ``battery_power_w``: + charging, - discharging.
     battery_soc: float | None = None
@@ -332,6 +337,18 @@ class EngineState:
     peak_seen_good: bool = False  # a trustworthy reading arrived in this window
     peak_sample_t: datetime | None = None
     peak_sample_w: float = 0.0
+    # The billing meter's import register, when one is mapped. The window's energy is
+    # ``peak_meter_base_wh`` (what the power integral measured before the anchor) plus
+    # the register's climb since ``peak_meter_anchor_kwh``. ``_clean`` records whether
+    # the window was still fully measured when the anchor was set — only then may an
+    # exact register reading vouch for the whole window again. ``_last_kwh/_t`` is the
+    # last *accepted change*, kept across windows to tell a real climb from a jump.
+    peak_meter_anchor_kwh: float | None = None
+    peak_meter_base_wh: float = 0.0
+    peak_meter_anchor_clean: bool = False
+    peak_meter_last_kwh: float | None = None
+    peak_meter_last_t: datetime | None = None
+    peak_window_metered: bool = False  # the energy so far is the register's figure
     # Trailing 15-minute samples, for the display-only rolling average. Bounded by
     # the trim in :func:`update_peak_window`, never read by the control path.
     peak_rolling: list[tuple[datetime, float]] = field(default_factory=list)
@@ -418,6 +435,7 @@ class Decision:
     peak_rolling_w: float = 0.0  # plain trailing 15-min average (display only)
     peak_window_ends: datetime | None = None
     peak_degraded: bool = False  # part of the window went unmeasured
+    peak_metered: bool = False  # this window's energy is the billing meter's count
     month_peak_w: float = 0.0  # the highest completed window this month
     # The three limits *in force* — i.e. after the month-peak allowance, which is why
     # they can sit above the numbers the user typed. The card draws these, so the
@@ -1373,6 +1391,7 @@ class PeakWindow:
     hard_w: float
     month_peak_w: float
     degraded: bool  # part of this window went unmeasured → tighten only
+    metered: bool = False  # energy so far comes from the billing meter's register
 
 
 def _window_start(now: datetime) -> datetime:
@@ -1491,6 +1510,12 @@ def _open_window(
     state.peak_window_start = start
     state.peak_window_wh = 0.0
     state.peak_window_degraded = degraded
+    # A new window anchors on its own first register reading. ``peak_meter_last_*``
+    # deliberately survives: it is what tells a jump from a climb across the boundary.
+    state.peak_meter_anchor_kwh = None
+    state.peak_meter_base_wh = 0.0
+    state.peak_meter_anchor_clean = False
+    state.peak_window_metered = False
 
 
 def _close_window(state: EngineState) -> None:
@@ -1533,11 +1558,84 @@ def _time_weighted_mean(
     return total / span if span > 0.0 else samples[-1][1]
 
 
+#: The fastest a household register can plausibly climb. A 3×63 A connection tops
+#: out near 44 kW; anything steeper is a reader glitch or a meter swap, not usage.
+_PEAK_METER_MAX_W: float = 100_000.0
+
+#: Slack on that bound, for a reading that lands a few seconds late with the energy
+#: of the seconds before it — and for one resolution step of a coarse register.
+_PEAK_METER_SLACK_WH: float = 50.0
+
+
+def _apply_meter(
+    state: EngineState, now: datetime, kwh: float | None, *, grid_ok: bool
+) -> None:
+    """Settle the window's energy on the billing meter's import register.
+
+    The tariff bills *energy*: a quarter-hour's import in kWh, times four. A
+    cumulative register measures that directly — the climb since the window opened
+    *is* the bill — where integrating a power reading only approximates it, from a
+    different meter, with every gap and restart a guess.
+
+    So the integral (:func:`update_peak_window`) keeps running underneath, and each
+    time the register *moves* the accumulator is overwritten with the exact figure:
+    the power-measured head before the anchor plus the register's climb since. Between
+    two moves the integral carries the tail. That makes a stale or vanished register
+    fail soft — it is simply the old behaviour again until the register next moves,
+    and because the register is cumulative, that next move is exact for the whole
+    stretch it missed.
+
+    The anchor is the first reading in the window, so the seconds between the
+    boundary and that reading are the integral's. A register that runs backwards or
+    jumps faster than any household can draw is not believed *across* the
+    discontinuity: it re-anchors there and carries on.
+    """
+    if kwh is None:
+        return
+
+    last_kwh, last_t = state.peak_meter_last_kwh, state.peak_meter_last_t
+    if last_kwh is not None and kwh == last_kwh:
+        # Unchanged. The integral carries the time until the register next ticks —
+        # at low load a 1 Wh register can sit still for half a minute.
+        return
+
+    plausible = True
+    if last_kwh is not None and last_t is not None:
+        climb_wh = (kwh - last_kwh) * 1000.0
+        seconds = max(0.0, (now - last_t).total_seconds())
+        limit_wh = _PEAK_METER_MAX_W * seconds / 3600.0 + _PEAK_METER_SLACK_WH
+        plausible = 0.0 <= climb_wh <= limit_wh
+    # Stamped on *change*, not on every look: a reader that froze and comes back with
+    # its catch-up climb must be measured against the time it was frozen.
+    state.peak_meter_last_kwh = kwh
+    state.peak_meter_last_t = now
+
+    if state.peak_meter_anchor_kwh is None or not plausible:
+        # First reading in this window, or a discontinuity we refuse to bill across.
+        # Everything up to here stays as the integral measured it.
+        state.peak_meter_anchor_kwh = kwh
+        state.peak_meter_base_wh = state.peak_window_wh
+        state.peak_meter_anchor_clean = not state.peak_window_degraded
+        return
+
+    state.peak_window_wh = (
+        state.peak_meter_base_wh + (kwh - state.peak_meter_anchor_kwh) * 1000.0
+    )
+    state.peak_window_metered = True
+    if state.peak_meter_anchor_clean and grid_ok:
+        # The head was measured without a gap and everything since the anchor is the
+        # register's own count, so whatever went unmeasured in between — a restart,
+        # a dead grid sensor — is accounted for after all. The live reading has to be
+        # back too: the projection of the rest of the window still rests on it.
+        state.peak_window_degraded = False
+
+
 def update_peak_window(
     now: datetime | None,
     grid_w: float | None,
     cfg: EngineConfig,
     state: EngineState,
+    import_kwh: float | None = None,
 ) -> PeakWindow:
     """Advance the billing quarter-hour and return it.
 
@@ -1625,6 +1723,10 @@ def update_peak_window(
         state.peak_seen_good = True
     state.peak_sample_t = now
 
+    # After the integral has carried the time up to *now*, so an exact reading
+    # replaces it rather than being added to it.
+    _apply_meter(state, now, import_kwh, grid_ok=grid_w is not None)
+
     # The display-only trailing average, kept beside (never inside) the control path.
     state.peak_rolling.append((now, state.peak_sample_w))
     cutoff = now - timedelta(seconds=PEAK_WINDOW_S)
@@ -1654,6 +1756,7 @@ def update_peak_window(
         hard_w=eff_hard,
         month_peak_w=state.month_peak_w,
         degraded=state.peak_window_degraded,
+        metered=state.peak_window_metered,
     )
 
 
@@ -1855,6 +1958,7 @@ def _attach_window(decision: Decision, window: PeakWindow) -> None:
     decision.peak_allowed_w = window.allowed_w
     decision.peak_rolling_w = window.rolling_w
     decision.peak_degraded = window.degraded
+    decision.peak_metered = window.metered
     decision.month_peak_w = window.month_peak_w
     decision.peak_soft_w = window.soft_w
     decision.peak_target_w = window.target_w
@@ -2441,7 +2545,9 @@ def decide(
     if state is None:
         state = EngineState()
 
-    window = update_peak_window(inp.now, inp.grid_power_w, cfg, state)
+    window = update_peak_window(
+        inp.now, inp.grid_power_w, cfg, state, inp.grid_import_kwh
+    )
     tier = resolve_peak_tier(inp.now, window, cfg, state)
 
     # The ceiling only means anything where a grid strategy could actually run, and

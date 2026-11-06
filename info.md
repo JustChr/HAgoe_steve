@@ -30,7 +30,9 @@ limits**.
   is heading, and holds it under your target — easing the wallbox back and letting the home
   battery cover more of the house. A **household** layer: a sauna sets the peak whether or not
   a car is plugged in. **Off by default** (and off means exactly the old behaviour), while the
-  measurement still runs so you can watch your peaks before switching it on. Once a month has
+  measurement still runs so you can watch your peaks before switching it on. Map your grid
+  operator's import energy counter (e.g. a smart-meter reader) and the quarter-hour is measured on
+  the meter you're billed on. Once a month has
   already peaked higher, the limits float up to just under that peak — you get the headroom you
   have already paid for, without the record creeping up further.
 - **Cheap-hour grid charging:** buy energy into the home battery while the price is low, deep

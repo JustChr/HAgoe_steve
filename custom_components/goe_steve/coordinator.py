@@ -29,6 +29,7 @@ from .const import (
     CONF_BATTERY_RESERVE_SEED,
     CONF_BATTERY_SOC,
     CONF_GOE_BASE_TOPIC,
+    CONF_GRID_IMPORT_ENERGY,
     CONF_GRID_POWER,
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
@@ -125,6 +126,9 @@ _PEAK_SAVE_INTERVAL_S: float = 30.0
 # Completed windows kept in the store (the engine holds 24 h; 4 h is plenty to
 # redraw the card's history strip after a restart).
 _PEAK_SAVE_HISTORY: int = 16
+
+#: Units a billing-meter register may report in, as a factor to kWh.
+_ENERGY_TO_KWH: dict[str, float] = {"Wh": 0.001, "kWh": 1.0, "MWh": 1000.0}
 
 
 @dataclass(slots=True)
@@ -320,6 +324,26 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         except (ValueError, TypeError):
             return None
 
+    def _get_energy_kwh(self, conf_key: str) -> float | None:
+        """A cumulative energy reading in kWh, whatever unit the sensor reports.
+
+        Only Wh / kWh / MWh are understood. A sensor reporting anything else is
+        treated as unmapped rather than guessed at: a register read in the wrong unit
+        is off by a factor of a thousand, which is a fake month peak.
+        """
+        entity_id = self._cfg.get(conf_key)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
+            return None
+        try:
+            value = float(state.state)
+        except (ValueError, TypeError):
+            return None
+        scale = _ENERGY_TO_KWH.get(state.attributes.get("unit_of_measurement", "kWh"))
+        return value * scale if scale is not None else None
+
     @property
     def goe_session_energy_kwh(self) -> float | None:
         """Energy charged in the running session (kWh), from the go-e ``wh`` key.
@@ -430,6 +454,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
     async def _async_update_data(self) -> Decision:
         connected = self.goe.car_connected
         grid_raw = self._get_float(CONF_GRID_POWER)
+        import_kwh = self._get_energy_kwh(CONF_GRID_IMPORT_ENERGY)
         cfg = self._engine_config()
 
         # Required signals missing/stale → keep hands off rather than guess.
@@ -442,7 +467,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             # ``grid_w=None`` holds the last reading across the gap and marks the
             # window degraded, so the guard may only tighten from here.
             now = dt_util.utcnow()
-            window = update_peak_window(now, grid_raw, cfg, self._state)
+            window = update_peak_window(now, grid_raw, cfg, self._state, import_kwh)
             tier = resolve_peak_tier(now, window, cfg, self._state)
             await self._save_peak_state(now)
             return attach_peak_status(
@@ -464,6 +489,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             phases=self._read_phases(),
             voltage_v=self._voltage,
             grid_power_w=grid_raw,
+            grid_import_kwh=import_kwh,
             pv_power_w=self._get_float(CONF_PV_POWER),
             battery_soc=self._get_float(CONF_BATTERY_SOC),
             battery_power_w=self._get_float(CONF_BATTERY_POWER),
@@ -975,6 +1001,26 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                     dt_util.parse_datetime(sample_t) if sample_t else None
                 )
                 self._state.peak_sample_w = float(data.get("sample_w", 0.0))
+                # The register anchor belongs to the window too. With it, the first
+                # register tick after the restart settles the whole window exactly —
+                # including the minutes HA was down — and lifts the degraded flag
+                # the restore just set, provided the anchor predates any gap.
+                anchor = data.get("meter_anchor_kwh")
+                self._state.peak_meter_anchor_kwh = (
+                    float(anchor) if anchor is not None else None
+                )
+                self._state.peak_meter_base_wh = float(data.get("meter_base_wh", 0.0))
+                self._state.peak_meter_anchor_clean = bool(
+                    data.get("meter_anchor_clean", False)
+                )
+                last_kwh = data.get("meter_last_kwh")
+                self._state.peak_meter_last_kwh = (
+                    float(last_kwh) if last_kwh is not None else None
+                )
+                last_t = data.get("meter_last_t")
+                self._state.peak_meter_last_t = (
+                    dt_util.parse_datetime(last_t) if last_t else None
+                )
             self._state.month_key = data.get("month_key", "")
             self._state.month_peak_w = float(data.get("month_peak_w", 0.0))
             self._state.prev_month_peak_w = float(data.get("prev_month_peak_w", 0.0))
@@ -1012,6 +1058,15 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                         state.peak_sample_t.isoformat() if state.peak_sample_t else None
                     ),
                     "sample_w": state.peak_sample_w,
+                    "meter_anchor_kwh": state.peak_meter_anchor_kwh,
+                    "meter_base_wh": state.peak_meter_base_wh,
+                    "meter_anchor_clean": state.peak_meter_anchor_clean,
+                    "meter_last_kwh": state.peak_meter_last_kwh,
+                    "meter_last_t": (
+                        state.peak_meter_last_t.isoformat()
+                        if state.peak_meter_last_t
+                        else None
+                    ),
                     "month_key": state.month_key,
                     "month_peak_w": state.month_peak_w,
                     "month_peak_at": (

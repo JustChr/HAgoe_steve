@@ -13,6 +13,11 @@ DEFAULT_SCAN_INTERVAL: Final = timedelta(seconds=30)
 
 # --- Config entry keys: mapped HA entities (the "brain" reads/writes these) -------
 CONF_GRID_POWER: Final = "grid_power_entity"
+# Optional: the billing meter's cumulative import register (kWh or Wh). The capacity
+# tariff bills a quarter-hour's import *energy*, so when this is mapped the peak
+# window is settled on the register's climb rather than on integrated power. Grid
+# power still drives every real-time decision.
+CONF_GRID_IMPORT_ENERGY: Final = "grid_import_energy_entity"
 CONF_PV_POWER: Final = "pv_power_entity"
 CONF_BATTERY_SOC: Final = "battery_soc_entity"
 CONF_BATTERY_POWER: Final = "battery_power_entity"

@@ -1554,6 +1554,171 @@ def test_a_long_outage_does_not_walk_every_window():
     assert window.degraded is True
 
 
+# --- The billing meter's register ---------------------------------------------------
+#
+# The tariff bills a quarter-hour's import *energy*. With the operator's register
+# mapped, the window's energy is the register's climb; grid power only carries the
+# seconds between two register ticks (and the projection of the rest of the window).
+
+_REG0 = 38_000.0  # kWh on the register at W0
+
+
+def _reg(seconds: float, watts: float, base: float = _REG0) -> float:
+    """The register after ``seconds`` at ``watts``, rounded to its 1 Wh resolution."""
+    return round(base + watts * seconds / 3_600_000.0, 3)
+
+
+def _metered_run(cfg, state, seconds, *, power_w, meter_w, step=5, start=0, base=_REG0):
+    window = None
+    for offset in range(start, start + seconds + 1, step):
+        window = update_peak_window(
+            W0 + timedelta(seconds=offset), power_w, cfg, state,
+            _reg(offset, meter_w, base),
+        )
+    return window
+
+
+def test_the_register_settles_the_window_not_the_power_reading():
+    # The battery system's meter reads 4 % high against the operator's. The bill is
+    # the operator's, so after five minutes the window holds *its* count.
+    cfg, state = _peak_cfg(), EngineState()
+    window = _metered_run(cfg, state, 300, power_w=4000.0, meter_w=3840.0)
+    assert window.metered is True
+    assert window.imported_wh == pytest.approx(3840.0 * 300 / 3600.0, abs=1.5)
+    # The projection of what is *left* still rests on the live reading.
+    assert window.projected_w == pytest.approx(
+        (window.imported_wh * 3600.0 + 4000.0 * 600.0) / 900.0, rel=1e-6
+    )
+
+
+def test_without_a_register_nothing_changes():
+    cfg = _peak_cfg()
+    plain, metered = EngineState(), EngineState()
+    for offset in range(0, 1000, 20):
+        a = update_peak_window(W0 + timedelta(seconds=offset), 4000.0, cfg, plain)
+        b = update_peak_window(W0 + timedelta(seconds=offset), 4000.0, cfg, metered, None)
+        assert a == b
+    assert a.metered is False
+
+
+def test_the_month_record_is_the_registers_quarter_hour():
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 905, power_w=4000.0, meter_w=3600.0)
+    # Anchored at the first reading (W0), so the whole window is the register's.
+    assert state.month_peak_w == pytest.approx(3600.0, abs=10.0)
+
+
+def test_power_carries_the_time_between_two_register_ticks():
+    # At low load a 1 Wh register sits still for many seconds. Between ticks the
+    # integral must keep counting, or the projection would read low until it moves.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 3600.0, cfg, state, _REG0)
+    update_peak_window(W0 + timedelta(seconds=10), 3600.0, cfg, state, _reg(10, 3600.0))
+    settled = state.peak_window_wh
+    window = update_peak_window(
+        W0 + timedelta(seconds=20), 3600.0, cfg, state, _reg(10, 3600.0)  # unchanged
+    )
+    assert window.imported_wh == pytest.approx(settled + 3600.0 * 10 / 3600.0, abs=0.1)
+
+
+def test_a_frozen_register_falls_back_and_its_catch_up_is_exact():
+    # The reader stalls for three minutes, then reports the real register again.
+    # Meanwhile the (high-reading) power integral carries the window; the first
+    # fresh value puts it back on the operator's count for the whole stretch.
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 60, power_w=4000.0, meter_w=3840.0)
+    frozen = _reg(60, 3840.0)
+    for offset in range(65, 241, 5):
+        window = update_peak_window(
+            W0 + timedelta(seconds=offset), 4000.0, cfg, state, frozen
+        )
+    assert window.imported_wh > 3840.0 * 240 / 3600.0  # the integral, reading high
+    window = update_peak_window(
+        W0 + timedelta(seconds=245), 4000.0, cfg, state, _reg(245, 3840.0)
+    )
+    assert window.imported_wh == pytest.approx(3840.0 * 245 / 3600.0, abs=1.5)
+
+
+def test_a_register_that_runs_backwards_is_not_billed_across():
+    # A reader restart reporting 0, or a swapped meter: re-anchor, never subtract.
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 120, power_w=3000.0, meter_w=3000.0)
+    before = state.peak_window_wh
+    update_peak_window(W0 + timedelta(seconds=125), 3000.0, cfg, state, 0.0)
+    assert state.peak_window_wh >= before
+    window = _metered_run(
+        cfg, state, 60, power_w=3000.0, meter_w=3000.0, start=130, base=0.0 - 130 * 3000.0 / 3_600_000.0
+    )
+    # Everything still adds up to ~3 kW for the whole stretch.
+    assert window.imported_wh == pytest.approx(3000.0 * 190 / 3600.0, abs=6.0)
+
+
+def test_an_impossible_jump_never_becomes_a_peak():
+    # +500 kWh in five seconds is a glitch, not a sauna.
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 60, power_w=2000.0, meter_w=2000.0)
+    update_peak_window(W0 + timedelta(seconds=65), 2000.0, cfg, state, _REG0 + 500.0)
+    for offset in range(70, 905, 5):
+        update_peak_window(
+            W0 + timedelta(seconds=offset), 2000.0, cfg, state,
+            _REG0 + 500.0 + 2000.0 * (offset - 65) / 3_600_000.0,
+        )
+    assert state.month_peak_w == pytest.approx(2000.0, abs=20.0)
+
+
+def test_a_new_window_anchors_on_its_first_reading():
+    # The boundary passes between two readings: the seconds before the new window's
+    # first reading are the integral's, everything after is the register's.
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 895, power_w=3000.0, meter_w=3000.0)
+    window = _metered_run(cfg, state, 60, power_w=3000.0, meter_w=3000.0, start=903)
+    assert window.start == W0 + timedelta(seconds=900)
+    assert window.imported_wh == pytest.approx(3000.0 * 63 / 3600.0, abs=1.5)
+
+
+def test_after_a_restart_the_register_vouches_for_the_gap():
+    # HA was down for five minutes mid-window. The integral can only guess across the
+    # gap — that is what degraded means — but the register counted every watt-hour,
+    # so with the anchor restored the window is exact again and may set the record.
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 120, power_w=3000.0, meter_w=3000.0)
+    restored = EngineState(
+        peak_window_start=state.peak_window_start,
+        peak_window_wh=state.peak_window_wh,
+        peak_window_degraded=True,  # what the coordinator's restore always sets
+        peak_sample_t=state.peak_sample_t,
+        peak_sample_w=state.peak_sample_w,
+        peak_meter_anchor_kwh=state.peak_meter_anchor_kwh,
+        peak_meter_base_wh=state.peak_meter_base_wh,
+        peak_meter_anchor_clean=state.peak_meter_anchor_clean,
+        peak_meter_last_kwh=state.peak_meter_last_kwh,
+        peak_meter_last_t=state.peak_meter_last_t,
+    )
+    # Down 120 s → 420 s, drawing 6 kW while nobody was looking.
+    climb = _reg(120, 3000.0) + 6000.0 * 300 / 3_600_000.0
+    window = update_peak_window(W0 + timedelta(seconds=420), 3000.0, cfg, restored, round(climb, 3))
+    assert window.degraded is False
+    assert window.imported_wh == pytest.approx((3000.0 * 120 + 6000.0 * 300) / 3600.0, abs=1.5)
+
+
+def test_an_anchor_set_after_a_gap_cannot_clear_it():
+    # Anchored only *after* the window went unmeasured: the register can't speak for
+    # the part before its anchor, so the window stays degraded.
+    cfg, state = _peak_cfg(), EngineState()
+    update_peak_window(W0, 3000.0, cfg, state)
+    update_peak_window(W0 + timedelta(seconds=200), 3000.0, cfg, state)  # a gap
+    window = _metered_run(cfg, state, 60, power_w=3000.0, meter_w=3000.0, start=205)
+    assert window.metered is True
+    assert window.degraded is True
+
+
+def test_a_missing_live_reading_keeps_the_window_degraded():
+    cfg, state = _peak_cfg(), EngineState()
+    _metered_run(cfg, state, 60, power_w=3000.0, meter_w=3000.0)
+    window = update_peak_window(W0 + timedelta(seconds=70), None, cfg, state, _reg(70, 3000.0))
+    assert window.degraded is True
+
+
 # --- Tiers, confirmation and release ------------------------------------------------
 
 def test_soft_tier_waits_out_the_confirmation_window():

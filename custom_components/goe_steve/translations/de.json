@@ -6,6 +6,7 @@
         "description": "Verbinde die Steuerung mit den Sensoren deines Hausenergiesystems. Nur der Netzzähler ist erforderlich — füge PV, Batterie und Strompreis für solar- und preisoptimiertes Laden hinzu.",
         "data": {
           "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
+          "grid_import_energy_entity": "Netzbezug-Zählerstand (optional)",
           "pv_power_entity": "PV-Erzeugung (optional)",
           "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
           "battery_power_entity": "Leistung Hausbatterie (optional)",
@@ -18,6 +19,7 @@
         },
         "data_description": {
           "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
+          "grid_import_energy_entity": "Der Gesamtbezug-Zählerstand deines Netzbetreiber-Zählers (kWh oder Wh), z. B. von einem Smart-Meter-Lesekopf. Der Leistungstarif verrechnet die Bezugsenergie jeder Viertelstunde – damit kommen Viertelstundenwert und Monatsspitze vom Zähler, nach dem du abgerechnet wirst. Die Regelung selbst läuft weiter über die Netzleistung oben. Am besten mit Wh-Auflösung; leer lassen, um nur mit der Netzleistung zu messen.",
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",
@@ -70,6 +72,7 @@
         "description": "Ändere die von der Steuerung verwendeten Sensoren oder das MQTT-Topic der go-e Wallbox.",
         "data": {
           "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
+          "grid_import_energy_entity": "Netzbezug-Zählerstand (optional)",
           "pv_power_entity": "PV-Erzeugung (optional)",
           "battery_soc_entity": "Ladezustand Hausbatterie (optional)",
           "battery_power_entity": "Leistung Hausbatterie (optional)",
@@ -90,6 +93,7 @@
         },
         "data_description": {
           "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
+          "grid_import_energy_entity": "Der Gesamtbezug-Zählerstand deines Netzbetreiber-Zählers (kWh oder Wh), z. B. von einem Smart-Meter-Lesekopf. Der Leistungstarif verrechnet die Bezugsenergie jeder Viertelstunde – damit kommen Viertelstundenwert und Monatsspitze vom Zähler, nach dem du abgerechnet wirst. Die Regelung selbst läuft weiter über die Netzleistung oben. Am besten mit Wh-Auflösung; leer lassen, um nur mit der Netzleistung zu messen.",
           "pv_power_entity": "Aktuelle Erzeugung deines Solar-Wechselrichters. Ermöglicht das Laden aus Solarüberschuss.",
           "battery_soc_entity": "Ladezustand der Hausbatterie in %. So kann die Steuerung eine Reserve halten, bevor Leistung ans Auto geht.",
           "battery_power_entity": "Lade-/Entladeleistung der Hausbatterie. Hilft, Batteriefluss von echtem Netzüberschuss zu unterscheiden.",

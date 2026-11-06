@@ -181,6 +181,9 @@ class PeakWindowPowerSensor(GoeSteveEntity, SensorEntity):
             ),
             "tier": data.peak_tier,
             "degraded": data.peak_degraded,
+            # Where "energy so far" came from: the billing meter's own register
+            # ("meter") or the integrated grid power ("power").
+            "measured_by": "meter" if data.peak_metered else "power",
             "enabled": settings.peak_guard_enabled,
             # The three limits as configured, plus the same three actually in force —
             # they differ whenever the month-peak allowance is doing something, and

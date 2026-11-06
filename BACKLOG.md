@@ -324,6 +324,33 @@ the full state trace are in `docs/mqtt-direct-concept.md`.
   whether `frc` 1→0 recovers it without unplugging (untested). Mind that `trx` 0 is also
   what a valid SteVe tap reports, and that `trx` stays stale ~5 s after an unplug.
 
+## Peak protection, first live test (2026-11-06)
+
+Month record reset, Fast mode, car on 1φ at ~3.4 kW, limits 3.2 / 3.7 / 3.9 kW, peak
+protection on. Logged at 5 s for ~1 h. **The bill side works:** every quarter-hour finished
+under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed back every time.
+
+- [x] **Measure on the billing meter's register** (branch `feat/meter-energy-counter`). Optional
+      *Grid import energy counter*; the window's energy is the register's climb, grid power
+      carries the seconds between ticks and the projection. Netz NÖ's register (5 s, 1 Wh) and
+      our Victron-integrated figure agreed within ~0.5 % over the test quarter-hours anyway.
+- [ ] **The soft tier cycles about once per quarter-hour.** Engaging releases the hold and drops
+      minimum SoC with the setpoint still at 100 W, so the ESS covers the *whole* load — grid to
+      ~0, projection to ~1.4 kW, and the release fires 120 s later against a projection the shave
+      itself pulled down. Hold returns, import climbs back, repeat. Spec before building: the soft
+      tier should hand the battery only the excess over the budget (e.g. setpoint ≈ budget — but a
+      positive ESS setpoint also *charges* from the grid when the load is lower), and/or release on
+      the unshaved projection.
+- [ ] **It shaves twice.** While the battery already holds the grid near zero, the wallbox cap
+      still trims the car (6–11 A). The cap should not bind when the house levers already cover it.
+- [ ] **The car current hunts** every few seconds — under the soft cap (6–11 A) and from the
+      request shaping with the tier off (12–16 A). Suspect: the derived house load jumping as the
+      meters update out of step (0 → 3152 → 34 W within seconds). Confirm in `tools/sim` first.
+- [ ] Status wording: *"heading for 3.42 kW, close to the 3.20 kW easing-off point"* while already
+      past it (the 120 s confirmation is running); *"Fast charging at 15 A"* with no hint that the
+      peak budget trimmed the request.
+- [ ] Hard tier not yet seen live (needs ~0.6 kW extra load on top of the car).
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

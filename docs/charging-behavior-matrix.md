@@ -536,6 +536,32 @@ quietly missing the target. The *Never exceed* limit remains the last stop even 
 With peak protection off there is no ceiling and every one of these paths behaves exactly as
 it did before.
 
+### Measuring on the billing meter's register
+
+The tariff bills **energy**: a quarter-hour's import in kWh, times four. Integrating a power
+reading only approximates that, and from whatever meter the battery system happens to use. If
+the operator's own register is available in Home Assistant (a smart-meter reader's total import
+counter, kWh or Wh), map it as *Grid import energy counter* and the window is settled on it:
+
+- **The energy so far is the register's climb** since the window's first reading. The seconds
+  between the boundary and that first reading, and the seconds between two register ticks, are
+  carried by the integrated grid power; each time the register moves, the window snaps back to
+  the exact count.
+- **Everything that reacts still uses grid power:** the projection of the rest of the window,
+  every tier decision, every cap. The register only settles what has *already* been drawn.
+- **It fails soft.** A register that stops moving is simply the old measurement until it moves
+  again — and because it is cumulative, that next move is exact for the whole stretch it missed.
+  One that runs backwards, or climbs faster than any household can draw (100 kW), is not billed
+  across: the window re-anchors there and carries on.
+- **It can vouch for a gap.** A window that was fully measured up to its anchor, then lost its
+  grid reading or lived through a restart, is no longer **degraded** once the register ticks
+  again with the grid reading back: the register counted every watt-hour of the gap. A window
+  anchored only *after* its gap stays degraded.
+
+The *This quarter-hour* sensor's `measured_by` attribute says which one is in charge right now
+(`meter` / `power`). Without a register mapped nothing changes. A coarse register (0.1 kWh steps)
+works but helps little — its steps are as large as the error it is meant to remove.
+
 ### When the measurement can't be trusted
 
 If the grid reading disappears or Home Assistant restarts mid-window, part of the
@@ -667,5 +693,6 @@ the PV nowhere to go.
 | `PEAK_DWELL_S` | 60 s | minimum time between tier changes, releases only |
 | `PEAK_HYSTERESIS_W` | 150 W | how far below a limit the projection must fall to release |
 | `PEAK_MAX_GAP_S` | 120 s | a longer sample gap marks the window **degraded** (tighten-only) |
+| `PEAK_METER_MAX_W` | 100 kW | a register climbing faster is a glitch, not usage: re-anchor, don't bill it |
 | `PEAK_MIN_REMAINING_S` | 60 s | floor on "time left" when sizing the remaining budget |
 | `PEAK_HISTORY_LEN` | 96 | completed quarter-hours kept for the card (24 h) |

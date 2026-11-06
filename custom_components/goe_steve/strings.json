@@ -6,6 +6,7 @@
         "description": "Point the brain at the sensors that describe your home's energy. Only the grid meter is required — add PV, battery and price for solar- and price-aware charging.",
         "data": {
           "grid_power_entity": "Grid power (+ import / − export)",
+          "grid_import_energy_entity": "Grid import energy counter (optional)",
           "pv_power_entity": "PV production (optional)",
           "battery_soc_entity": "Home battery charge level (optional)",
           "battery_power_entity": "Home battery power (optional)",
@@ -18,6 +19,7 @@
         },
         "data_description": {
           "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
+          "grid_import_energy_entity": "Your grid operator's meter's total import counter (kWh or Wh), e.g. a smart-meter reader. The capacity tariff bills each quarter-hour's import energy, so with this set the quarter-hour figure and the month's peak come from the meter you're billed on. Grid power above still drives the live control. Works best with Wh resolution; leave empty to measure with grid power alone.",
           "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
@@ -70,6 +72,7 @@
         "description": "Change the sensors the brain uses or re-point the go-e charger's MQTT topic.",
         "data": {
           "grid_power_entity": "Grid power (+ import / − export)",
+          "grid_import_energy_entity": "Grid import energy counter (optional)",
           "pv_power_entity": "PV production (optional)",
           "battery_soc_entity": "Home battery charge level (optional)",
           "battery_power_entity": "Home battery power (optional)",
@@ -90,6 +93,7 @@
         },
         "data_description": {
           "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
+          "grid_import_energy_entity": "Your grid operator's meter's total import counter (kWh or Wh), e.g. a smart-meter reader. The capacity tariff bills each quarter-hour's import energy, so with this set the quarter-hour figure and the month's peak come from the meter you're billed on. Grid power above still drives the live control. Works best with Wh resolution; leave empty to measure with grid power alone.",
           "pv_power_entity": "Your solar inverter's current production. Enables charging from solar surplus.",
           "battery_soc_entity": "Home battery charge level in %. Lets the brain keep a reserve before sending power to the car.",
           "battery_power_entity": "Home battery charge/discharge power. Helps tell battery flow apart from real grid surplus.",
