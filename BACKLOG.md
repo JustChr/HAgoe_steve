@@ -380,7 +380,18 @@ under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed 
       battery held while the car charged and released at unplug.
 - [x] Status wording: *"past the 3.20 kW easing-off point"* while the confirmation runs; a Fast
       charge held below the maximum by the peak budget says so.
-- [ ] Hard tier not yet seen live (needs ~0.6 kW extra load on top of the car).
+- [x] **Hard tier seen live, v5.8.2 verified (2026-11-06 19:29–19:44 local).** Boiler on at 19:32:02,
+      two minutes into the window (house 0.65 → 3.3 kW, projection 5.75 kW): `frc 1` + `amp 6` in the
+      same cycle, car at 0 W a second later. Boiler off at 19:32:37 → `frc 2` at 6 A in the same cycle
+      (no hold), 6 → 12 A 56 s later and it held. 10 writes in 15 min, every fall following a real house
+      load, **no raise undone** (the v5.8.1 ramp artefact is gone).
+- [ ] **The pause reason promises a hold that doesn't exist:** "the car is paused until this quarter-hour
+      is over at 19:45" — it resumed at 19:32:37, as the house share design intends (a displaced car
+      resumes as soon as there's room). Reword `peak_pause` (engine + card `localize.ts` EN/DE) to
+      "…paused until there's room again". The `until` param then has no job there.
+- [ ] Borderline room still steps ±1 A about once a minute when the house wobbles across an amp
+      boundary (19:36:53, target − house = 11.99 A). Real, cheap, and in the safe direction; the
+      raise-margin idea (≈150 W headroom before going up) would settle it if it ever matters.
 
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
