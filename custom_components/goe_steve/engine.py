@@ -249,6 +249,10 @@ class EngineConfig:
     peak_confirm_s: float = 120.0  # a soft-tier crossing must hold this long
     peak_release_s: float = 120.0  # …and so must a release, in the other direction
     peak_dwell_s: float = 60.0  # min time between tier changes (releases only)
+    # The home battery's usable capacity. Lets a heavy load lean on the grid a little
+    # *earlier* when the stored energy won't last (see :func:`_house_share`); 0 means
+    # unknown, and the battery then covers the excess until its floor.
+    battery_capacity_kwh: float = 0.0
     # --- Cheap-hour grid charging ------------------------------------------------
     # Commands the mapped ESS grid setpoint. On an ESS the setpoint *is* total grid
     # import, so this is capped by the live peak budget by construction.
@@ -368,6 +372,12 @@ class EngineState:
     # The cap in force (A). Falls freely, rises only after the dwell.
     peak_cap_a: float | None = None
     peak_cap_at: datetime | None = None
+    # The house share (see :func:`_house_share`): whether a heavy load is being split
+    # between grid and battery, and since when the load has been back under the
+    # budget (for the release confirmation).
+    peak_share_engaged: bool = False
+    peak_share_calm_since: datetime | None = None
+    peak_share_setpoint_w: float | None = None  # the setpoint last handed out
     grid_charging: bool = False
 
 
@@ -1219,6 +1229,7 @@ _REASON_TEMPLATES: dict[str, str] = {
         "home battery released"
     ),
     "fast":"Fast charging at {amps} A",
+    "fast_peak": "Fast charging at {amps} A — as much as fits under the peak limit",
     "cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
     "cheap_grid_guarded": (
         "Cheap grid {price}/kWh ≤ {threshold} → full power "
@@ -1279,7 +1290,19 @@ _REASON_TEMPLATES: dict[str, str] = {
         "Heading for {projected} kW — letting the home battery cover more of the "
         "house to stay under {target} kW"
     ),
+    "peak_confirming": (
+        "This quarter-hour is heading for {projected} kW, past the {soft} kW "
+        "easing-off point — easing off if it stays there"
+    ),
     "peak_holding": "Holding this quarter-hour under {target} kW — at {projected} kW",
+    "peak_share": (
+        "Heavy load — the grid carries {grid} kW and the home battery the "
+        "{battery} kW above it, to stay under {target} kW"
+    ),
+    "peak_share_paced": (
+        "Heavy load and the home battery is down to {soc}% — the grid now carries "
+        "{grid} kW so the battery lasts"
+    ),
     "peak_pause": (
         "Heading for {projected} kW — the car is paused until this quarter-hour "
         "is over at {until}"
@@ -1776,6 +1799,8 @@ def resolve_peak_tier(
         state.peak_tier_want_since = None
         state.peak_cap_a = None
         state.peak_cap_at = None
+        state.peak_share_engaged = False
+        state.peak_share_calm_since = None
         return "off"
 
     # The limits *in force*, not the raw settings: with the month-peak allowance on,
@@ -2022,6 +2047,12 @@ def _peak_status_reason(
             month=f"{window.month_peak_w / 1000.0:.2f}",
             target=f"{window.target_w / 1000.0:.2f}",
         )
+    if window.projected_w >= window.soft_w:
+        # Past the line but the tier hasn't engaged yet: the crossing is still being
+        # confirmed. "Close to" would be false — it is already past it.
+        return _reason(
+            "peak_confirming", projected=projected, soft=f"{window.soft_w / 1000.0:.2f}"
+        )
     if window.projected_w >= window.soft_w - _PEAK_HYSTERESIS_W:
         return _reason(
             "peak_watch", projected=projected, soft=f"{window.soft_w / 1000.0:.2f}"
@@ -2029,43 +2060,154 @@ def _peak_status_reason(
     return _reason("peak_ok", projected=projected)
 
 
-def apply_peak_guard(
+#: The setpoint is written in steps this size, rounded *down* — the battery then
+#: covers the odd few watts more, never the grid. Following a lumpy load watt by
+#: watt would be a write every cycle for nothing.
+_PEAK_SETPOINT_STEP_W: float = 100.0
+
+#: …and only moved when the new value is at least this far from the last one. The
+#: remaining budget drifts every cycle as the quarter-hour fills; chasing that drift
+#: in 100 W steps was a write every ten seconds for a few watts of difference.
+_PEAK_SETPOINT_MIN_MOVE_W: float = 300.0
+
+#: How long the battery's remaining energy should be able to carry the present
+#: excess before the grid starts taking a larger share. See :func:`_house_share`.
+#:
+#: Swept, not picked (``tools/sim/heavy_load.py sweep``, the measured sauna on a
+#: 30.5 kWh pack). Worst quarter-hour starting at 65 / 55 / 45 % SoC:
+#: no pacing 3.63 / 6.02 / 8.25 kW, 15 min 3.63 / 5.49 / 7.17, 30 min 4.12 / 5.21 /
+#: 7.10, 60 min 4.35 / 5.79 / 7.63. Longer horizons lean on the grid too early on an
+#: evening the battery would have carried; 15 min is the longest that never does,
+#: and still takes a kilowatt off the evenings that run short.
+_PEAK_ENERGY_HORIZON_S: float = 900.0
+
+
+@dataclass(slots=True)
+class _HouseShare:
+    """How a heavy load is split between the grid and the home battery this cycle."""
+
+    engaged: bool
+    share_w: float  # what the grid may carry for the house + car
+    house_net_w: float  # house load net of PV, car excluded (negative = surplus)
+    car_room_w: float  # what is left of the share for the car
+    setpoint_w: float  # the ESS grid setpoint to write while engaged
+    paced: bool  # the share was raised because the battery wouldn't last
+
+
+def _house_share(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState, window: PeakWindow
+) -> _HouseShare | None:
+    """Split a heavy load: the grid carries up to the budget, the battery the rest.
+
+    On an ESS with the setpoint at its resting ~50 W the battery covers *everything*
+    above it — so a sauna is carried entirely from storage until the pack reaches its
+    reserve, and then lands on the grid all at once. That spends stored energy on the
+    part of the load the grid could have carried for free (anything up to the target
+    costs nothing extra this month) and then breaches anyway, at full load.
+
+    So once the house alone would take more than the budget, the setpoint *follows the
+    load up to the budget*: ``min(share, house + whatever the car may have)``. The
+    grid carries the share, the battery only the excess. Following the load rather
+    than sitting at the share matters — a setpoint above the load makes the ESS charge
+    the battery from the grid, which is exactly what a thermostat switching off would
+    otherwise trigger.
+
+    The share is normally the quarter-hour budget. With the battery's capacity known
+    it rises when the stored energy can't carry the present excess for
+    ``_PEAK_ENERGY_HORIZON_S`` more: rather than shave fully until the pack is empty
+    and then hand the grid the whole load, the grid takes progressively more as the
+    energy runs down, so the evening ends with a modest peak instead of a cliff.
+
+    Engagement is about the *house*: the car is the steerable load, so a car pushing
+    the total over the budget is answered by trimming the car, not by the battery.
+    Engaging is immediate; releasing waits for the house to stay under the share for
+    ``peak_release_s``, and never happens in a degraded window.
+
+    ``None`` when the battery's power isn't mapped: without it the house load can't be
+    told apart from what the battery is already covering, and the tier ladder carries
+    on alone.
+    """
+    if inp.battery_power_w is None or window.start is None or inp.now is None:
+        state.peak_share_engaged = False
+        state.peak_share_calm_since = None
+        return None
+
+    now = inp.now
+    # What the grid and battery jointly serve, net of PV. Invariant to the setpoint:
+    # whatever we command only moves watts between those two terms.
+    net_load_w = inp.grid_power_w - inp.battery_power_w
+    car_w = max(0.0, inp.car_actual_power_w) if inp.car_connected else 0.0
+    house_net_w = net_load_w - car_w
+
+    share_w = max(0.0, min(window.allowed_w, window.target_w))
+    paced = False
+    if cfg.battery_capacity_kwh > 0.0 and inp.battery_soc is not None:
+        usable_wh = (
+            max(0.0, inp.battery_soc - _peak_soc_floor(cfg))
+            / 100.0 * cfg.battery_capacity_kwh * 1000.0
+        )
+        sustainable_w = usable_wh * 3600.0 / _PEAK_ENERGY_HORIZON_S
+        if house_net_w - sustainable_w > share_w:
+            share_w = house_net_w - sustainable_w
+            paced = True
+
+    if house_net_w > share_w:
+        state.peak_share_engaged = True
+        state.peak_share_calm_since = None
+    elif state.peak_share_engaged:
+        if house_net_w >= share_w - _PEAK_HYSTERESIS_W or window.degraded:
+            state.peak_share_calm_since = None
+        elif state.peak_share_calm_since is None:
+            state.peak_share_calm_since = now
+        elif (now - state.peak_share_calm_since).total_seconds() >= cfg.peak_release_s:
+            state.peak_share_engaged = False
+            state.peak_share_calm_since = None
+
+    car_room_w = max(0.0, share_w - house_net_w)
+    load_w = house_net_w + min(car_w, car_room_w)
+    setpoint_w = max(0.0, min(share_w, load_w))
+    setpoint_w = math.floor(setpoint_w / _PEAK_SETPOINT_STEP_W) * _PEAK_SETPOINT_STEP_W
+    previous = state.peak_share_setpoint_w
+    if not state.peak_share_engaged:
+        previous = None
+    elif previous is not None:
+        at_floor = (
+            inp.battery_soc is not None and inp.battery_soc <= _peak_soc_floor(cfg)
+        )
+        # Keeping the previous value is only ever allowed at or below the load: a
+        # setpoint above it makes the ESS charge the battery from the grid.
+        if previous <= max(0.0, load_w) and (
+            # The battery can't discharge, so the setpoint changes nothing…
+            at_floor
+            # …or the change is small drift.
+            or abs(setpoint_w - previous) < _PEAK_SETPOINT_MIN_MOVE_W
+        ):
+            setpoint_w = previous
+    state.peak_share_setpoint_w = setpoint_w if state.peak_share_engaged else None
+    return _HouseShare(
+        engaged=state.peak_share_engaged,
+        share_w=share_w,
+        house_net_w=house_net_w,
+        car_room_w=car_room_w,
+        setpoint_w=setpoint_w,
+        paced=paced,
+    )
+
+
+def _apply_tier_levers(
     decision: Decision,
     inp: ChargerInputs,
     cfg: EngineConfig,
     state: EngineState,
     window: PeakWindow,
     tier: str,
-) -> Decision:
-    """Apply the capacity-tariff ceiling on top of whatever the arbiter decided.
+) -> tuple[float | None, bool]:
+    """The tier ladder's levers — used when the battery's power isn't mapped.
 
-    A ceiling, not a proposal: the arbiter takes the *highest* bid, so a strategy
-    wanting to charge less has no way to win. Sitting after it instead means this
-    covers every branch uniformly — Manual, Fast, ride-out, idle, and the no-car
-    branch, which is the one that matters most. A sauna sets the monthly peak
-    whether or not a car is plugged in, and the levers for that are the home
-    battery's, not the wallbox's.
-
-    Disabled, this is a single early return that changes nothing: ``house_control``
-    mirroring ``control`` is exactly the old rule, under which the hold switch was
-    written precisely when the brain was driving the charger.
+    Without a battery power reading the house load can't be told apart from what
+    the battery already covers, so :func:`_house_share` can't run and the levers
+    follow the projection's tier instead. Returns ``(capped_a, paused)``.
     """
-    _attach_window(decision, window)
-    decision.peak_tier = tier
-
-    if not cfg.peak_guard_enabled or window.start is None or not state.peak_seen_good:
-        # Off, clockless, or no trustworthy reading has arrived yet. Never shave
-        # blind on a cold start — measure, report, write nothing.
-        decision.house_control = decision.control
-        decision.peak_tier = "off" if not cfg.peak_guard_enabled else tier
-        decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
-            _peak_status_reason(inp, cfg, window, tier, None, paused=False)
-        )
-        return decision
-
-    # Peak protection answers to its own switch, not to Smart control: a demand
-    # charge is money whether or not the brain is currently driving the wallbox.
-    decision.house_control = True
     engaged = tier in ("soft", "hard")
 
     # --- House levers ---------------------------------------------------------------
@@ -2110,10 +2252,194 @@ def apply_peak_guard(
             if limit_a < decision.target_current_a:
                 decision.target_current_a = limit_a
                 capped_a = limit_a
+    return capped_a, paused
 
-    decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
-        _peak_status_reason(inp, cfg, window, tier, capped_a, paused=paused)
+
+def _apply_house_share(
+    decision: Decision,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    window: PeakWindow,
+    tier: str,
+    share: _HouseShare,
+) -> tuple[float | None, bool]:
+    """The levers when the house share is known. Returns ``(capped_a, paused)``.
+
+    Engaged, the house levers implement the split and the car gets only what the
+    share leaves after the house — the battery is never counted as room for it,
+    because the stored energy belongs to the loads that can't be moved. A car that
+    doesn't fit at 6 A is paused, and resumes as soon as the room is back.
+
+    Neither "let the battery carry the car's 6 A" nor "hold the pause" survived the
+    simulation (``tools/sim/heavy_load.py``, ``peak15.py``). Carrying 6 A — 4.1 kW on
+    three phases — spent the sauna's energy on the car and breached at 4.46 kW where
+    pausing holds 3.63 kW. Holding the pause to the end of the quarter-hour cost the
+    car 83 kWh over a winter fortnight: on heat-pump nights each blip sat out a full
+    window. Without either the car kept 95 % of its energy; the price is that it
+    starts and stops with a sauna thermostat, which was accepted.
+
+    Not engaged, the house is left to the ESS as usual and the tier only trims the
+    car, as before. Notably the tier no longer releases the hold or drops the
+    minimum SoC: that is what made it fight itself — the battery took the whole load,
+    the projection collapsed, the tier released, and the import came straight back.
+    """
+    if share.engaged:
+        decision.battery_min_soc = _peak_soc_floor(cfg)
+        decision.grid_setpoint_w = share.setpoint_w
+        decision.hold_battery = False
+        decision.hold_source = "peak"
+    else:
+        decision.battery_min_soc = _resting_reserve_soc(cfg)
+        decision.grid_setpoint_w = cfg.grid_setpoint_w
+
+    if not inp.car_connected or inp.now is None or window.start is None:
+        state.peak_cap_a = None
+        state.peak_cap_at = None
+        return None, False
+
+    now = inp.now
+    phases = max(1, decision.target_phases or inp.phases)
+    driving = decision.control and decision.should_charge
+
+    room_a: float | None = None
+    if share.engaged:
+        room_a = math.floor(
+            _power_to_current(share.car_room_w, phases, inp.voltage_v) + _AMP_EPSILON
+        )
+    elif tier in ("soft", "hard"):
+        room_a = _peak_current_cap(inp, cfg, window, phases)
+
+    too_small = room_a is not None and room_a < HARDWARE_MIN_CURRENT_A
+    # Pausing a charger the brain isn't driving is reserved for the hard tier, as
+    # before: a demand charge, once bought, cannot be un-bought.
+    must_pause = too_small and (driving or tier == "hard")
+    if must_pause:
+        decision.control = True
+        decision.should_charge = False
+        decision.target_current_a = 0.0
+        state.peak_cap_a = None
+        state.peak_cap_at = None
+        return None, True
+
+    if not driving or room_a is None:
+        state.peak_cap_a = None
+        state.peak_cap_at = None
+        return None, False
+
+    limit_a = _rate_limit_cap(min(room_a, cfg.max_current_a), now, cfg, state)
+    limit_a = max(HARDWARE_MIN_CURRENT_A, limit_a)
+    if limit_a < decision.target_current_a:
+        decision.target_current_a = limit_a
+        return limit_a, False
+    return None, False
+
+
+def _share_status_reason(
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    window: PeakWindow,
+    tier: str,
+    share: _HouseShare,
+    capped_a: float | None,
+    *,
+    paused: bool,
+) -> tuple[str, str, dict[str, str]]:
+    """The status line when the house share is known."""
+    if not share.engaged:
+        text, key, params = _peak_status_reason(
+            inp, cfg, window, tier, capped_a, paused=paused
+        )
+        if key == "peak_shaving_house":
+            # Not engaged means the battery is *not* being asked for anything extra;
+            # the tier is only watching. Say so rather than overclaim.
+            return _reason(
+                "peak_holding",
+                projected=f"{window.projected_w / 1000.0:.2f}",
+                target=f"{window.target_w / 1000.0:.2f}",
+            )
+        return text, key, params
+
+    projected = f"{window.projected_w / 1000.0:.2f}"
+    until = _local_hhmm(window.start + timedelta(seconds=PEAK_WINDOW_S), cfg)
+    if window.degraded:
+        return _reason("peak_degraded", until=until)
+    floor = _peak_soc_floor(cfg)
+    if inp.battery_soc is not None and inp.battery_soc <= floor:
+        return _reason("peak_battery_empty", projected=projected, soc=f"{floor:.0f}")
+    if paused:
+        return _reason("peak_pause", projected=projected, until=until)
+    grid_kw = f"{share.setpoint_w / 1000.0:.1f}"
+    if share.paced:
+        soc = f"{inp.battery_soc:.0f}" if inp.battery_soc is not None else "?"
+        return _reason("peak_share_paced", grid=grid_kw, soc=soc)
+    target_kw = f"{window.target_w / 1000.0:.2f}"
+    if capped_a is not None:
+        return _reason(
+            "peak_shaving_car", projected=projected, amps=f"{capped_a:.0f}",
+            target=target_kw,
+        )
+    load_w = share.house_net_w + (
+        max(0.0, inp.car_actual_power_w) if inp.car_connected else 0.0
     )
+    return _reason(
+        "peak_share",
+        grid=grid_kw,
+        battery=f"{max(0.0, load_w - share.setpoint_w) / 1000.0:.1f}",
+        target=target_kw,
+    )
+
+
+def apply_peak_guard(
+    decision: Decision,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    window: PeakWindow,
+    tier: str,
+) -> Decision:
+    """Apply the capacity-tariff ceiling on top of whatever the arbiter decided.
+
+    A ceiling, not a proposal: the arbiter takes the *highest* bid, so a strategy
+    wanting to charge less has no way to win. Sitting after it instead means this
+    covers every branch uniformly — Manual, Fast, ride-out, idle, and the no-car
+    branch, which is the one that matters most. A sauna sets the monthly peak
+    whether or not a car is plugged in, and the levers for that are the home
+    battery's, not the wallbox's.
+
+    Disabled, this is a single early return that changes nothing: ``house_control``
+    mirroring ``control`` is exactly the old rule, under which the hold switch was
+    written precisely when the brain was driving the charger.
+    """
+    _attach_window(decision, window)
+    decision.peak_tier = tier
+
+    if not cfg.peak_guard_enabled or window.start is None or not state.peak_seen_good:
+        # Off, clockless, or no trustworthy reading has arrived yet. Never shave
+        # blind on a cold start — measure, report, write nothing.
+        decision.house_control = decision.control
+        decision.peak_tier = "off" if not cfg.peak_guard_enabled else tier
+        decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+            _peak_status_reason(inp, cfg, window, tier, None, paused=False)
+        )
+        return decision
+
+    # Peak protection answers to its own switch, not to Smart control: a demand
+    # charge is money whether or not the brain is currently driving the wallbox.
+    decision.house_control = True
+    share = _house_share(inp, cfg, state, window)
+    if share is None:
+        capped_a, paused = _apply_tier_levers(decision, inp, cfg, state, window, tier)
+        decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+            _peak_status_reason(inp, cfg, window, tier, capped_a, paused=paused)
+        )
+    else:
+        capped_a, paused = _apply_house_share(
+            decision, inp, cfg, state, window, tier, share
+        )
+        decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
+            _share_status_reason(inp, cfg, window, tier, share, capped_a, paused=paused)
+        )
 
     # The Status sensor's reason has to survive being overruled here, and the two
     # kinds of override need different answers.
@@ -2238,7 +2564,9 @@ def apply_grid_charge(
         # heat the afternoon. Borrow it (the coordinator hands it back on release).
         decision.battery_min_soc = _resting_reserve_soc(cfg)
 
-    if tier != "off":
+    if tier != "off" or state.peak_share_engaged:
+        # Peak protection owns the setpoint while it is shaving — by tier, or by
+        # splitting a heavy load between grid and battery.
         state.grid_charging = False
         return decision
 
@@ -2870,7 +3198,9 @@ def _decide(
             # a detail: this is the one path that knowingly buys a demand charge.
             key = "deadline_urgent_peak" if ceiling_bound else "deadline_urgent"
         elif winner.kind == "fast":
-            key = "fast"
+            # Say when the peak budget, not the charger's maximum, set the number —
+            # "Fast charging at 15 A" with a 16 A maximum otherwise looks like a fault.
+            key = "fast_peak" if ceiling_bound and not guarded else "fast"
             params["amps"] = f"{amps:.0f}"
         else:  # floor
             # What the floor asks for beyond the surplus, and who actually pays

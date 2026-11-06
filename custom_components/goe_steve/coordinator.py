@@ -56,6 +56,7 @@ from .const import (
     DEFAULT_PEAK_MONTH_BUFFER_W,
     DEFAULT_PEAK_GUARD_ENABLED,
     DEFAULT_PEAK_HARD_W,
+    DEFAULT_BATTERY_CAPACITY_KWH,
     DEFAULT_PEAK_MIN_SOC,
     DEFAULT_PEAK_SOFT_W,
     DEFAULT_PEAK_TARGET_W,
@@ -168,6 +169,7 @@ class RuntimeSettings:
     peak_month_buffer_w: float = DEFAULT_PEAK_MONTH_BUFFER_W
     shaving_reserve_soc: float = DEFAULT_SHAVING_RESERVE_SOC
     peak_min_soc: float = DEFAULT_PEAK_MIN_SOC
+    battery_capacity_kwh: float = DEFAULT_BATTERY_CAPACITY_KWH
     # --- Cheap-hour grid charging -------------------------------------------------
     grid_charge_enabled: bool = DEFAULT_GRID_CHARGE_ENABLED
     grid_setpoint_w: float = DEFAULT_GRID_SETPOINT_W
@@ -561,6 +563,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             peak_month_buffer_w=self.settings.peak_month_buffer_w,
             shaving_reserve_soc=self.settings.shaving_reserve_soc,
             peak_min_soc=self.settings.peak_min_soc,
+            battery_capacity_kwh=self.settings.battery_capacity_kwh,
             peak_confirm_s=PEAK_CONFIRM_S,
             peak_release_s=PEAK_RELEASE_S,
             peak_dwell_s=PEAK_DWELL_S,

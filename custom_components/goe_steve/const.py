@@ -126,6 +126,9 @@ DEFAULT_PEAK_MONTH_BUFFER_W: Final = 200.0
 # money. Clamped so the floor never sits above the reserve.
 DEFAULT_SHAVING_RESERVE_SOC: Final = 50.0
 DEFAULT_PEAK_MIN_SOC: Final = 35.0
+# Usable home-battery capacity, kWh. 0 = unknown: a heavy load is then shaved fully
+# until the battery's floor instead of leaning on the grid earlier when it runs short.
+DEFAULT_BATTERY_CAPACITY_KWH: Final = 0.0
 # Tier hysteresis. Escalation to *hard* is immediate (it is a safety stop);
 # everything else confirms first, and every release also waits out the dwell.
 PEAK_CONFIRM_S: Final = 120.0

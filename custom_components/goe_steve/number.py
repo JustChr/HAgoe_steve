@@ -181,6 +181,18 @@ NUMBERS: tuple[GoeNumberDescription, ...] = (
         getter=lambda s: s.peak_min_soc,
         setter=lambda s, v: setattr(s, "peak_min_soc", v),
     ),
+    GoeNumberDescription(
+        key="battery_capacity",
+        attr="battery_capacity_kwh",
+        icon="mdi:home-battery-outline",
+        native_min_value=0,
+        native_max_value=200,
+        native_step=0.5,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.battery_capacity_kwh,
+        setter=lambda s, v: setattr(s, "battery_capacity_kwh", v),
+    ),
     # --- Cheap-hour grid charging ---------------------------------------------
     GoeNumberDescription(
         key="grid_setpoint",

@@ -156,6 +156,12 @@ class Scenario:
     seed_month_peak_w: float = 0.0
     blackout: tuple[float, float] | None = None  # grid sensor unavailable window
     capacity_wh: float = 10000.0
+    max_discharge_w: float = 4500.0
+    max_charge_w: float = 4500.0
+    charge_eff: float = 1.0
+    # Withhold the battery's power from the engine: it then can't measure the house
+    # share and falls back to the tier ladder — the A/B switch for that change.
+    hide_battery_power: bool = False
     notes: str = ""
     expect: str = ""
 
@@ -187,7 +193,9 @@ def run(sc: Scenario) -> Result:
         state.month_key = f"{local.year:04d}-{local.month:02d}"
         state.month_peak_at = sc.start - timedelta(days=3)
 
-    house = House(soc=sc.soc0, capacity_wh=sc.capacity_wh)
+    house = House(soc=sc.soc0, capacity_wh=sc.capacity_wh,
+                  max_discharge_w=sc.max_discharge_w, max_charge_w=sc.max_charge_w,
+                  charge_eff=sc.charge_eff)
     res = Result(scenario=sc)
 
     car_w = 0.0
@@ -239,7 +247,7 @@ def run(sc: Scenario) -> Result:
                 grid_power_w=grid_reading,
                 pv_power_w=pv_w,
                 battery_soc=house.soc,
-                battery_power_w=house.battery_w,
+                battery_power_w=None if sc.hide_battery_power else house.battery_w,
                 price_now=sc.price(t),
                 pv_forecast_kwh=sc.pv_forecast_kwh,
                 now=now,

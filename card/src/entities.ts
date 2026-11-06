@@ -53,6 +53,7 @@ export interface ResolvedEntities {
   peak_month_buffer?: string;
   shaving_reserve_soc?: string;
   peak_min_soc?: string;
+  battery_capacity?: string;
   grid_setpoint?: string;
   cheap_charge_power?: string;
   bright_day_target_soc?: string;
@@ -146,6 +147,7 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.peak_month_buffer = find("peak_month_buffer");
   result.shaving_reserve_soc = find("shaving_reserve_soc");
   result.peak_min_soc = find("peak_min_soc");
+  result.battery_capacity = find("battery_capacity");
   result.grid_setpoint = find("grid_setpoint");
   result.cheap_charge_power = find("cheap_charge_power");
   result.bright_day_target_soc = find("bright_day_target_soc");

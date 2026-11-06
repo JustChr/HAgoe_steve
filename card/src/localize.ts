@@ -97,6 +97,8 @@ const en: Dict = {
   "reason.car_not_drawing":
     "The car isn't taking power (full, or waiting on its own timer) — home battery released",
   "reason.fast": "Fast charging at {amps} A",
+  "reason.fast_peak":
+    "Fast charging at {amps} A — as much as fits under the peak limit",
   "reason.cheap_grid": "Cheap grid {price}/kWh ≤ {threshold} → full power",
   "reason.cheap_grid_guarded":
     "Cheap grid {price}/kWh ≤ {threshold} → full power (protecting home battery → {amps} A)",
@@ -182,6 +184,12 @@ const en: Dict = {
   "reason.peak_ok": "This quarter-hour is heading for {projected} kW — comfortable",
   "reason.peak_watch":
     "This quarter-hour is heading for {projected} kW, close to the {soft} kW easing-off point",
+  "reason.peak_confirming":
+    "This quarter-hour is heading for {projected} kW, past the {soft} kW easing-off point — easing off if it stays there",
+  "reason.peak_share":
+    "Heavy load — the grid carries {grid} kW and the home battery the {battery} kW above it, to stay under {target} kW",
+  "reason.peak_share_paced":
+    "Heavy load and the home battery is down to {soc}% — the grid now carries {grid} kW so the battery lasts",
   "reason.peak_holding": "Holding this quarter-hour under {target} kW — at {projected} kW",
   "reason.peak_shaving_car":
     "Heading for {projected} kW — easing the car back to {amps} A to stay under {target} kW",
@@ -310,6 +318,8 @@ const de: Dict = {
   "reason.car_not_drawing":
     "Das Auto nimmt keine Leistung auf (voll oder eigener Ladetimer) — Hausbatterie freigegeben",
   "reason.fast": "Schnellladen mit {amps} A",
+  "reason.fast_peak":
+    "Schnellladen mit {amps} A — so viel, wie unter die Lastspitzen-Grenze passt",
   "reason.cheap_grid": "Günstiger Netzstrom {price}/kWh ≤ {threshold} → volle Leistung",
   "reason.cheap_grid_guarded":
     "Günstiger Netzstrom {price}/kWh ≤ {threshold} → volle Leistung (Hausbatterie geschützt → {amps} A)",
@@ -395,6 +405,12 @@ const de: Dict = {
   "reason.peak_ok": "Diese Viertelstunde läuft auf {projected} kW zu — entspannt",
   "reason.peak_watch":
     "Diese Viertelstunde läuft auf {projected} kW zu, nahe an der Zurücknehmen-Schwelle von {soft} kW",
+  "reason.peak_confirming":
+    "Diese Viertelstunde steuert auf {projected} kW zu, über der Schwelle von {soft} kW — es wird gedrosselt, wenn es so bleibt",
+  "reason.peak_share":
+    "Hohe Last — das Netz trägt {grid} kW, die Hausbatterie die {battery} kW darüber, um unter {target} kW zu bleiben",
+  "reason.peak_share_paced":
+    "Hohe Last und die Hausbatterie ist bei {soc}% — das Netz trägt jetzt {grid} kW, damit die Batterie durchhält",
   "reason.peak_holding":
     "Hält diese Viertelstunde unter {target} kW — aktuell {projected} kW",
   "reason.peak_shaving_car":

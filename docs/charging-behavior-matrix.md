@@ -344,7 +344,14 @@ budget would diverge as the window closes and the amps would leap at every bound
 |---|---|---|
 | **Soft** (3.3 kW) | projection over it for **120 s** | The wallbox eases back to whatever the budget leaves, down to 6 A. It never pauses. |
 | **Target** (3.7 kW) | — | Not a tier: the number the budget aims at. |
-| **Hard** (3.9 kW) | projection over it, **immediately** | Setpoint → 0 W, and the car is paused outright if the budget can't carry even 6 A. |
+| **Hard** (3.9 kW) | projection over it, **immediately** | The car is paused outright if the budget can't carry even 6 A. Without a battery power reading, also setpoint → 0 W. |
+
+With the home battery's **power** mapped, the tiers only steer the **car**. The house levers
+(setpoint, minimum SoC, hold) follow the *house share* below instead — which is what stopped
+the tiers fighting themselves. The old way, the soft tier released the hold and dropped the
+minimum SoC with the setpoint still at 100 W; the ESS then covered the *whole* load, the
+projection collapsed, the tier released 120 s later, and the import came straight back — every
+quarter-hour, measured live on 2026-11-06.
 
 The kW figures above are the ones you set. All three are compared in their **effective**
 form — see the month-peak allowance below, which can lift them. The soft line travels the
@@ -360,6 +367,76 @@ the limit it is leaving. Tightening early costs a slower charge; relaxing early 
 
 The hard stop **outranks the solar ride-out** — that exists to smooth *solar* dips, not to
 hold the charger on through a demand-charge breach.
+
+### Heavy loads: the grid carries its share, the battery the excess
+
+A sauna, an oven and hob, a heat pump's backup heater — a load the house can't move. On an
+ESS resting at a 100 W setpoint the battery carries **all** of it until its reserve, then the
+grid gets the whole load at once. That spends stored energy on the part the grid could have
+carried within the budget, and still breaches at the end — at full load.
+
+So once the **house** (load minus PV, car excluded) would take more than the quarter-hour
+budget, the grid and the battery split it:
+
+- **The setpoint follows the load up to the budget:** `min(share, house + what the car may
+  have)`, in 100 W steps rounded down. The grid carries the share, the battery the excess, and
+  minimum SoC drops to the peak floor. *Following* the load rather than sitting at the share
+  matters: a setpoint above the load makes the ESS charge the battery from the grid — exactly
+  what a sauna thermostat switching off would otherwise trigger.
+- **The share** is the remaining quarter-hour budget, capped at the target.
+- **The car gives way first.** It gets only what the share leaves after the house; the battery
+  is never counted as room for it, not even for the car's 6 A minimum. If 6 A doesn't fit, it
+  pauses, and resumes as soon as the room is back. On a sauna evening that means it starts and
+  stops with the thermostat — accepted, because both alternatives cost more (below).
+- **A car alone pushing the total over** is trimmed, not shaved: the battery isn't drawn in.
+- **Engaging is immediate; releasing** waits until the house has stayed under the share
+  (less 150 W) for 120 s, and never happens in a degraded window. The setpoint is only moved
+  when it changes by 300 W or more, and not at all while the battery sits at its floor —
+  except that it never stays above the load.
+
+**When the energy won't last.** With *Home battery capacity* set, the share rises when the
+energy above the peak floor can't carry the present excess for another **15 minutes**:
+`share = max(budget, house − remaining energy ÷ 15 min)`. Rather than shave fully until empty
+and then drop the whole load on the grid, the grid takes progressively more as the battery
+runs down — a modest peak instead of a cliff. Set to 0 (the default), the battery shaves until
+its floor.
+
+The 15 minutes are measured, not picked (`tools/sim/heavy_load.py sweep`, the measured sauna
+— 8.7 kW for the 45-minute heat-up, then ~4 kW cycling — on a 30.5 kWh / 10.2 kW pack):
+
+| Battery at sauna start | Tiers (before) | Share | Share + capacity |
+|---|---|---|---|
+| 85 % | 2.95 kW, 13.6 kWh spent | 3.63 kW, 10.7 kWh spent | 3.63 kW |
+| 65 % | **5.64 kW** | **3.63 kW** | 3.63 kW |
+| 55 % | 6.02 kW | 6.02 kW | **5.48 kW** |
+| 45 % | 8.25 kW | 8.28 kW | **7.16 kW** |
+| Sauna + Fast-charging car, 70 % | **7.37 kW** | **3.63 kW** (car 4.2 kWh, after the heat-up) | 3.63 kW |
+
+A 30-minute horizon does slightly better on the flattest evenings but leans on the grid too
+early at 65 % — an evening the battery would have carried (4.12 kW). Longer is worse on both.
+
+**Why the car pauses instead of leaning on the battery, and why the pause isn't held.** Both
+were simulated over the 15 winter days (`peak15.py`, ceiling-fill setup) and on the sauna with
+a Fast-charging car at 70 %:
+
+| Car when the house takes the whole share | Fortnight worst QH | Fortnight car | Sauna + car worst QH | Sauna + car: car |
+|---|---|---|---|---|
+| Before (tier ladder) | 5.20 kW | 189.7 kWh | 7.37 kW | 13.8 kWh |
+| **Pause, resume when there is room** (shipped) | 4.25 kW | 181.0 kWh | **3.63 kW** | 4.9 kWh |
+| Battery carries the car's 6 A above the reserve | 4.26 kW | 189.0 kWh | 4.46 kW | 7.8 kWh |
+| Pause held to the end of the quarter-hour | 4.08 kW | **106.5 kWh** | 3.63 kW | 4.2 kWh |
+
+Carrying 6 A spends the sauna's energy on the car — on three phases that is 4.1 kW. Holding
+the pause starves the car on heat-pump nights, where each blip sat out a full quarter-hour.
+
+**The trade-off, stated plainly:** the share aims *at* the target, where the old tiers often
+shaved well below it. A month whose evenings the battery could have held at 3.0 kW now
+records ~3.6 kW, and the battery is correspondingly fuller. If the target is the level you
+have accepted paying for, that is the intended outcome; if you'd rather the battery always
+shave as deep as it can, lower the target.
+
+Without a battery **power** reading the house load can't be told apart from what the battery
+already covers, and the tier ladder keeps its old levers.
 
 ### The SoC ladder
 
@@ -408,8 +485,9 @@ limits are likewise raised to keep `soft ≤ target ≤ hard` whichever order yo
 | Situation | Lever |
 |---|---|
 | Nearing soft, car charging | Ease the wallbox back to what the budget leaves |
-| Nearing soft, **no car** | Drop minimum-SoC to the peak floor, release the hold switch, abandon cheap-hour buying |
-| Hard tier | All of the above, plus setpoint → 0 W and pause the car if 6 A won't fit |
+| **House** over the budget (sauna, cooking) | Setpoint follows the load up to the share, minimum-SoC to the peak floor, hold released, cheap-hour buying paused; the car gets what's left or sits out the quarter-hour |
+| …and the battery running short (capacity set) | The share rises so the battery lasts — see *Heavy loads* |
+| Hard tier | Pause the car if 6 A won't fit (no battery power mapped: also setpoint → 0 W, minimum-SoC to the floor, hold released) |
 | Car running on **pure solar** | Nothing — stopping it would export the surplus, not reduce the import |
 | Battery already at its peak floor | Nothing left to shave with; the status sensor says so plainly |
 | Month already peaked higher | The limits float up to just under it — see below |
@@ -417,10 +495,9 @@ limits are likewise raised to keep `soft ≤ target ≤ hard` whichever order yo
 | Switched off (the switch) | minimum-SoC and setpoint go back to what they held before peak protection took them over |
 | Just switched into **Manual** | The house levers still act — they are peak protection's, not the wallbox's. Only the charger is left as-is (and even that yields to a hard-tier stop) |
 
-**What it cannot do:** on a Victron ESS the setpoint already sits at ~50 W, so the battery is
-*already* covering the sauna. The peak appears only when the battery physically can't — at
-its minimum SoC, or at the inverter's power limit — and lowering the setpoint further does
-nothing when it is already saturated. Peak protection cannot shed a load. The
+**What it cannot do:** when the battery reaches its floor, or a load exceeds the inverter's
+power limit, the excess lands on the grid whatever the setpoint says. Peak protection cannot
+shed a load. The
 `Peak shaving active` binary sensor, with its `tier` attribute, is the hook for your own
 load-shedding automations.
 
@@ -694,5 +771,7 @@ the PV nowhere to go.
 | `PEAK_HYSTERESIS_W` | 150 W | how far below a limit the projection must fall to release |
 | `PEAK_MAX_GAP_S` | 120 s | a longer sample gap marks the window **degraded** (tighten-only) |
 | `PEAK_METER_MAX_W` | 100 kW | a register climbing faster is a glitch, not usage: re-anchor, don't bill it |
+| `PEAK_ENERGY_HORIZON_S` | 15 min | with capacity set: how long the battery must be able to carry a heavy load's excess before the grid's share rises (swept) |
+| `PEAK_SETPOINT_MIN_MOVE_W` | 300 W | a heavy load's setpoint is only rewritten for a change this large (never left above the load) |
 | `PEAK_MIN_REMAINING_S` | 60 s | floor on "time left" when sizing the remaining budget |
 | `PEAK_HISTORY_LEN` | 96 | completed quarter-hours kept for the card (24 h) |

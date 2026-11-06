@@ -63,6 +63,11 @@ See [`docs/concept`](#concept) for the full design.
   peaked higher — the sauna and the oven at the same time, once — it stops throttling below
   a charge you have already bought: the limits float up to just under that peak, close
   enough to use the headroom you paid for and far enough not to push the record higher.
+  **Heavy loads are split, not dumped on the battery:** when the house alone would go over the
+  budget (a sauna, oven and hob), the grid carries up to the budget and the battery only the part
+  above it, so the same charge lasts far longer. The car gives way first. Tell it your *Home
+  battery capacity* and the grid's share rises gradually when the battery won't last, instead of
+  the whole load landing on the grid the moment the battery is empty.
 - **Cheap-hour grid charging:** while the price is low, buy energy into the home battery and
   run the house from the grid, filling deep when tomorrow looks dark and stopping early when
   it looks bright so the sun still has somewhere to go. Capped by the peak budget, so it
@@ -223,6 +228,7 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Start easing off at / Peak target / Never exceed | The three limits (kW), compared against the *projected* end-of-quarter-hour average |
 | `number` Keep in reserve for peaks | Where the mapped minimum-SoC rests, so ordinary house loads can't drain the battery flat |
 | `number` May discharge to for peaks | …and where it drops while shaving — the drop that actually frees the headroom |
+| `number` Home battery capacity | Usable kWh; lets a heavy load lean on the grid earlier when the battery won't last (0 = shave until the floor) |
 | `number` Normal grid import | Your resting ESS grid setpoint (W) |
 | `number` Cheap-hour import power | What a cheap hour may import on top of the house load |
 | `number` Cheap-hour target, bright/dark day | How deep to fill the battery, chosen by tomorrow's solar forecast |

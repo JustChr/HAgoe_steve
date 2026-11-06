@@ -194,6 +194,7 @@
       "peak_month_buffer": { "name": "Stay under the month's peak by" },
       "shaving_reserve_soc": { "name": "Keep in reserve for peaks" },
       "peak_min_soc": { "name": "May discharge to for peaks" },
+      "battery_capacity": { "name": "Home battery capacity" },
       "grid_setpoint": { "name": "Normal grid import" },
       "cheap_charge_power": { "name": "Cheap-hour import power" },
       "bright_day_target_soc": { "name": "Cheap-hour target, bright day" },

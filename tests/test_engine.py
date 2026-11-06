@@ -1789,13 +1789,15 @@ def test_soft_tier_eases_the_car_back_without_pausing():
     assert d.peak_tier == "soft"
     assert d.should_charge is True
     assert d.target_current_a == 11.0
-    assert d.reason_key == "fast"  # the arbiter's decision is trimmed, not replaced
+    # The arbiter's decision is trimmed, not replaced — and it says the peak limit,
+    # not the charger, is why it isn't 16 A.
+    assert d.reason_key == "fast_peak"
     assert d.peak_reason_key == "peak_shaving_car"
     # …but the number in it is the one we actually wrote. A status line reading
     # "Fast charging at 16 A" while 11 A goes to the car is the sensor lying about
     # the single fact a user checks it for.
     assert d.reason_params["amps"] == "11"
-    assert d.reason == "Fast charging at 11 A"
+    assert d.reason == "Fast charging at 11 A — as much as fits under the peak limit"
 
 
 def test_a_peak_pause_takes_over_the_status_reason():
@@ -2276,6 +2278,22 @@ def test_grid_charging_is_abandoned_the_moment_the_guard_engages():
     )
     assert d.peak_tier == "hard"
     assert d.grid_charging is False
+    # The setpoint is the house share now: never above the target, and never the
+    # cheap-hour charge rate it would otherwise have taken.
+    assert d.grid_setpoint_w <= 3700.0
+
+
+def test_without_battery_power_the_hard_tier_still_zeroes_the_setpoint():
+    # No battery power mapped: the house share can't be measured, and the tier
+    # ladder keeps its old levers.
+    cfg = _grid_charge_cfg()
+    state = EngineState()
+    d = _run(
+        cfg, state, 300, car_connected=False, grid_power_w=9000.0,
+        battery_soc=20.0, price_now=0.08,
+    )
+    assert d.peak_tier == "hard"
+    assert d.grid_charging is False
     assert d.grid_setpoint_w == 0.0
 
 
@@ -2733,3 +2751,150 @@ def test_the_new_levers_are_all_off_by_default():
     assert cfg.peak_ready_soc == 0.0
     assert cfg.stock_up is False
     assert engine._resting_reserve_soc(cfg) == cfg.shaving_reserve_soc
+
+
+# --- The house share: grid up to the budget, the battery only the excess -------------
+#
+# Readings below are what an ESS at its resting 100 W setpoint reports while the
+# battery carries a load: grid ≈ 100 W, battery = −(load − 100). The engine only ever
+# uses their difference (the net load), which the setpoint can't move.
+
+def _ess(load_w: float, *, setpoint_w: float = 100.0, **kw) -> dict:
+    return dict(grid_power_w=setpoint_w, battery_power_w=-(load_w - setpoint_w), **kw)
+
+
+def _share_cfg(**kw) -> "engine.EngineConfig":
+    return _peak_cfg(**{"mode": ChargingMode.SMART, "grid_setpoint_w": 100.0, **kw})
+
+
+def _step(cfg, state, seconds, **kw):
+    return decide(_inputs(now=W0 + timedelta(seconds=seconds), **kw), cfg, state)
+
+
+def test_a_heavy_load_hands_the_grid_its_share_and_the_battery_the_rest():
+    # A 9.6 kW sauna evening: the grid carries the target, the battery the excess,
+    # instead of the battery carrying all of it until its reserve.
+    cfg, state = _share_cfg(), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    assert d.grid_setpoint_w == 3700.0
+    assert d.battery_min_soc == 35.0  # the floor: the battery may go deep for this
+    assert d.hold_battery is False and d.hold_source == "peak"
+    assert d.peak_reason_key == "peak_share"
+    assert d.peak_reason_params["battery"] == "5.9"
+
+
+def test_the_setpoint_follows_the_load_down_so_the_battery_never_charges_from_grid():
+    # The thermostat switches the heater off: a setpoint left at 3.7 kW would make
+    # the ESS charge the battery from the grid at 2.8 kW. It follows the load instead.
+    cfg, state = _share_cfg(), EngineState()
+    _step(cfg, state, 0, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    d = _step(
+        cfg, state, 40, car_connected=False, battery_soc=70.0,
+        **_ess(900.0, setpoint_w=3700.0),
+    )
+    assert d.grid_setpoint_w == 900.0
+    assert state.peak_share_engaged is True  # still the sauna's evening
+
+
+def test_the_share_releases_only_after_the_house_stays_calm():
+    cfg, state = _share_cfg(peak_release_s=120.0), EngineState()
+    _step(cfg, state, 0, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    for t in range(40, 160, 10):
+        _step(cfg, state, t, car_connected=False, battery_soc=70.0, **_ess(900.0))
+    assert state.peak_share_engaged is True  # 120 s not yet over
+    d = _step(cfg, state, 200, car_connected=False, battery_soc=70.0, **_ess(900.0))
+    assert state.peak_share_engaged is False
+    assert d.grid_setpoint_w == 100.0
+    assert d.battery_min_soc == 50.0  # back at the resting reserve
+
+
+def test_a_car_pushing_the_total_over_is_trimmed_not_shaved_by_the_battery():
+    # Today's live test: Fast on one phase, a quiet house. The car is the steerable
+    # load, so the battery is not drawn into it — no hold release, no min-SoC drop,
+    # nothing to fight itself over.
+    cfg, state = _share_cfg(mode=ChargingMode.FAST), EngineState()
+    d = None
+    for t in range(0, 300, 10):
+        d = _step(
+            cfg, state, t, car_connected=True, phases=1, car_actual_power_w=3400.0,
+            battery_soc=79.0, grid_power_w=4300.0, battery_power_w=0.0,
+        )
+    assert state.peak_share_engaged is False
+    assert d.battery_min_soc == 50.0
+    assert d.hold_source != "peak"
+
+
+def test_a_car_displaced_by_the_house_pauses_and_comes_back_with_the_room():
+    # The sauna takes the whole share: the car pauses rather than lean on the
+    # battery. When the thermostat switches the heater off there is room again, and
+    # the car resumes — no held pause, which on heat-pump nights starved the car.
+    cfg, state = _share_cfg(mode=ChargingMode.FAST), EngineState()
+
+    def at(t, load):
+        return _step(
+            cfg, state, t, car_connected=True, phases=1, battery_soc=70.0,
+            car_actual_power_w=0.0, **_ess(load),
+        )
+
+    d = at(0, 9600.0)
+    assert d.should_charge is False
+    assert d.peak_reason_key == "peak_pause"
+    for t in range(10, 300, 10):
+        d = at(t, 9600.0)
+        assert d.should_charge is False
+    d = at(300, 900.0)
+    assert d.should_charge is True  # 2.8 kW of room: the car fits at 1φ
+
+
+def test_the_battery_never_carries_the_cars_minimum_in_a_heavy_load():
+    # Even well above the reserve: on a sauna evening that energy is the sauna's.
+    cfg, state = _share_cfg(mode=ChargingMode.FAST), EngineState()
+    d = _step(
+        cfg, state, 0, car_connected=True, phases=3, battery_soc=95.0,
+        car_actual_power_w=0.0, **_ess(9600.0),
+    )
+    assert d.should_charge is False
+
+
+def test_a_battery_running_short_hands_the_grid_more_before_it_is_empty():
+    # 38 % on a 30.5 kWh pack with a 35 % floor is ~0.9 kWh: at 5.9 kW of excess
+    # that's nine minutes. Rather than run it dry and then drop the whole load on
+    # the grid, the grid's share rises now.
+    cfg, state = _share_cfg(battery_capacity_kwh=30.5), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=38.0, **_ess(9600.0))
+    assert d.grid_setpoint_w > 3700.0
+    assert d.peak_reason_key == "peak_share_paced"
+    # Without the capacity it shaves fully until the floor.
+    cfg2, state2 = _share_cfg(), EngineState()
+    d2 = _step(cfg2, state2, 0, car_connected=False, battery_soc=38.0, **_ess(9600.0))
+    assert d2.grid_setpoint_w == 3700.0
+
+
+def test_a_full_battery_is_not_paced():
+    cfg, state = _share_cfg(battery_capacity_kwh=30.5), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=90.0, **_ess(9600.0))
+    assert d.grid_setpoint_w == 3700.0
+    assert d.peak_reason_key == "peak_share"
+
+
+def test_grid_charging_waits_while_the_share_is_engaged():
+    cfg = _grid_charge_cfg(grid_setpoint_w=100.0)
+    state = EngineState()
+    d = _step(
+        cfg, state, 30, car_connected=False, battery_soc=30.0, price_now=0.05,
+        **_ess(9600.0),
+    )
+    assert state.peak_share_engaged is True
+    assert d.grid_charging is False
+    assert d.grid_setpoint_w <= 3700.0
+
+
+def test_small_budget_drift_does_not_rewrite_the_setpoint():
+    cfg, state = _share_cfg(), EngineState()
+    first = _step(cfg, state, 0, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    # A slightly smaller load: well within the move threshold, so no new write.
+    second = _step(
+        cfg, state, 40, car_connected=False, battery_soc=70.0,
+        **_ess(9500.0, setpoint_w=first.grid_setpoint_w),
+    )
+    assert second.grid_setpoint_w == first.grid_setpoint_w

@@ -194,6 +194,7 @@
       "peak_month_buffer": { "name": "Abstand zur Monatsspitze" },
       "shaving_reserve_soc": { "name": "Reserve für Lastspitzen" },
       "peak_min_soc": { "name": "Für Lastspitzen entladen bis" },
+      "battery_capacity": { "name": "Kapazität der Hausbatterie" },
       "grid_setpoint": { "name": "Normaler Netzbezug" },
       "cheap_charge_power": { "name": "Bezugsleistung in günstigen Stunden" },
       "bright_day_target_soc": { "name": "Zielstand, sonniger Tag" },
