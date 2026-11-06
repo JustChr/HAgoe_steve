@@ -28,6 +28,7 @@ self-consumption and the guard's hard-tier `setpoint → 0`.
 | `winter.py` / `winter_scenarios.py` | Multi-day runs at 30 s ticks: does the battery's *energy* last a December week? |
 | `real_ab.py` | A/B a change against the real measured baseline, prices and battery |
 | `peak15.py` | 15 winter days vs a 4 kW ceiling, recorded per billing quarter-hour |
+| `heavy_load.py` | The measured sauna, cooking and sauna + car on the real 30.5 kWh / 10.2 kW pack: the old tier ladder against the house share, plus the energy-horizon sweep |
 | `build_chart.py` | Renders that run into a self-contained HTML readout |
 | `ha_ws.py` / `pull_winter.py` | Pull long-term statistics out of Home Assistant |
 
@@ -37,6 +38,8 @@ python tools/sim/scenarios.py 14         # just one
 python tools/sim/winter_scenarios.py 2   # a December week
 python tools/sim/real_ab.py              # needs the snapshots below
 python tools/sim/peak15.py               # 15 days × 3 variants → peak15_run.json
+python tools/sim/heavy_load.py           # heavy loads: tiers vs house share
+python tools/sim/heavy_load.py sweep     # the 15-minute energy horizon, swept
 python tools/sim/build_chart.py          # → peak15_chart.html (git-ignored: real data)
 ```
 

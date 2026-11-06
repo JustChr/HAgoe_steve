@@ -163,6 +163,8 @@ def sweep() -> None:
 
 
 if __name__ == "__main__":
+    # The reports use φ and arrows; a Windows console defaults to cp1252.
+    sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) > 1 and sys.argv[1] == "sweep":
         sweep()
     else:

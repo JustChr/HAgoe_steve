@@ -445,4 +445,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # The reports use φ and arrows; a Windows console defaults to cp1252.
+    sys.stdout.reconfigure(encoding="utf-8")
     main()
