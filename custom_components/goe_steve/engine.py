@@ -372,6 +372,11 @@ class EngineState:
     # The cap in force (A). Falls freely, rises only after the dwell.
     peak_cap_a: float | None = None
     peak_cap_at: datetime | None = None
+    # The grid request's peak ceiling (A) on ``peak_request_phases`` phases — the
+    # same one-sided limiter as the cap, for the *request* the cap never sees.
+    peak_request_a: float | None = None
+    peak_request_at: datetime | None = None
+    peak_request_phases: int | None = None
     # The house share (see :func:`_house_share`): whether a heavy load is being split
     # between grid and battery, and since when the load has been back under the
     # budget (for the release confirmation).
@@ -1976,6 +1981,42 @@ def _rate_limit_cap(
     return cap_a
 
 
+def _rate_limit_request(
+    ceiling_a: float,
+    phases: int,
+    now: datetime | None,
+    cfg: EngineConfig,
+    state: EngineState,
+) -> float:
+    """The request's ceiling, by :func:`_rate_limit_cap`'s rule: down at once, up after the dwell.
+
+    :func:`peak_charge_ceiling_w` subtracts the house load *as it is this second*,
+    so a load that cycles — a heat-pump compressor or an oven element pulsing a few
+    hundred watts every few seconds — moves the request by an amp or two every
+    cycle, and the charger is re-written each time (seen live: 11↔13 A every 5 s for
+    ten minutes). The ceiling function itself stays pure because the planner sizes
+    slots with it. The limiting happens here, where the request is made.
+
+    Every dip re-arms the dwell, so the request rises only once the load has
+    stayed low for a full dwell. A phase change starts afresh, because amps on one
+    phase count say nothing about amps on three.
+    """
+    previous = state.peak_request_a
+    if (
+        now is None
+        or previous is None
+        or state.peak_request_phases != phases
+        or ceiling_a <= previous
+        or state.peak_request_at is None
+        or (now - state.peak_request_at).total_seconds() >= cfg.peak_dwell_s
+    ):
+        state.peak_request_a = ceiling_a
+        state.peak_request_at = now
+        state.peak_request_phases = phases
+        return ceiling_a
+    return previous
+
+
 def _attach_window(decision: Decision, window: PeakWindow) -> None:
     """Surface the measurement on the decision — always, enabled or not."""
     decision.peak_window_avg_w = window.average_w
@@ -3172,7 +3213,11 @@ def _decide(
         # departure guarantee is the deliberate exception: it has already decided the
         # peak is worth buying, so it asks for everything and says so.
         ceiling_a = (
-            _ceiling_amps(ceiling_w, phases, inp) if ceiling_w is not None else None
+            _rate_limit_request(
+                _ceiling_amps(ceiling_w, phases, inp), phases, inp.now, cfg, state
+            )
+            if ceiling_w is not None
+            else None
         )
         ceiling_bound = ceiling_a is not None and ceiling_a < base_amps
         if ceiling_bound and winner.kind != "urgent":

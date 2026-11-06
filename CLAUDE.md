@@ -90,16 +90,28 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
   renders 0 px tall, so the row looks empty with no error anywhere (this cost v5.5.0's peak-card
   number rows). `ha-entity-toggle`, `ha-icon-button` and `ha-control-number-buttons` are loaded;
   when in doubt, check `customElements.get(...)` on a dashboard page or draw the control yourself.
-- **Safety invariant:** if the car isn't connected or required input data is stale, the
-  brain must not write to the charger; with the *Smart control* switch off it is fully
-  hands-off **as far as the charger goes**. Since peak protection, that switch no longer
-  covers everything: `Decision.control` governs the *charger*, `Decision.house_control`
-  governs the *house* (grid setpoint, minimum SoC, hold switch), and peak protection answers
-  to its own switch — it keeps managing the house with Smart control off, and a projected
-  hard-limit breach still pauses the charger. With peak protection off the two collapse
-  (`house_control == control`), which is exactly the old rule. The same split governs Manual's
-  *passive window* (`_apply(charger=False)`): it suppresses the charger writes only, never the
-  house levers, which have nothing to do with what the wallbox is doing.
+- **Safety invariant — three cases, don't merge them:**
+  - **Required input missing or stale → write nothing.** Car state unknown, no grid reading, or
+    a connected car with no power reading (`nrg`) yet: `_async_update_data` returns a
+    `control=False` decision *before* `_apply`, so neither the charger nor the house levers are
+    touched; only the billing quarter-hour advances (marked degraded). The power case matters
+    after every (re)load: the first engine run lands inside the charger's retained burst
+    (~320 keys in a few hundred ms), and a `car` without its `nrg`, read as 0 W, books the car
+    to the house and the peak budget pauses it (seen live 2026-11-06).
+  - **No car connected (known) → the brain stays in control and holds the charger paused:**
+    `frc` Off, `amp` parked at 6 A, phases written. That is deliberate, not a breach — the next
+    car plugged in must not start on whatever was left in the registers. The charger clears
+    `frc` to Neutral at unplug, so the closed loop writes it back once per disconnect.
+  - **Smart control off → hands-off for the charger:** `_release_force` hands `frc` back to the
+    app and nothing else is written to the wallbox.
+
+  Smart control covers only the charger. `Decision.control` governs the *charger*,
+  `Decision.house_control` the *house* (grid setpoint, minimum SoC, hold switch), and peak
+  protection answers to its own switch — it keeps managing the house with Smart control off,
+  and a projected hard-limit breach still pauses the charger. With peak protection off the two
+  collapse (`house_control == control`). The same split governs Manual's *passive window*
+  (`_apply(charger=False)`): it suppresses the charger writes only, never the house levers,
+  which have nothing to do with what the wallbox is doing.
 - **The house numbers are borrowed, not taken.** The ESS grid setpoint and minimum SoC are
   captured on the first write and handed back by `_release_setpoint` / `_release_min_soc` once
   nothing wants them any more — ownership persisted beside the battery hold, because a restart
@@ -112,6 +124,11 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
 - **Peak protection is a ceiling, not a strategy.** The arbiter takes the *highest* bid, so
   a strategy wanting to charge *less* cannot express it. `apply_peak_guard` runs after the
   arbiter and the finalizer instead. Don't try to make it a `_Proposal`.
+- **Anything sized from the live house load needs a one-sided limiter** — down at once, up
+  only after `peak_dwell_s` with every dip re-arming it. House loads cycle (compressors, oven
+  elements: ±450 W every ~10 s seen live), and an amp count that follows them re-writes the
+  charger every cycle. The cap has `_rate_limit_cap`, the grid request `_rate_limit_request`;
+  `peak_charge_ceiling_w` itself stays pure because the planner sizes slots with it.
 - **With battery power mapped, the tiers only steer the car.** The house levers (setpoint, minimum SoC,
   hold) come from `_house_share`: a heavy *house* load makes the setpoint follow the load up to the
   budget, so the battery covers only the excess. The setpoint must never sit above the load — on an

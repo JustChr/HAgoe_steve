@@ -344,21 +344,26 @@ under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed 
       the hard tier, so with a heavy house load it restarts after each 120 s release and is paused
       again 10 s later (scenario 13: every ~2 min, quarter-hour ends at 3.80 kW). Consider holding
       a hard pause on a hands-off charger until the house share releases.
-- [ ] **The car current hunts** every few seconds — under the soft cap (6–11 A) and from the
+- [x] **The car current hunts** every few seconds — under the soft cap (6–11 A) and from the
       request shaping with the tier off (12–16 A). Suspect: the derived house load jumping as the
       meters update out of step (0 → 3152 → 34 W within seconds). Confirm in `tools/sim` first.
       **Second live run (2026-11-06, 17:16–17:29, v5.8.0, Fast, soft tier):** the charger's `amp`
       really moves, not just the reason text — 12↔13 A every 5 s for ten minutes (~100 writes),
       11↔13 A while the grid swung 3.03↔3.50 kW on a ~10 s cycle with the car's draw flat at
       ~2.37 kW. So it is a real house load pulsing (not only meter skew) and the brain chases it
-      at the 2 s / 1 A write limits. Wants a deadband or a short average on the *raise* side;
-      backing off can stay immediate.
-- [ ] **A reload pauses a charging car for ~10 s.** Seen live 2026-11-06 16:18:36 UTC (options
+      at the 2 s / 1 A write limits. **Fixed (v5.8.1):** the source was the grid *request*
+      (`peak_charge_ceiling_w`, live house load), which the cap's dwell never covered. It now
+      goes through `_rate_limit_request` — down at once, up after `peak_dwell_s`. Replaying the
+      live pattern: 119 → 1 current change in ten minutes. The 6–11 A hunting under the soft cap
+      from the first test may still have the meter-skew cause; watch for it.
+- [x] **A reload pauses a charging car for ~10 s.** Seen live 2026-11-06 16:18:36 UTC (options
       flow reload): *Charging requested* off for 3.5 s, `frc` on→off→on, `amp` 12→6→15, charger
       *complete* for 9 s. Cause (code, not yet reproduced in a test): `car_actual_power_w=
       self.goe.power_w or 0.0` in `coordinator.py` — the retained `car` says connected before the
       first `nrg` arrives, so the car's 2.7 kW counts as house load, the peak cap leaves < 6 A and
-      the brain pauses. Treat "connected but no `nrg` yet" as stale input (hands off) instead of 0 W.
+      the brain pauses. Confirmed: the retained burst is ~320 keys and the first refresh runs in
+      it; the engine with car 0 W decides `peak_pause`, with 2.76 kW it keeps 13 A. **Fixed
+      (v5.8.1):** a connected car without a power reading is stale input — hands off for that cycle.
 - [x] **Meter counter checked live (17:15–17:47):** the 17:30 quarter-hour read 0.029 kWh on the
       register (≈ 116 W) against a projection of ~110 W; the month record stayed 3.34 kW. At each
       quarter-hour start `measured_by` reads `power` for 20–40 s until the register's next tick

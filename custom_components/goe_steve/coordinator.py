@@ -455,12 +455,21 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
     # --- The regulation loop ----------------------------------------------------
     async def _async_update_data(self) -> Decision:
         connected = self.goe.car_connected
+        car_power_w = self.goe.power_w
         grid_raw = self._get_float(CONF_GRID_POWER)
         import_kwh = self._get_energy_kwh(CONF_GRID_IMPORT_ENERGY)
         cfg = self._engine_config()
 
         # Required signals missing/stale → keep hands off rather than guess.
-        if connected is None or grid_raw is None:
+        #
+        # A connected car with no power reading counts as missing too. The first
+        # engine run after a (re)load lands in the middle of the charger's retained
+        # burst — ~320 keys within a few hundred ms — so ``car`` can be cached while
+        # ``nrg`` is not yet. Read as 0 W, a car charging at 2.7 kW is booked to the
+        # house, the peak budget leaves it nothing, and the brain pauses it for a
+        # cycle (seen live on a reload, 2026-11-06). Without a car the power is
+        # genuinely irrelevant, so only the connected case waits for it.
+        if connected is None or grid_raw is None or (connected and car_power_w is None):
             # Still refresh the price cache so the price card renders without a car.
             self._read_price()
             # …and still advance the billing quarter-hour. This is exactly the path a
@@ -487,7 +496,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # car power separately — is invariant to the car's own current changes.
         inputs = ChargerInputs(
             car_connected=connected,
-            car_actual_power_w=self.goe.power_w or 0.0,
+            car_actual_power_w=car_power_w or 0.0,
             phases=self._read_phases(),
             voltage_v=self._voltage,
             grid_power_w=grid_raw,

@@ -604,6 +604,12 @@ Three consequences:
   confirmation and dwell that solar charging uses — the contactor is no busier than before.
 * **The live budget still corrects within the window.** Planning aims at the target; the
   quarter-hour budget is what actually trims the amps. Nothing about the tiers changes.
+* **The request falls at once but rises only after the dwell** (60 s), and every dip starts
+  the wait again — the same rule as the cap. The ceiling subtracts the house load *as it is
+  this second*, and house loads cycle: a compressor or oven element pulsing ~450 W every ~10 s
+  moved Fast's request 11 ↔ 13 A on every evaluation, and each flip was a charger write (seen
+  live, ten minutes, ~100 writes). Now the car sits at the lower current while the pulsing
+  lasts and steps up a minute after it stops. Asking for less is never delayed.
 
 **The departure guarantee still wins.** If spreading the charge under the ceiling can't deliver
 your target energy by departure, the plan reverts to full power and buys the peak — a car that

@@ -2599,6 +2599,67 @@ def test_the_ceiling_does_credit_solar_the_car_already_has():
     assert ceiling >= 11040.0
 
 
+def _pulsing_fast(cfg, state, start_s, seconds, house_w, car_w=2400.0, step=5):
+    """Fast on 1φ while the house draws ``house_w(t)``; returns the target amps seen.
+
+    The car's draw is held flat, as it was live: a car doesn't follow a 5 s wobble.
+    The tiers are pushed out of reach so only the *request* is under test.
+    """
+    seen = []
+    for t in range(start_s, start_s + seconds + 1, step):
+        house = house_w(t)
+        d = decide(
+            _inputs(
+                now=W0 + timedelta(seconds=t), phases=1, car_actual_power_w=car_w,
+                grid_power_w=house + car_w, battery_soc=78.0,
+            ),
+            cfg,
+            state,
+        )
+        assert d.should_charge
+        seen.append(d.target_current_a)
+    return seen
+
+
+def _quiet_tiers_cfg(**kw):
+    return _peak_cfg(
+        # The soft line sits just under the target (the three move together, so it
+        # can't simply be pushed away); the loads below stay under it.
+        mode=ChargingMode.FAST, peak_soft_w=3650.0, peak_hard_w=99000.0,
+        max_phases=1, auto_phase=False, **kw,
+    )
+
+
+def test_a_pulsing_house_load_does_not_make_the_request_hunt():
+    # Seen live: a ~450 W load cycling every ~10 s moved Fast's request 11↔13 A on
+    # every evaluation for ten minutes, and each flip was a charger write. 3.7 kW
+    # target − 0.6 kW = 13 A; − 1.05 kW = 11 A. The request takes the low one at
+    # once and stays there while the pulses keep coming.
+    cfg, state = _quiet_tiers_cfg(), EngineState()
+    pulse = lambda t: 1050.0 if (t // 5) % 2 else 600.0
+    seen = _pulsing_fast(cfg, state, 0, 600, pulse)
+    assert seen[0] == 13.0
+    assert set(seen[2:]) == {11.0}
+
+
+def test_the_request_rises_once_the_load_has_stayed_low_for_the_dwell():
+    cfg, state = _quiet_tiers_cfg(), EngineState()
+    _pulsing_fast(cfg, state, 0, 60, lambda t: 1050.0)
+    # The load is gone, but the request waits out the dwell before asking for more…
+    early = _pulsing_fast(cfg, state, 65, 30, lambda t: 600.0)
+    assert set(early) == {11.0}
+    # …and then follows it.
+    late = _pulsing_fast(cfg, state, 100, 120, lambda t: 600.0)
+    assert late[-1] == 13.0
+
+
+def test_the_request_still_falls_at_once():
+    # Asking for less is never delayed: that is the direction a slow answer costs.
+    cfg, state = _quiet_tiers_cfg(), EngineState()
+    _pulsing_fast(cfg, state, 0, 120, lambda t: 600.0)
+    assert _pulsing_fast(cfg, state, 125, 0, lambda t: 1500.0) == [9.0]
+
+
 # --- Hysteresis, readiness and stocking up -------------------------------------------
 #
 # All three come out of a 15-day closed-loop simulation against a 4 kW ceiling
