@@ -112,6 +112,12 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
 - **Peak protection is a ceiling, not a strategy.** The arbiter takes the *highest* bid, so
   a strategy wanting to charge *less* cannot express it. `apply_peak_guard` runs after the
   arbiter and the finalizer instead. Don't try to make it a `_Proposal`.
+- **With battery power mapped, the tiers only steer the car.** The house levers (setpoint, minimum SoC,
+  hold) come from `_house_share`: a heavy *house* load makes the setpoint follow the load up to the
+  budget, so the battery covers only the excess. The setpoint must never sit above the load — on an
+  ESS that charges the battery from the grid. The battery is never counted as room for the car, and
+  a displaced car pauses *without* a hold (both alternatives lost in `tools/sim/peak15.py` /
+  `heavy_load.py`). Without battery power the old tier ladder (`_apply_tier_levers`) still runs.
 - **Backward compatibility is enforced, not asserted:** `test_switched_off_the_brain_behaves_exactly_as_it_did_before`
   replays 14 scenarios and compares every charging-relevant field. If you touch the engine's
   decision path, that test is the one that tells you whether you changed behaviour.
