@@ -1313,8 +1313,7 @@ _REASON_TEMPLATES: dict[str, str] = {
         "{grid} kW so the battery lasts"
     ),
     "peak_pause": (
-        "Heading for {projected} kW — the car is paused until this quarter-hour "
-        "is over at {until}"
+        "Heading for {projected} kW — the car is paused until there's room for it again"
     ),
     "peak_battery_empty": (
         "Heading for {projected} kW and the home battery is down to its {soc}% "

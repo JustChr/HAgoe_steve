@@ -196,7 +196,7 @@ const en: Dict = {
   "reason.peak_shaving_house":
     "Heading for {projected} kW — letting the home battery cover more of the house to stay under {target} kW",
   "reason.peak_pause":
-    "Heading for {projected} kW — the car is paused until this quarter-hour is over at {until}",
+    "Heading for {projected} kW — the car is paused until there's room for it again",
   "reason.peak_battery_empty":
     "Heading for {projected} kW and the home battery is down to its {soc}% floor — nothing left to shave with",
   "reason.peak_degraded":
@@ -418,7 +418,7 @@ const de: Dict = {
   "reason.peak_shaving_house":
     "Läuft auf {projected} kW zu — die Hausbatterie übernimmt mehr vom Haus, um unter {target} kW zu bleiben",
   "reason.peak_pause":
-    "Läuft auf {projected} kW zu — das Auto pausiert, bis diese Viertelstunde um {until} vorbei ist",
+    "Läuft auf {projected} kW zu — das Auto pausiert, bis wieder Platz dafür ist",
   "reason.peak_battery_empty":
     "Läuft auf {projected} kW zu und die Hausbatterie ist auf ihrer {soc}%-Grenze — nichts mehr zum Kappen da",
   "reason.peak_degraded":

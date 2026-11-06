@@ -385,7 +385,7 @@ under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed 
       same cycle, car at 0 W a second later. Boiler off at 19:32:37 → `frc 2` at 6 A in the same cycle
       (no hold), 6 → 12 A 56 s later and it held. 10 writes in 15 min, every fall following a real house
       load, **no raise undone** (the v5.8.1 ramp artefact is gone).
-- [ ] **The pause reason promises a hold that doesn't exist:** "the car is paused until this quarter-hour
+- [x] **The pause reason promised a hold that doesn't exist** (reworded after v5.8.2, unreleased): "the car is paused until this quarter-hour
       is over at 19:45" — it resumed at 19:32:37, as the house share design intends (a displaced car
       resumes as soon as there's room). Reword `peak_pause` (engine + card `localize.ts` EN/DE) to
       "…paused until there's room again". The `until` param then has no job there.
