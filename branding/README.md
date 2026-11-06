@@ -24,20 +24,25 @@ npm init -y && npm install @resvg/resvg-js @resvg/resvg-js-win32-x64-msvc
 node render.mjs && cp *.png "<repo>/branding/"
 ```
 
-## Using it in HACS
+## Brand images in Home Assistant and the Marketplace
 
-HACS shows the icon/logo from the [home-assistant/brands](https://github.com/home-assistant/brands)
-repo, keyed by the integration domain (`goe_steve`). The brands-ready files for the chosen
-**Option 3** are rendered (trimmed, per brands CI rules) to:
+Since Home Assistant 2026.3 a custom integration ships its own brand images in a `brand/`
+folder; HA serves them locally (they win over the brands CDN) and the Marketplace reads them
+from the integration's latest release. No submission to home-assistant/brands is needed. The
+rendered **Option 3** files live in `custom_components/goe_steve/brand/`:
 
 ```
-hacs/custom_integrations/goe_steve/
-  icon.png      256×256  (full-bleed tile)
-  icon@2x.png   512×512
-  logo.png      512×194  (wordmark lockup, trimmed)
-  logo@2x.png   1024×388
+icon.png          256×256   full-bleed tile (bright enough for light and dark themes)
+icon@2x.png       512×512
+logo.png          512×194   wordmark lockup, trimmed, dark text for light backgrounds
+logo@2x.png       1024×388
+dark_logo.png     512×194   same lockup, light text for dark backgrounds
+dark_logo@2x.png  1024×388
 ```
 
-To submit: fork [home-assistant/brands](https://github.com/home-assistant/brands), copy this
-`custom_integrations/goe_steve/` folder into the repo root, and open a PR. The brand sources are
-`icon-brands.svg` (full-bleed icon) and `logo-lockup.svg` (lockup) — edit those and re-render.
+Rules (brands spec): PNG, transparent, trimmed to no padding; icon square 256/512; logo
+landscape with shortest side 128–256 (256–512 for @2x). Sources: `icon-brands.svg`,
+`logo-lockup.svg`, `logo-lockup-dark.svg` — edit those and re-render (the script writes to a
+`brand/` folder in the temp dir; copy it into `custom_components/goe_steve/`).
+
+The files only become visible to Marketplace users once they are part of a **release**.

@@ -1,6 +1,7 @@
 {
   "domain": "goe_steve",
   "name": "go-e + SteVe Smart Charging",
+  "categories": ["energy.ev_charging"],
   "codeowners": ["@JustChr"],
   "config_flow": true,
   "dependencies": ["http", "frontend", "mqtt"],

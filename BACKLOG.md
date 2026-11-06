@@ -363,8 +363,8 @@ under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed 
 - [ ] Decide on repo name (currently `HAgoe_steve`; alternatives `ha-goe-steve`, `HASteveGoe`).
 - [x] Add `LICENSE` (MIT), `info.md` (HACS), and CI (`.github/workflows/validate.yml`:
       hassfest + HACS validation + engine tests + card build/stale-bundle check). (v1.0)
-- [ ] Submit to home-assistant/brands for the integration logo, then drop `ignore: brands` in CI.
-      Assets ready (Option 3) in `branding/hacs/custom_integrations/goe_steve/` — copy that folder
-      into a fork of home-assistant/brands and open the PR. Sources: `branding/icon-brands.svg`,
-      `branding/logo-lockup.svg`; re-render via `branding/render.mjs`.
+- [x] Brand images: shipped in `custom_components/goe_steve/brand/` (HA ≥ 2026.3 local brands,
+      read by the Marketplace from the latest release) incl. a `dark_logo` for dark themes;
+      `ignore: brands` dropped from CI; manifest declares `categories: ["energy.ev_charging"]`.
+      No home-assistant/brands PR needed. Sources + re-render: `branding/README.md`.
 - [x] Tag/release `v1.0.0`, then `v1.0.1` (event-driven surplus). Released as GitHub tags.

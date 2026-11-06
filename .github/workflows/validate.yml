@@ -24,9 +24,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # The brand logo lives in home-assistant/brands and is added when the
-          # integration is published there; skip it until then.
-          ignore: brands
 
   tests:
     name: Engine tests

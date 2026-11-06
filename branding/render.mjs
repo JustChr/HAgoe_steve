@@ -50,10 +50,15 @@ for (const name of ["icon-option-1", "icon-option-2", "icon-option-3", "icon-opt
 render("logo-lockup.svg", "logo-lockup.png", 840);
 render("logo-banner.svg", "logo-banner.png", 960);
 
-// HACS / home-assistant brands deliverables — Option 3, trimmed per brands CI rules.
-const dir = "hacs/custom_integrations/goe_steve";
+// Brand images shipped with the integration (custom_components/goe_steve/brand/), which
+// Home Assistant >= 2026.3 serves locally and the Marketplace reads from the latest release.
+// Option 3, trimmed per the brands image rules. The icon's bright tile reads on both themes,
+// so only the logo needs a dark variant (light wordmark).
+const dir = "brand";
 mkdirSync(dir, { recursive: true });
 render("icon-brands.svg", `${dir}/icon.png`, 256);
 render("icon-brands.svg", `${dir}/icon@2x.png`, 512);
 renderTrimmed("logo-lockup.svg", `${dir}/logo.png`, 512);
 renderTrimmed("logo-lockup.svg", `${dir}/logo@2x.png`, 1024);
+renderTrimmed("logo-lockup-dark.svg", `${dir}/dark_logo.png`, 512);
+renderTrimmed("logo-lockup-dark.svg", `${dir}/dark_logo@2x.png`, 1024);
