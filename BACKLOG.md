@@ -302,8 +302,9 @@ the full state trace are in `docs/mqtt-direct-concept.md`.
   start/stop payload follow-up under Phase 3 is settled.
 
   Follow-ups worth revisiting:
-  - Not yet seen live: the release with an actually full car — check the reason string and
-    the hold switch the next time a car finishes while plugged in.
+  - ~~Not yet seen live~~ Seen live 2026-11-06 (Full power, car stopped drawing): the Status
+    reason read *"The car isn't taking power (full, or waiting on its own timer) — home battery
+    released"*. The hold switch itself wasn't checked.
   - An explicit **Hold** deliberately still holds for a full car. If that turns out to be
     the case users hit, decide whether Hold should mean "always while the car charges".
   - The card has no way to authorize/block a tag (the picker lists only allowed tags);
