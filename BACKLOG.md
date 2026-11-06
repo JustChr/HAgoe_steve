@@ -309,6 +309,20 @@ the full state trace are in `docs/mqtt-direct-concept.md`.
   - The card has no way to authorize/block a tag (the picker lists only allowed tags);
     `authorize_tag` / `block_tag` are automation-only. Add a blocked-tags control if wanted.
 
+## Waiting for an RFID card — investigated, not built (2026-11-06)
+
+- 2026-10-21: with `acs` = Wait, a car plugged in while the brain forced the charger on got
+  a session **without a card** (`trx` 0): no OCPP StartTransaction, SteVe never saw it,
+  taps refused until unplug. PR #2 (branch `feat/wait-for-rfid-card`) held every mode off
+  while `trx` was null.
+- Live test on firmware 60.6 (details in `docs/mqtt-direct-concept.md`): forcing on **no
+  longer** bypasses the card — the box keeps waiting until a tap. A tap works while forced
+  off or on, and SteVe records it. PR #2 closed unmerged; its branch stays as a starting point.
+- If a card-less session shows up again: detect `trx` not null with no active SteVe
+  transaction for the charge box, say so in the Status reason (unplug/replug), and check
+  whether `frc` 1→0 recovers it without unplugging (untested). Mind that `trx` 0 is also
+  what a valid SteVe tap reports, and that `trx` stays stale ~5 s after an unplug.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

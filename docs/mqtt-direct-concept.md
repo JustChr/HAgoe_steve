@@ -92,6 +92,25 @@ Going direct: one dependency fewer, exact enum values instead of label-matching,
 > fight with the box. Note the RFID card is *not* involved: in the verified case the tag
 > was only registered ~80 s after `frc` had already been cleared.
 
+> **RFID access control (`acs`, `trx`) — verified live, 2026‑11‑06, firmware 60.6.** The
+> box runs with `acs = 1` (Wait: a card or the app must authorize) and OCPP to SteVe.
+>
+> | Situation | What the charger reports |
+> |---|---|
+> | Plugged in, no card yet | `car 3`, `trx null`, `modelStatus 2` (waiting for access control) |
+> | Card tapped (a tag only SteVe knows) | `trx 0` — **not** a card slot number. SteVe's StartTransaction is stamped at the tap |
+> | Tap while forced **off** (`frc 1`) | Accepted (green): `trx 0`, `modelStatus 4` (forced off). Releasing `frc` starts charging ~9 s later |
+> | Forced **on** (`frc 2`), plugged in, no tap | **No session**: stays `trx null` / `modelStatus 2` for minutes. A tap then charges normally |
+> | Unplugged | `trx` back to `null` ~5 s after `car 1` |
+>
+> Consequences: `trx 0` is ambiguous (the go-e API reads it as "started without a card",
+> but a SteVe-authorized tap reports it too) — only *null vs. not null* means anything.
+> And forcing on does **not** bypass the card requirement on 60.6, so the brain's `frc`
+> writes can't open a session SteVe never sees. On 2026‑10‑21 exactly that was observed
+> (a card-less `trx 0` session under `frc 2`, taps refused until unplug); it did not
+> reproduce on 60.6, so a gate for it (PR #2) was closed unmerged. If it ever comes back,
+> the reliable signal is `trx` not null **and** no active SteVe transaction for the box.
+
 > **`amp` write frequency — not a constraint.** Verified in practice: the charger takes
 > **more than one write per second**, sustained, without complaint. The brain writes far
 > less than that (~4/min on a fluctuating day, with a 2 s post-write settle), so when
