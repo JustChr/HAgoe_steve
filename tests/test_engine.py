@@ -2639,7 +2639,10 @@ def test_a_pulsing_house_load_does_not_make_the_request_hunt():
     pulse = lambda t: 1050.0 if (t // 5) % 2 else 600.0
     seen = _pulsing_fast(cfg, state, 0, 600, pulse)
     assert seen[0] == 13.0
-    assert set(seen[2:]) == {11.0}
+    # The start is a raise too, so the first CAR_RAMP_SETTLE_S book the 13 A asked
+    # for to the car (this car is held flat below it); after that, steady at 11.
+    settled = int(engine.CAR_RAMP_SETTLE_S // 5) + 1
+    assert set(seen[settled:]) == {11.0}
 
 
 def test_the_request_rises_once_the_load_has_stayed_low_for_the_dwell():
@@ -2651,6 +2654,75 @@ def test_the_request_rises_once_the_load_has_stayed_low_for_the_dwell():
     # …and then follows it.
     late = _pulsing_fast(cfg, state, 100, 120, lambda t: 600.0)
     assert late[-1] == 13.0
+
+
+def _lagging_charger(cfg, state, start_s, seconds, house_w, first_a, step=5):
+    """Closed loop with the charger's report one cycle behind the grid meter.
+
+    The car draws what it was told within a cycle, the grid meter sees that at once,
+    and the charger's own power reading arrives a cycle later — the order measured
+    live on 2026-11-06 (go-e ~1–2 s behind the ESS grid reading).
+    """
+    told_a, reported_w, seen = first_a, first_a * 230.0, []
+    for t in range(start_s, start_s + seconds + 1, step):
+        drawn_w = told_a * 230.0
+        d = decide(
+            _inputs(
+                now=W0 + timedelta(seconds=t), phases=1,
+                car_actual_power_w=reported_w, grid_power_w=house_w(t) + drawn_w,
+                battery_soc=78.0,
+            ),
+            cfg,
+            state,
+        )
+        reported_w = drawn_w
+        told_a = d.target_current_a if d.should_charge else 0.0
+        seen.append(told_a)
+    return seen
+
+
+@pytest.mark.parametrize("soft_w", [3650.0, 3200.0])  # tiers quiet / the live limits
+def test_a_raise_is_not_undone_by_the_cars_own_ramp(soft_w):
+    # Seen live after v5.8.1: 6 → 13 A, and five seconds later back to 6, every
+    # minute. The grid meter already held the ramping car while the charger still
+    # reported 6 A, so the ramp read as +1.7 kW of house load and the raise was
+    # undone, then held there by the dwell. The car sat at 6 A with room for 13.
+    cfg = _peak_cfg(
+        mode=ChargingMode.FAST, peak_soft_w=soft_w, peak_hard_w=99000.0,
+        max_phases=1, auto_phase=False,
+    )
+    state = EngineState()
+    _lagging_charger(cfg, state, 0, 60, lambda t: 3200.0, first_a=6.0)  # a boiler
+    seen = _lagging_charger(cfg, state, 65, 300, lambda t: 580.0, first_a=6.0)
+    raised = seen.index(13.0)
+    assert set(seen[raised:]) == {13.0}
+
+
+def test_a_real_load_during_the_settle_is_still_seen():
+    # The settle books the *car's* ramp to the car; a boiler switching on in the very
+    # next cycle after a raise must still cut the request at once.
+    cfg, state = _quiet_tiers_cfg(), EngineState()
+    _lagging_charger(cfg, state, 0, 60, lambda t: 3200.0, first_a=6.0)
+    told_a, reported_w, boiler, t = 6.0, 6 * 230.0, False, 65
+    while True:
+        drawn_w = told_a * 230.0
+        house = 3200.0 if boiler else 580.0
+        d = decide(
+            _inputs(
+                now=W0 + timedelta(seconds=t), phases=1, car_actual_power_w=reported_w,
+                grid_power_w=house + drawn_w, battery_soc=78.0,
+            ),
+            cfg,
+            state,
+        )
+        if boiler:
+            break
+        if d.target_current_a == 13.0:
+            boiler = True  # on in the cycle right after the raise was written
+        reported_w, told_a, t = drawn_w, d.target_current_a, t + 5
+        assert t < 400, "never raised"
+    # 3.7 kW − 3.2 kW of house leaves ~2 A: the 6 A floor, not 13.
+    assert d.target_current_a == 6.0
 
 
 def test_the_request_still_falls_at_once():

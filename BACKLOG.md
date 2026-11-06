@@ -356,6 +356,15 @@ under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed 
       goes through `_rate_limit_request` — down at once, up after `peak_dwell_s`. Replaying the
       live pattern: 119 → 1 current change in ten minutes. The 6–11 A hunting under the soft cap
       from the first test may still have the meter-skew cause; watch for it.
+- [x] **v5.8.1's limiter made the car stick at 6 A** (live 2026-11-06 18:16–18:28): every raise
+      was undone 5 s later, because the grid meter carries the ramping car 1–2 s before the go-e
+      reports it, so the ramp read as +1.7 kW of house load; the dwell then held the low value.
+      Sniffed: `amp 13` at :25.6, `amp 6` at :29.7, the go-e's `nrg` rising only at :29.8.
+      **Fixed (v5.8.2):** `_settled_inputs` — for 15 s after a raise the peak paths count the car
+      at least at what it was asked for. Closed-loop test with a one-cycle-late report.
+- [x] **Boiler test (live 18:24:46, ~45 s, house 0.6 → 3.2 kW):** the car went 13 → 6 A in the
+      same cycle, the quarter-hour held ~3.48 kW under the 3.7 kW target, the house share did not
+      engage (the house alone fit the budget — by design) and the hard tier released at 18:28:41.
 - [x] **A reload pauses a charging car for ~10 s.** Seen live 2026-11-06 16:18:36 UTC (options
       flow reload): *Charging requested* off for 3.5 s, `frc` on→off→on, `amp` 12→6→15, charger
       *complete* for 9 s. Cause (code, not yet reproduced in a test): `car_actual_power_w=

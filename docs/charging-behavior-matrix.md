@@ -610,6 +610,14 @@ Three consequences:
   moved Fast's request 11 ↔ 13 A on every evaluation, and each flip was a charger write (seen
   live, ten minutes, ~100 writes). Now the car sits at the lower current while the pulsing
   lasts and steps up a minute after it stops. Asking for less is never delayed.
+* **A raise isn't undone by the car's own ramp.** The house load is *grid − car*, from two
+  meters that don't report together: the go-e reports a raise ~4 s after the write, while the
+  ESS grid reading can already contain the ramp. For a sample the ramp looks like house load
+  (+1.7 kW on 6 → 13 A), and the request and the cap fall at once, as they must for a real
+  load. Seen live: every raise undid itself and the car sat at 6 A with room for 13. So for
+  15 s after a raise, peak protection counts the car as drawing at least what it was just
+  asked for. A real load in those seconds is still seen in full. A car that doesn't follow
+  leaves the house under-counted by the raise for at most those 15 s.
 
 **The departure guarantee still wins.** If spreading the charge under the ceiling can't deliver
 your target energy by departure, the plan reverts to full power and buys the peak — a car that

@@ -80,7 +80,7 @@ deterministic and testable.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from enum import StrEnum
 
@@ -377,6 +377,10 @@ class EngineState:
     peak_request_a: float | None = None
     peak_request_at: datetime | None = None
     peak_request_phases: int | None = None
+    # The car's own ramp (see :func:`_settled_inputs`): what the last raise asked the
+    # car to draw (W), and when.
+    car_expected_w: float | None = None
+    car_raised_at: datetime | None = None
     # The house share (see :func:`_house_share`): whether a heavy load is being split
     # between grid and battery, and since when the load has been back under the
     # budget (for the release confirmation).
@@ -1386,6 +1390,11 @@ _PEAK_MAX_GAP_S: float = 120.0
 #: How far the projection must fall back below a limit before the tier releases, so
 #: a projection sitting on the threshold can't chatter.
 _PEAK_HYSTERESIS_W: float = 150.0
+
+# How long after a raise the car's reported power may trail the grid meter. Measured
+# live (2026-11-06): the go-e reports a raise ~4 s after the write, and the ESS grid
+# reading (5 s cadence) can already contain the ramp a second or two before that.
+CAR_RAMP_SETTLE_S: float = 15.0
 
 #: Completed quarter-hours kept for the card's history strip (96 = 24 h).
 _PEAK_HISTORY_LEN: int = 96
@@ -2918,6 +2927,8 @@ def decide(
         inp.now, inp.grid_power_w, cfg, state, inp.grid_import_kwh
     )
     tier = resolve_peak_tier(inp.now, window, cfg, state)
+    # What the peak paths read: the car's own ramp booked to the car, not the house.
+    peak_inp = _settled_inputs(inp, cfg, state)
 
     # The ceiling only means anything where a grid strategy could actually run, and
     # computing it elsewhere would hand Manual and the hands-off gates a number they
@@ -2928,7 +2939,7 @@ def decide(
         and cfg.mode is not ChargingMode.MANUAL
         and inp.car_connected
     ):
-        ceiling_w = peak_charge_ceiling_w(inp, cfg, window)
+        ceiling_w = peak_charge_ceiling_w(peak_inp, cfg, window)
 
     plan: _Plan | None = None
     if cfg.smart_enabled and cfg.mode is ChargingMode.SMART and inp.car_connected:
@@ -2938,8 +2949,58 @@ def decide(
 
     decision = _decide(inp, cfg, state, plan, ceiling_w)
     decision = _finalize(decision, inp, cfg, state, plan)
-    decision = apply_peak_guard(decision, inp, cfg, state, window, tier)
-    return apply_grid_charge(decision, inp, cfg, state, window, tier)
+    decision = apply_peak_guard(decision, peak_inp, cfg, state, window, tier)
+    decision = apply_grid_charge(decision, inp, cfg, state, window, tier)
+    _note_car_raise(decision, inp, state)
+    return decision
+
+
+def _settled_inputs(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState
+) -> ChargerInputs:
+    """The inputs the peak paths read, with the car's own ramp booked to the car.
+
+    Everything peak protection sizes — the request ceiling, the cap, the house share —
+    takes the house load as *grid − car*, from two meters that don't report together.
+    Right after a raise the grid meter already carries the ramping car while the
+    charger still reports the old power, so for a sample or two the difference shows
+    up as house load: +1.7 kW on a 6 → 13 A raise, seen live. The cap reacts at
+    once, as it should to a real load, the raise is undone, and the dwell holds it
+    there. Every raise cancelled itself and the car sat at 6 A with room for 13.
+
+    So for :data:`CAR_RAMP_SETTLE_S` after a raise, the car counts as drawing at
+    least what it was just asked for. A real load that shows up in that time is
+    still seen in full, because the car's share is then right. The one cost: a car
+    that doesn't follow (full, or limited by its own charger) leaves the house
+    under-counted by the raise for at most the settle time — ~7 Wh at 1.7 kW.
+
+    Peak protection only. Solar tracking already smooths the derived surplus, and
+    with the guard off nothing changes at all.
+    """
+    if (
+        not cfg.peak_guard_enabled
+        or not inp.car_connected
+        or inp.now is None
+        or state.car_raised_at is None
+        or state.car_expected_w is None
+        or (inp.now - state.car_raised_at).total_seconds() >= CAR_RAMP_SETTLE_S
+        or inp.car_actual_power_w >= state.car_expected_w
+    ):
+        return inp
+    return replace(inp, car_actual_power_w=state.car_expected_w)
+
+
+def _note_car_raise(decision: Decision, inp: ChargerInputs, state: EngineState) -> None:
+    """Remember what the car was just asked to draw — and when, if that was more."""
+    if not (decision.control and decision.should_charge and inp.car_connected):
+        state.car_expected_w = None
+        state.car_raised_at = None
+        return
+    phases = max(1, decision.target_phases or inp.phases)
+    want_w = _current_to_power(decision.target_current_a, phases, inp.voltage_v)
+    if state.car_expected_w is None or want_w > state.car_expected_w + _AMP_EPSILON:
+        state.car_raised_at = inp.now
+    state.car_expected_w = want_w
 
 
 def _finalize(

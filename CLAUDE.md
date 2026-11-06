@@ -129,6 +129,12 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
   elements: ±450 W every ~10 s seen live), and an amp count that follows them re-writes the
   charger every cycle. The cap has `_rate_limit_cap`, the grid request `_rate_limit_request`;
   `peak_charge_ceiling_w` itself stays pure because the planner sizes slots with it.
+- **The house load is grid − car from two meters that don't report together.** The go-e's
+  `nrg` trails the ESS grid reading by 1–2 s, so during the car's own ramp the difference reads
+  as house load. A limiter that falls at once then undoes every raise and the dwell pins the car
+  low (live: stuck at 6 A with room for 13). The peak paths read `_settled_inputs`, which books
+  the ramp to the car for `CAR_RAMP_SETTLE_S` after a raise. Any new peak-side consumer of the
+  house load must take `peak_inp`, not raw `inp`.
 - **With battery power mapped, the tiers only steer the car.** The house levers (setpoint, minimum SoC,
   hold) come from `_house_share`: a heavy *house* load makes the setpoint follow the load up to the
   budget, so the battery covers only the excess. The setpoint must never sit above the load — on an
