@@ -441,7 +441,8 @@ already covers, and the tier ladder keeps its old levers.
 ### The SoC ladder
 
 Peak protection *owns* the mapped minimum-SoC number, with two values (three while
-stocking up):
+stocking up). Both are **upper bounds**, never orders: the number written is capped at the
+battery's charge — see *Never above the charge* below.
 
 ```
 100 % ┤
@@ -468,7 +469,89 @@ Stocking up raises only the *resting* value. `May discharge to` is computed from
 reserve you set, never from the stock-up target — otherwise the charge just bought would
 be locked away from the very evening it was bought for.
 
-Those two numbers are the whole contract *while peak protection is on* — no attempt is made
+#### Never above the charge
+
+A Victron ESS does not read a minimum SoC above the battery's charge as a floor. It reads
+it as an order and **recharges from the grid at full power** (~10 kW here) straight back
+up to it (confirmed live, Nov 2026). Up to v5.8 the ladder did exactly that three ways: the
+end of every shave raised the number from 35 % back to 50 % with the battery at ~40 %;
+taking the entity over with a low battery wrote 50 % at once; stocking up wrote 95 % (with
+peak protection on *or* off). Each time the ESS bought the peak the integration exists to
+avoid — 12 kW in the simulation.
+
+So the minimum SoC is now a **hold, never a lever**:
+
+- A **raise** is capped at the battery's whole-percent charge, and rounded *down* onto the
+  entity's grid (a Victron minimum SoC takes 5 % steps). It pins the battery where it is and
+  follows it up as it fills.
+- A value **already held** is kept even when the charge dips a little under it. That dip is
+  the ESS holding its floor; capping *down* to it would walk the hold away one step per lap
+  (50 → 45 → refill → 50 → 45 …, found in `tools/sim/refill.py`).
+- A **drop** (to the peak floor, for a shave) is always written at once — it can't order a
+  recharge.
+- With the SoC unknown the number may only fall; with no earlier value either, it is left
+  exactly as it is (not even handed back).
+
+All the actual *work* — shaving and refilling — is done with the **grid setpoint**, which
+is sized against the quarter-hour budget.
+
+#### Back to the reserve after a shave
+
+After a shave the battery sits below *Keep in reserve for peaks*, and the reserve is what
+the next peak is defended with. The refill:
+
+| | |
+|---|---|
+| Starts | the battery is more than 2 % under the reserve (the same band as cheap-hour charging, so a battery resting on the reserve doesn't start a refill for every percent the house sips) |
+| Runs until | the battery is back at the reserve |
+| Setpoint | `min(remaining budget, target)` in 100 W steps — the grid imports what the quarter-hour may draw anyway, so the refill costs nothing on the demand charge; the battery takes whatever the house leaves. In the last minute of a window the setpoint is held unless the exact remaining budget falls more than 300 W below it (≤ 20 W on the average) |
+| The car | **waits — the battery comes first** (Chris, Nov 2026). The whole budget is the refill's; a car the brain is driving is paused with *"Refilling the home battery from 41% to 50% first — the car continues once it's there"* |
+| Steps aside for | the departure guarantee (it has already chosen to buy a peak); a heavy house load (the share needs the battery *now* — the refill resumes after); a degraded window (no full-budget import on a guess) |
+| Cheap-hour charging | stands aside while the refill runs — the refill already imports the whole budget |
+| Not driving the charger | (Smart control off, Manual passive) the car isn't paused by the refill; only the hard tier can stop it, as always |
+| Stocking up | the same refill with the **stock-up target** as its goal — at the target, battery first, the minimum SoC following the charge up and holding it there. No cheap-hour charging needed. The car waits: *"Stocking up for tonight — filling the home battery from 70% to 95% first, the car continues once it's there"* |
+| No battery power mapped | no refill — nothing could tell it apart from a shave. The minimum SoC is still capped at the charge |
+
+Because the refill imports right up to the target, the projection sits past the soft line
+and the tier reads *soft* while it runs. That is expected; the status line and the card's
+chip say *refilling*, not *easing off*.
+
+**What it changes**, simulated on the measured house with the ESS modelled with its
+full-power recharge (`tools/sim/refill.py`: 30.5 kWh / 10.2 kW, limits 2.5 / 3.7 / 3.9 kW):
+
+| Scenario | v5.8.2 worst ¼ h | now | ESS recharge | Back to 50 % after | Car |
+|---|---|---|---|---|---|
+| Sauna evening, no car, 55 % | 7.30 kW | 6.39 kW | 40 min → 0 | 86 min | — |
+| Sauna evening, car on Fast, 55 % | 7.88 kW | 6.69 kW | 40 min → 0 | 83 min | 16.4 → 11.0 kWh |
+| Peak protection takes over at 25 %, no car | **12.06 kW** | **3.66 kW** | 49 min → 0 | 235 min | — |
+| Takes over at 25 %, car on Fast | **12.10 kW** | **3.66 kW** | 49 min → 0 | 235 min | 41.5 → 2.4 kWh |
+| Stocking up from 60 % at noon, no car | 3.74 kW | **3.66 kW** | 79 min → 0 | 95 % after 325 min (v5.8.2 got there only through the recharge, 159 house writes) | — |
+
+The sauna rows still breach: 55 % is not enough energy for a 13 kWh evening, and those
+quarter-hours fall during the sauna, not the refill.
+
+Over the fifteen winter days (`peak15.py`, 4 kW ceiling, same recharge model):
+
+| Variant | Worst ¼ h | ¼ h over 4 kW | Car |
+|---|---|---|---|
+| As shipped (month allowance on) | 7.72 → **6.75 kW** | 169 → **129** ¹ | 190.4 → 183.1 kWh |
+| Hold 4 kW all month | 4.88 → 6.10 kW | 59 → **10** | 168.3 → 166.7 kWh |
+| Ceiling-fill | 4.61 → **4.25 kW** | 15 → **5** | 176.9 → 177.5 kWh |
+| Peak protection off (stocking up still on) | 22.2 kW (unchanged) | 103 → **80** | 201.8 kWh |
+
+¹ 12 of them are a stock-up on 13 Dec importing 6.5 kW — under the 6.72 kW the month had
+already recorded, so they cost nothing extra. That is the month allowance doing its job.
+
+The one worse number is a single cold morning (7 Dec, 06:45): the departure guarantee
+charged all night, the refill stood aside for it, and the battery met a 6 kW heat-pump
+morning at 48 % instead of 50 %. v5.8.2 looked better there only because the ESS's own
+recharge kept buying the battery back — at the cost of 49 more quarter-hours over the line.
+That is the intended order (Chris, Nov 2026): **the car's departure wins over the refill**,
+and the battery still shaves down to *May discharge to for peaks* meanwhile.
+
+#### Handing it back
+
+Those numbers are the whole contract *while peak protection is on* — no attempt is made
 to blend your own edits into them. But the contract ends when you switch it off: the
 minimum-SoC number and the grid setpoint then go back to whatever they held when peak
 protection first took them over, and are left alone from there. Without that hand-back,
@@ -476,6 +559,11 @@ switching off at the hard tier would leave the house commanded to import 0 W for
 entities we know we took over are ever handed back, so one you manage yourself is untouched,
 and the record survives a restart — otherwise a reboot mid-shave would lose the only thing
 that knows the entity is ours to give back.
+
+The minimum SoC is handed back **gradually** when its old value sits above the battery's
+charge: writing it at once would order the full-power recharge. It follows the battery up
+(rounded down to the entity's grid) and is let go once the original value is at or below
+the charge. Until then it is still ours — persisted, so a restart carries on.
 
 `May discharge to` is clamped so it can never sit above `Keep in reserve`, and the three kW
 limits are likewise raised to keep `soft ≤ target ≤ hard` whichever order you set them in.
@@ -491,8 +579,9 @@ limits are likewise raised to keep `soft ≤ target ≤ hard` whichever order yo
 | Car running on **pure solar** | Nothing — stopping it would export the surplus, not reduce the import |
 | Battery already at its peak floor | Nothing left to shave with; the status sensor says so plainly |
 | Month already peaked higher | The limits float up to just under it — see below |
-| Back to off (tier) | minimum-SoC → the shaving reserve, setpoint → normal, the hold returns to the car brain |
-| Switched off (the switch) | minimum-SoC and setpoint go back to what they held before peak protection took them over |
+| Back to off (tier) | minimum-SoC → the shaving reserve **or the battery's charge, whichever is lower**, setpoint → normal, the hold returns to the car brain |
+| Battery more than 2 % under the reserve | Refill: setpoint → the remaining budget (≤ target), the car waits, the minimum SoC follows the charge up — see *Back to the reserve after a shave* |
+| Switched off (the switch) | minimum-SoC and setpoint go back to what they held before peak protection took them over — the minimum SoC no faster than the battery's charge allows |
 | Just switched into **Manual** | The house levers still act — they are peak protection's, not the wallbox's. Only the charger is left as-is (and even that yields to a hard-tier stop) |
 
 **What it cannot do:** when the battery reaches its floor, or a load exceeds the inverter's

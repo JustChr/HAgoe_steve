@@ -117,6 +117,14 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
   nothing wants them any more — ownership persisted beside the battery hold, because a restart
   mid-shave would otherwise lose the only record that they are ours to give back. A `number`
   has no neutral position to release to, which is why this one needs a capture and `frc` doesn't.
+- **Never write a minimum SoC above the battery's charge.** A Victron ESS reads it as an order
+  and recharges from the grid at **full power** (~10 kW) — the peak we exist to prevent (live,
+  Nov 2026; up to v5.8 every shave ended that way). `_limit_min_soc` caps every *raise* at the
+  whole-percent SoC, but keeps a value already held (capping *down* walks the hold away); the
+  coordinator rounds *down* to the entity's step (Victron: 5 %), and `_release_min_soc` hands an
+  upward value back only as fast as the SoC allows. Energy goes in through the **setpoint**
+  (`_refill_setpoint`, sized to `min(allowed, target)`), never through the minimum SoC.
+  `tools/sim/peak_sim.py` models the recharge (`ess_recharge`) — keep it on.
 - **Read the tiers off `PeakWindow`, never off `_peak_thresholds`.** The latter returns the raw
   settings; `soft_w` / `target_w` / `hard_w` on the window are the ones after the month-peak
   allowance, and all three move together. Comparing a projection against a raw threshold while

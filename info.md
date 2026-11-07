@@ -46,6 +46,11 @@ limits**.
   still fill deeper. Off by default.
 - **Stock up for tonight:** you know tonight is the sauna; the brain doesn't. One switch fills
   the battery at any price *and holds it*, so the afternoon can't spend what the evening needs.
+  With peak protection on it fills at the peak target, and the car waits until it's there.
+- **Back to the reserve after every shave:** the battery is refilled through the grid setpoint,
+  right up to the peak target and never past it — the car waits until the reserve is back
+  (a departure you've planned still wins). The battery's minimum charge is never set above
+  what it holds: a Victron answers that with a full-power recharge, which is a peak of its own.
 - **Fast on the knob, slow on the switches:** the charging current follows the solar surplus
   within seconds, while starting, stopping and phase switching wait for it to hold — and the
   card's countdown before a solar start is a button, so you can skip that wait.

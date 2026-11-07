@@ -455,7 +455,20 @@ export class GoeSteveCard extends LitElement {
     // already carries the "nothing to worry about" case.
     const peak = this._stateObj(ent.peak_window_power);
     const tier = String(peak?.attributes?.tier ?? "off");
-    if (tier === "soft" || tier === "hard") {
+    const peakStatus = this._stateObj(ent.peak_status);
+    // A refill imports right up to the target on purpose, which puts the projection
+    // past the easing-off point: say what is actually happening instead.
+    const refilling = peakStatus?.attributes?.battery_refilling === true;
+    if (refilling && tier !== "hard") {
+      chips.push(
+        this._chip(
+          "mdi:battery-arrow-up",
+          "chip.battery_refill",
+          { power: fmtPower(num(peakStatus?.attributes?.grid_setpoint_w)) },
+          "hold",
+        ),
+      );
+    } else if (tier === "soft" || tier === "hard") {
       chips.push(
         this._chip(
           "mdi:transmission-tower-off",
@@ -468,7 +481,6 @@ export class GoeSteveCard extends LitElement {
       chips.push(this._chip("mdi:progress-question", "chip.peak_degraded", {}));
     }
 
-    const peakStatus = this._stateObj(ent.peak_status);
     if (peakStatus?.attributes?.grid_charging === true) {
       chips.push(
         this._chip(

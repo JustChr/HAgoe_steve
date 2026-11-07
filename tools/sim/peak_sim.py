@@ -109,8 +109,16 @@ class House:
     # scenarios exactly as they were; a strategy that cycles the battery hard has to
     # pay for it, so peak15 sets this from the measured charge/discharge gap.
     charge_eff: float = 1.0
+    # A Victron ESS treats a minimum SoC *above* the charge as an order: it recharges
+    # from the grid at full power, straight back up to it (live, Nov 2026). Earlier
+    # runs didn't model it — the battery simply stopped at the floor — which hid the
+    # peak that raising the minimum SoC after a shave bought. The margin keeps a
+    # discharge that overshoots the floor by a tick from counting as a raise.
+    ess_recharge: bool = True
+    ess_recharge_margin_pct: float = 0.5
     battery_w: float = 0.0
     grid_w: float = 0.0
+    recharge_s: float = 0.0  # time spent in the ESS's own recharge
 
     def step(self, pv_w: float, house_w: float, car_w: float, *,
              setpoint_w: float | None, min_soc: float | None, hold: bool,
@@ -121,7 +129,15 @@ class House:
         deficit = house_w + car_w - pv_w  # what the grid+battery must jointly serve
         request = deficit - target_grid   # >0 → battery discharges, <0 → it charges
 
-        if request > 0.0:
+        recharging = (
+            self.ess_recharge
+            and min_soc is not None
+            and self.soc < min_soc - self.ess_recharge_margin_pct
+        )
+        if recharging:
+            self.battery_w = self.max_charge_w
+            self.recharge_s += dt
+        elif request > 0.0:
             if hold or self.soc <= floor:
                 self.battery_w = 0.0
             else:
@@ -183,6 +199,9 @@ class Result:
     lever_writes: int = 0   # setpoint / min-SoC / hold changes sent to the house
     final_reason: str = ""
     final_peak_reason: str = ""
+    recharge_s: float = 0.0  # the ESS recharging on its own, at full power
+    final_soc: float = 0.0
+    soc_trace: list[tuple[float, float]] = field(default_factory=list)  # (t, soc)
 
 
 def run(sc: Scenario) -> Result:
@@ -222,6 +241,7 @@ def run(sc: Scenario) -> Result:
         house.step(pv_w, house_w, car_w, setpoint_w=setpoint_w, min_soc=min_soc,
                    hold=hold, dt=TICK_S)
         res.min_soc_seen = min(res.min_soc_seen, house.soc)
+        res.soc_trace.append((t, house.soc))
         res.car_kwh += car_w * TICK_S / 3600.0 / 1000.0
 
         blacked = (sc.blackout is not None
@@ -334,6 +354,8 @@ def run(sc: Scenario) -> Result:
             res.paused_s += TICK_S
 
     res.month_peak_w = state.month_peak_w
+    res.recharge_s = house.recharge_s
+    res.final_soc = house.soc
     res.final_reason = decision.reason if decision else ""
     res.final_peak_reason = decision.peak_reason if decision else ""
     return res

@@ -387,6 +387,14 @@ class EngineState:
     peak_share_engaged: bool = False
     peak_share_calm_since: datetime | None = None
     peak_share_setpoint_w: float | None = None  # the setpoint last handed out
+    # The refill after a shave (see :func:`_refill_setpoint`): whether the battery is
+    # being brought back to the shaving reserve, and the setpoint last handed out for
+    # it (None while the refill isn't writing — not running, or suspended).
+    peak_refilling: bool = False
+    peak_refill_setpoint_w: float | None = None
+    # The minimum SoC last asked of the ESS, after :func:`_limit_min_soc`. Only read
+    # when the SoC is unknown: then the number may fall, never rise.
+    house_min_soc: float | None = None
     grid_charging: bool = False
 
 
@@ -472,7 +480,12 @@ class Decision:
     # which is what keeps an unmapped or disabled setup completely untouched.
     grid_setpoint_w: float | None = None
     battery_min_soc: float | None = None
+    # The SoC is unknown and nothing safe can be said about the minimum SoC this
+    # cycle: leave the number exactly as it is — neither write it nor hand it back.
+    # See :func:`_limit_min_soc`.
+    min_soc_skip: bool = False
     grid_charging: bool = False  # deliberately importing on a cheap price
+    battery_refilling: bool = False  # bringing the battery back to the shaving reserve
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
@@ -1315,6 +1328,22 @@ _REASON_TEMPLATES: dict[str, str] = {
     "peak_pause": (
         "Heading for {projected} kW — the car is paused until there's room for it again"
     ),
+    "peak_refill": (
+        "Refilling the home battery from {soc}% to {reserve}% — the grid carries "
+        "up to {grid} kW, within the {target} kW limit"
+    ),
+    "peak_refill_car": (
+        "Refilling the home battery from {soc}% to {reserve}% first — the car "
+        "continues once it's there"
+    ),
+    "peak_stock_up": (
+        "Stocking up for tonight — filling the home battery from {soc}% to "
+        "{reserve}%, the grid carries up to {grid} kW within the {target} kW limit"
+    ),
+    "peak_stock_up_car": (
+        "Stocking up for tonight — filling the home battery from {soc}% to "
+        "{reserve}% first, the car continues once it's there"
+    ),
     "peak_battery_empty": (
         "Heading for {projected} kW and the home battery is down to its {soc}% "
         "floor — nothing left to shave with"
@@ -1445,6 +1474,85 @@ def _peak_thresholds(cfg: EngineConfig) -> tuple[float, float, float]:
     soft = max(0.0, cfg.peak_soft_w)
     target = max(soft, cfg.peak_target_w)
     return soft, target, max(target, cfg.peak_hard_w)
+
+
+def floor_to_step(value: float, step: float | None, minimum: float = 0.0) -> float:
+    """Round a minimum SoC *down* onto a number entity's grid.
+
+    Down, never to the nearest: the value only ever exists to stay at or below the
+    battery's charge (see :func:`_limit_min_soc`), and rounding up across the SoC is
+    exactly what makes the ESS recharge at full power. A Victron minimum-SoC entity
+    takes 5 % steps.
+    """
+    if step is None or step <= 0.0:
+        return value
+    steps = math.floor((value - minimum) / step + 1e-9)
+    return max(minimum, minimum + steps * step)
+
+
+def min_soc_release_value(
+    restore: float, last: float, soc: float | None
+) -> tuple[float | None, bool]:
+    """How far to hand the minimum SoC back this cycle — ``(value, done)``.
+
+    Handing back means writing the number the entity held before we took it. If
+    that sits above the battery's charge, writing it starts the ESS's own recharge
+    at full power: a peak caused by switching peak protection *off*. So a hand-back
+    upward follows the battery instead — at most its current charge, until it
+    reaches the original — and the entity stays ours until then. Downward (or with
+    the battery already above it) it is handed back at once.
+
+    ``value`` None means write nothing this cycle; ``done`` that the entity is then
+    no longer ours.
+    """
+    if restore <= last or (soc is not None and restore <= soc):
+        return restore, True
+    if soc is None:
+        return None, False  # can't tell how far up is safe: keep what is there
+    interim = min(restore, float(math.floor(soc + 1e-9)))
+    return (interim if interim > last else None), False
+
+
+def _limit_min_soc(decision: Decision, inp: ChargerInputs, state: EngineState) -> None:
+    """Never ask the ESS to hold more charge than the battery has.
+
+    A minimum SoC *above* the battery's charge is not a floor on a Victron ESS, it
+    is an order: it recharges from the grid at full power, straight back up to it
+    (live, Nov 2026). The old ladder raised the number from the shaving floor back to
+    the reserve the moment a shave ended — with the battery well below it — and the
+    ESS duly bought the peak the shave had just avoided. Stocking up and taking the
+    entity over with a low battery did the same.
+
+    So a *raise* is capped at the battery's whole-percent charge. That keeps the
+    number a pure hold: it pins the battery where it is and lets it rise, and the
+    energy to raise it comes through the grid setpoint, which is sized against the
+    peak budget (:func:`_refill_setpoint`).
+
+    A value already held is kept, though, even when the charge dips a little under
+    it. That dip is the ESS holding its own floor, not a new order — and capping
+    *down* to it walks the hold away: 50 % held, the battery reads 49.9, the cap says
+    49, the battery discharges to 48.9, and so on until the refill starts again (seen
+    in ``tools/sim/refill.py``; on a 5 %-step entity every lap would be 5 %).
+
+    With the SoC unknown the number may only fall; with no earlier value either,
+    nothing is said at all.
+    """
+    wanted = decision.battery_min_soc
+    if wanted is None:
+        state.house_min_soc = None
+        return
+    soc = inp.battery_soc
+    held = state.house_min_soc
+    if soc is None and held is None:
+        decision.battery_min_soc = None
+        decision.min_soc_skip = True
+        return
+    reach = float(math.floor(soc + 1e-9)) if soc is not None else -math.inf
+    if held is not None:
+        reach = max(reach, held)
+    value = max(0.0, min(wanted, reach))
+    decision.battery_min_soc = value
+    state.house_min_soc = value
 
 
 def _peak_soc_floor(cfg: EngineConfig) -> float:
@@ -1814,6 +1922,8 @@ def resolve_peak_tier(
         state.peak_cap_at = None
         state.peak_share_engaged = False
         state.peak_share_calm_since = None
+        state.peak_refilling = False
+        state.peak_refill_setpoint_w = None
         return "off"
 
     # The limits *in force*, not the raw settings: with the month-peak allowance on,
@@ -2304,6 +2414,91 @@ def _apply_tier_levers(
     return capped_a, paused
 
 
+#: The departure guarantee's reasons. It has already decided the peak is worth
+#: buying, so a refill steps aside for it rather than pausing it.
+_URGENT_REASON_KEYS: frozenset[str] = frozenset({"deadline_urgent", "deadline_urgent_peak"})
+
+
+def _refill_setpoint(
+    decision: Decision,
+    inp: ChargerInputs,
+    cfg: EngineConfig,
+    state: EngineState,
+    window: PeakWindow,
+    share: _HouseShare,
+) -> float | None:
+    """The grid setpoint that brings the battery back to its shaving reserve, or None.
+
+    After a shave the battery sits below the reserve, and the reserve is what the
+    *next* peak is defended with. Raising the minimum SoC to get it back is not an
+    option — the ESS answers with a full-power recharge, i.e. a fresh peak (see
+    :func:`_limit_min_soc`). So the refill is commanded through the setpoint, as a
+    total grid import of exactly the budget: ``min(allowed, target)``. That is what
+    a quarter-hour may draw anyway, so the refill costs nothing on the demand
+    charge; the battery takes whatever the house leaves of it.
+
+    The battery comes first (Chris, Nov 2026): while it refills, the car gets no
+    room. The one exception is the departure guarantee, which has already chosen to
+    buy a peak — the refill steps aside for it. It also steps aside while the house
+    share is engaged (the battery is needed *now*) and in a window that went partly
+    unmeasured (a full-budget import is no bet to make on a guess).
+
+    Starts once the battery is :data:`_GRID_CHARGE_RESUME_BAND_PCT` under the
+    reserve and runs until it is back at it, so a battery resting on the reserve
+    doesn't start a refill for every percent the house sips.
+
+    Stocking up is the same job with a higher goal — :func:`_resting_reserve_soc`
+    is the stock-up target while the switch is on — and is done the same way (Chris,
+    Nov 2026): at the target, battery first. The old way, cheap-hour charging capped
+    at the soft line, left the house almost nothing to fill with; it only ever
+    reached its target through the ESS's own full-power recharge.
+    """
+    soc = inp.battery_soc
+    reserve = _resting_reserve_soc(cfg)
+    if soc is None or soc >= reserve:
+        state.peak_refilling = False
+    elif not state.peak_refilling and soc < reserve - _GRID_CHARGE_RESUME_BAND_PCT:
+        state.peak_refilling = True
+
+    if (
+        not state.peak_refilling
+        or share.engaged
+        or window.degraded
+        or decision.reason_key in _URGENT_REASON_KEYS
+    ):
+        state.peak_refill_setpoint_w = None
+        return None
+
+    previous = state.peak_refill_setpoint_w
+    if previous is not None and window.remaining_s < _PEAK_MIN_REMAINING_S:
+        # ``allowed_w`` divides by at least a minute on purpose — a car's amps must
+        # not leap at the boundary — which reads as a falling budget all through the
+        # last minute of a window the refill has filled exactly to the target: five
+        # setpoint writes down, one back up, every quarter-hour. The exact remaining
+        # budget doesn't fall, so the refill holds its value unless that budget
+        # really drops below it. Whatever slips through moves the average by at most
+        # 300 W × 60 s / 900 s = 20 W.
+        exact_w = (
+            window.target_w * PEAK_WINDOW_S - window.imported_wh * 3600.0
+        ) / max(window.remaining_s, 1.0)
+        if exact_w >= previous - _PEAK_SETPOINT_MIN_MOVE_W:
+            return previous
+    budget_w = max(0.0, min(window.allowed_w, window.target_w))
+    setpoint_w = math.floor(budget_w / _PEAK_SETPOINT_STEP_W) * _PEAK_SETPOINT_STEP_W
+    # The remaining budget drifts every cycle as the quarter-hour fills. Holding the
+    # last value is fine while it is *below* the new one (a little less refill), and
+    # never above it (that would be the overshoot).
+    if (
+        previous is not None
+        and previous <= setpoint_w
+        and setpoint_w - previous < _PEAK_SETPOINT_MIN_MOVE_W
+    ):
+        setpoint_w = previous
+    setpoint_w = max(cfg.grid_setpoint_w, setpoint_w)
+    state.peak_refill_setpoint_w = setpoint_w
+    return setpoint_w
+
+
 def _apply_house_share(
     decision: Decision,
     inp: ChargerInputs,
@@ -2332,15 +2527,25 @@ def _apply_house_share(
     car, as before. Notably the tier no longer releases the hold or drops the
     minimum SoC: that is what made it fight itself — the battery took the whole load,
     the projection collapsed, the tier released, and the import came straight back.
+
+    Below the reserve after a shave, the refill (:func:`_refill_setpoint`) takes the
+    setpoint and the car waits for it: the battery comes first.
     """
+    refill_w = _refill_setpoint(decision, inp, cfg, state, window, share)
+    decision.battery_refilling = refill_w is not None
     if share.engaged:
         decision.battery_min_soc = _peak_soc_floor(cfg)
         decision.grid_setpoint_w = share.setpoint_w
         decision.hold_battery = False
         decision.hold_source = "peak"
     else:
+        # The resting reserve — capped at the battery's charge by _limit_min_soc, so
+        # after a shave it holds the battery where it is rather than ordering a
+        # recharge. The refill below is what brings it back up.
         decision.battery_min_soc = _resting_reserve_soc(cfg)
-        decision.grid_setpoint_w = cfg.grid_setpoint_w
+        decision.grid_setpoint_w = (
+            refill_w if refill_w is not None else cfg.grid_setpoint_w
+        )
 
     if not inp.car_connected or inp.now is None or window.start is None:
         state.peak_cap_a = None
@@ -2356,6 +2561,12 @@ def _apply_house_share(
         room_a = math.floor(
             _power_to_current(share.car_room_w, phases, inp.voltage_v) + _AMP_EPSILON
         )
+    elif refill_w is not None:
+        # The battery comes first: the whole budget is the refill's. Sizing the car
+        # from the measured flows instead would never pause it — with the setpoint
+        # fixed, the battery yields whatever the car takes, and the car's room always
+        # reads as exactly what it already draws.
+        room_a = 0.0
     elif tier in ("soft", "hard"):
         room_a = _peak_current_cap(inp, cfg, window, phases)
 
@@ -2393,8 +2604,24 @@ def _share_status_reason(
     capped_a: float | None,
     *,
     paused: bool,
+    refill_w: float | None = None,
 ) -> tuple[str, str, dict[str, str]]:
     """The status line when the house share is known."""
+    if not share.engaged and refill_w is not None:
+        goal = _resting_reserve_soc(cfg)
+        params = dict(
+            soc=f"{inp.battery_soc:.0f}" if inp.battery_soc is not None else "?",
+            reserve=f"{goal:.0f}",
+        )
+        key = "peak_stock_up" if goal > cfg.shaving_reserve_soc else "peak_refill"
+        if paused:
+            return _reason(f"{key}_car", **params)
+        return _reason(
+            key,
+            grid=f"{refill_w / 1000.0:.1f}",
+            target=f"{window.target_w / 1000.0:.2f}",
+            **params,
+        )
     if not share.engaged:
         text, key, params = _peak_status_reason(
             inp, cfg, window, tier, capped_a, paused=paused
@@ -2478,6 +2705,10 @@ def apply_peak_guard(
     decision.house_control = True
     share = _house_share(inp, cfg, state, window)
     if share is None:
+        # No refill without the battery's power: nothing could tell it apart from
+        # a shave. The minimum SoC is still capped at the charge (_limit_min_soc).
+        state.peak_refilling = False
+        state.peak_refill_setpoint_w = None
         capped_a, paused = _apply_tier_levers(decision, inp, cfg, state, window, tier)
         decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
             _peak_status_reason(inp, cfg, window, tier, capped_a, paused=paused)
@@ -2487,7 +2718,10 @@ def apply_peak_guard(
             decision, inp, cfg, state, window, tier, share
         )
         decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
-            _share_status_reason(inp, cfg, window, tier, share, capped_a, paused=paused)
+            _share_status_reason(
+                inp, cfg, window, tier, share, capped_a, paused=paused,
+                refill_w=state.peak_refill_setpoint_w,
+            )
         )
 
     # The Status sensor's reason has to survive being overruled here, and the two
@@ -2613,9 +2847,14 @@ def apply_grid_charge(
         # heat the afternoon. Borrow it (the coordinator hands it back on release).
         decision.battery_min_soc = _resting_reserve_soc(cfg)
 
-    if tier != "off" or state.peak_share_engaged:
+    if (
+        tier != "off"
+        or state.peak_share_engaged
+        or state.peak_refill_setpoint_w is not None
+    ):
         # Peak protection owns the setpoint while it is shaving — by tier, or by
-        # splitting a heavy load between grid and battery.
+        # splitting a heavy load between grid and battery — and while it refills
+        # the battery after a shave, which already imports the whole budget.
         state.grid_charging = False
         return decision
 
@@ -2950,6 +3189,7 @@ def decide(
     decision = _finalize(decision, inp, cfg, state, plan)
     decision = apply_peak_guard(decision, peak_inp, cfg, state, window, tier)
     decision = apply_grid_charge(decision, inp, cfg, state, window, tier)
+    _limit_min_soc(decision, inp, state)
     _note_car_raise(decision, inp, state)
     return decision
 

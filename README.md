@@ -83,7 +83,12 @@ See [`docs/concept`](#concept) for the full design.
   the battery toward its target at any price **and holds it there**, so the afternoon's
   ordinary load comes off the grid — far below your limit anyway — instead of quietly spending
   the charge before the evening it was bought for. Filling without holding is the mistake that
-  looks like it works.
+  looks like it works. With peak protection on it fills at the peak target, and the car waits
+  until the battery is there.
+- **Back to the reserve after every shave:** the battery is refilled through the grid setpoint,
+  right up to the peak target and never past it — the car waits until the reserve is back
+  (a departure you've planned still wins). The battery's minimum charge is never set above
+  what it holds: a Victron answers that with a full-power recharge, which is a peak of its own.
 - **Fast on the knob, slow on the switches:** the surplus is tracked at two speeds. The
   charging **current** follows a responsive signal, so a cloud or a switched-on oven reaches
   the amps within seconds and a clearing sky is used while it lasts. Whether to charge **at
@@ -226,14 +231,14 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Stay under the month's peak by | How far below that already-billed peak the limits settle (0.2 kW; 0 aims straight at it) |
 | `switch` Cheap-hour grid charging | Buy energy into the home battery while the price is low |
 | `number` Start easing off at / Peak target / Never exceed | The three limits (kW), compared against the *projected* end-of-quarter-hour average |
-| `number` Keep in reserve for peaks | Where the mapped minimum-SoC rests, so ordinary house loads can't drain the battery flat |
+| `number` Keep in reserve for peaks | Where the mapped minimum-SoC rests, so ordinary house loads can't drain the battery flat. After a shave the battery is refilled to it through the grid setpoint, within the peak budget — the car waits until it's there |
 | `number` May discharge to for peaks | …and where it drops while shaving — the drop that actually frees the headroom |
 | `number` Home battery capacity | Usable kWh; lets a heavy load lean on the grid earlier when the battery won't last (0 = shave until the floor) |
 | `number` Normal grid import | Your resting ESS grid setpoint (W) |
 | `number` Cheap-hour import power | What a cheap hour may import on top of the house load |
 | `number` Cheap-hour target, bright/dark day | How deep to fill the battery, chosen by tomorrow's solar forecast |
 | `number` Keep ready for peaks above | Below this the battery is topped up at *any* price, so it can still shave (0 = off) |
-| `switch` Stock up for tonight | Fill for a big evening and hold it, instead of letting the afternoon spend it |
+| `switch` Stock up for tonight | Fill for a big evening and hold it, instead of letting the afternoon spend it. With peak protection on it fills at the peak target and the car waits until the battery is there |
 | `number` Stock-up target | How full that fills the battery (95%) |
 
 All three appear in the peak card's settings block — the first under *Home battery*, the

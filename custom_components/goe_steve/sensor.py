@@ -299,6 +299,7 @@ class PeakStatusSensor(GoeSteveEntity, SensorEntity):
             "grid_charging": data.grid_charging,
             "grid_setpoint_w": data.grid_setpoint_w,
             "battery_min_soc": data.battery_min_soc,
+            "battery_refilling": data.battery_refilling,
         }
 
 

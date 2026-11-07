@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -2213,11 +2214,12 @@ def _grid_charge_cfg(**kw) -> "engine.EngineConfig":
 
 def test_a_cheap_hour_commands_the_import_it_wants():
     # House 400 W, battery idle → the setpoint is the house plus the charge rate,
-    # because on an ESS the setpoint *is* total grid import.
+    # because on an ESS the setpoint *is* total grid import. (Above the shaving
+    # reserve: below it the refill after a shave takes the setpoint.)
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=45.0, price_now=0.08, pv_forecast_kwh=2.0, now=W0,
+            battery_soc=55.0, price_now=0.08, pv_forecast_kwh=2.0, now=W0,
         ),
         _grid_charge_cfg(),
         EngineState(),
@@ -2228,12 +2230,12 @@ def test_a_cheap_hour_commands_the_import_it_wants():
 
 
 def test_a_bright_tomorrow_stops_the_buying_early():
-    # 45 % is already past the bright-day target: no point paying for a charge the
+    # 55 % is already past the bright-day target: no point paying for a charge the
     # sun would have given us, and the PV needs somewhere to land.
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=45.0, price_now=0.08, pv_forecast_kwh=30.0, now=W0,
+            battery_soc=55.0, price_now=0.08, pv_forecast_kwh=30.0, now=W0,
         ),
         _grid_charge_cfg(),
         EngineState(),
@@ -2247,7 +2249,7 @@ def test_with_no_forecast_mapped_it_assumes_the_pessimistic_case():
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=45.0, price_now=0.08, now=W0,
+            battery_soc=55.0, price_now=0.08, now=W0,
         ),
         _grid_charge_cfg(),
         EngineState(),
@@ -2261,7 +2263,7 @@ def test_cheap_hour_importing_never_breaches_the_soft_limit():
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=2800.0, battery_power_w=0.0,
-            battery_soc=20.0, price_now=0.08, now=W0,
+            battery_soc=55.0, price_now=0.08, now=W0,
         ),
         _grid_charge_cfg(cheap_charge_power_w=9000.0),
         EngineState(),
@@ -2301,13 +2303,30 @@ def test_an_expensive_hour_leaves_the_setpoint_at_rest():
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=20.0, price_now=0.40, now=W0,
+            battery_soc=55.0, price_now=0.40, now=W0,
         ),
         _grid_charge_cfg(),
         EngineState(),
     )
     assert d.grid_charging is False
     assert d.grid_setpoint_w == 50.0
+
+
+def test_below_the_shaving_reserve_the_refill_outranks_cheap_hour_buying():
+    """The refill imports the whole budget; cheap-hour charging has nothing to add
+    and steps aside rather than fight it for the setpoint."""
+    d = decide(
+        _inputs(
+            car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
+            battery_soc=20.0, price_now=0.08, now=W0,
+        ),
+        _grid_charge_cfg(),
+        EngineState(),
+    )
+    assert d.grid_charging is False
+    assert d.battery_refilling is True
+    assert d.grid_setpoint_w == pytest.approx(3700.0)
+    assert d.battery_min_soc == pytest.approx(20.0)  # held where it is, never above
 
 
 # --- The compatibility guarantee -----------------------------------------------------
@@ -2779,7 +2798,8 @@ def test_a_flat_battery_is_topped_up_even_when_the_price_is_not_cheap():
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=30.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+            # Above the shaving reserve (50 %) — below it the refill does this job.
+            battery_soc=52.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
         ),
         cfg, EngineState(),
     )
@@ -2837,7 +2857,9 @@ def test_stocking_up_buys_at_any_price_and_holds_what_it_bought():
 
     Filling before a known evening and then letting the ordinary afternoon serve
     itself from the pack donates the whole stock to hours the grid could have
-    carried at a third of the ceiling. So the resting reserve rises with it.
+    carried at a third of the ceiling. So the resting reserve rises with it — but
+    only as far as the battery has got: a minimum SoC above the charge makes the
+    ESS recharge at full power, which is the peak the stock is meant to prevent.
     """
     cfg = _grid_charge_cfg(stock_up=True, stock_up_target_soc=95.0,
                            shaving_reserve_soc=50.0)
@@ -2848,9 +2870,13 @@ def test_stocking_up_buys_at_any_price_and_holds_what_it_bought():
         ),
         cfg, EngineState(),
     )
-    assert d.grid_charging is True
-    assert d.peak_reason_key == "grid_charge_stock_up"
-    assert d.battery_min_soc == pytest.approx(95.0)  # held, not spent
+    # With peak protection on, stocking up is the refill with a higher goal: the
+    # whole budget, not the cheap-hour rate under the soft line.
+    assert d.battery_refilling is True
+    assert d.grid_setpoint_w == pytest.approx(3700.0)
+    assert d.peak_reason_key == "peak_stock_up"
+    assert d.peak_reason_params["reserve"] == "95"
+    assert d.battery_min_soc == pytest.approx(60.0)  # held where it is, not spent
 
 
 def test_stocking_up_never_raises_the_floor_the_event_will_need():
@@ -2875,7 +2901,7 @@ def test_stocking_up_holds_the_battery_with_peak_protection_switched_off():
         cfg, EngineState(),
     )
     assert d.grid_charging is True
-    assert d.battery_min_soc == pytest.approx(95.0)
+    assert d.battery_min_soc == pytest.approx(60.0)  # the hold, at the charge reached
 
 
 def test_the_new_levers_are_all_off_by_default():
@@ -3031,3 +3057,217 @@ def test_small_budget_drift_does_not_rewrite_the_setpoint():
         **_ess(9500.0, setpoint_w=first.grid_setpoint_w),
     )
     assert second.grid_setpoint_w == first.grid_setpoint_w
+
+
+# --- After a shave: the minimum SoC never above the charge, the refill by setpoint ---
+#
+# A Victron ESS treats a minimum SoC above the battery's charge as an order to
+# recharge at full power (live, Nov 2026). Raising it from the shaving floor back to
+# the reserve at the end of a shave bought exactly the peak the shave had avoided.
+
+
+def test_a_shave_ending_below_the_reserve_holds_the_battery_where_it_is():
+    cfg, state = _share_cfg(peak_release_s=120.0), EngineState()
+    _step(cfg, state, 0, car_connected=False, battery_soc=41.6, **_ess(9600.0))
+    d = None
+    for t in range(40, 400, 10):
+        d = _step(cfg, state, t, car_connected=False, battery_soc=41.6, **_ess(900.0))
+    assert state.peak_share_engaged is False
+    assert d.battery_min_soc == 41.0  # never above the charge, never the 50 % reserve
+
+
+def test_the_refill_imports_the_budget_and_the_minimum_soc_trails_the_charge():
+    cfg, state = _share_cfg(), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=40.3, **_ess(900.0))
+    assert d.battery_refilling is True
+    assert d.grid_setpoint_w == 3700.0  # the target: free on the demand charge
+    assert d.battery_min_soc == 40.0
+    assert d.peak_reason_key == "peak_refill"
+    assert d.peak_reason_params == {
+        "soc": "40", "reserve": "50", "grid": "3.7", "target": "3.70",
+    }
+    d = _step(cfg, state, 60, car_connected=False, battery_soc=46.2, **_ess(900.0))
+    assert d.battery_min_soc == 46.0  # follows the fill up, one step behind it
+
+
+def test_the_refill_waits_for_a_real_dip_and_runs_to_the_reserve():
+    cfg, state = _share_cfg(), EngineState()
+    assert _step(cfg, state, 0, car_connected=False, battery_soc=48.5,
+                 **_ess(900.0)).battery_refilling is False  # inside the band
+    assert _step(cfg, state, 10, car_connected=False, battery_soc=47.5,
+                 **_ess(900.0)).battery_refilling is True
+    assert _step(cfg, state, 20, car_connected=False, battery_soc=49.6,
+                 **_ess(900.0)).battery_refilling is True  # runs on to the reserve
+    d = _step(cfg, state, 30, car_connected=False, battery_soc=50.0, **_ess(900.0))
+    assert d.battery_refilling is False
+    assert d.grid_setpoint_w == 100.0
+    assert d.battery_min_soc == 50.0
+
+
+def test_the_refill_never_sizes_past_what_is_left_of_the_quarter_hour():
+    # A heavy start leaves the rest of the window less than the target.
+    cfg, state = _share_cfg(), EngineState()
+    inp = _inputs(now=W0, battery_soc=40.0, grid_power_w=900.0, battery_power_w=0.0)
+    window = engine.update_peak_window(W0, 900.0, cfg, state)
+    share = engine._house_share(inp, cfg, state, window)
+    tight = replace(window, allowed_w=2450.0)
+    plain = engine.Decision(control=True)
+    assert engine._refill_setpoint(plain, inp, cfg, state, tight, share) == 2400.0
+    # …and a budget that grows a little later doesn't chase every watt.
+    roomier = replace(window, allowed_w=2650.0)
+    assert engine._refill_setpoint(plain, inp, cfg, state, roomier, share) == 2400.0
+    # A budget that shrinks is followed at once.
+    tighter = replace(window, allowed_w=1950.0)
+    assert engine._refill_setpoint(plain, inp, cfg, state, tighter, share) == 1900.0
+
+
+def test_the_battery_comes_first_the_car_waits_for_the_refill():
+    cfg, state = _share_cfg(mode=ChargingMode.FAST), EngineState()
+    d = _step(cfg, state, 0, car_connected=True, phases=3, car_actual_power_w=0.0,
+              battery_soc=40.0, grid_power_w=900.0, battery_power_w=0.0)
+    assert d.battery_refilling is True
+    assert d.should_charge is False
+    assert d.reason_key == "peak_refill_car"
+    assert d.grid_setpoint_w == 3700.0
+    # Back at the reserve, the car gets its room again.
+    d = _step(cfg, state, 30, car_connected=True, phases=3, car_actual_power_w=0.0,
+              battery_soc=50.0, grid_power_w=900.0, battery_power_w=0.0)
+    assert d.battery_refilling is False
+    assert d.should_charge is True
+
+
+def test_the_refill_steps_aside_for_the_departure_guarantee():
+    cfg, state = _share_cfg(), EngineState()
+    inp = _inputs(now=W0, battery_soc=40.0, grid_power_w=900.0, battery_power_w=0.0)
+    window = engine.update_peak_window(W0, 900.0, cfg, state)
+    share = engine._house_share(inp, cfg, state, window)
+    urgent = engine.Decision(
+        control=True, should_charge=True, reason_key="deadline_urgent"
+    )
+    assert engine._refill_setpoint(urgent, inp, cfg, state, window, share) is None
+    assert state.peak_refilling is True  # suspended, not forgotten
+    plain = engine.Decision(control=True, should_charge=True, reason_key="fast")
+    assert engine._refill_setpoint(plain, inp, cfg, state, window, share) == 3700.0
+
+
+def test_the_refill_pauses_while_the_house_share_needs_the_battery():
+    cfg, state = _share_cfg(), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=40.0, **_ess(9600.0))
+    assert state.peak_share_engaged is True
+    assert d.battery_refilling is False
+    assert d.battery_min_soc == 35.0  # shaving: the floor
+    assert d.grid_setpoint_w == 3700.0  # the share, not the refill
+
+
+def test_a_refill_in_a_partly_unmeasured_window_waits():
+    cfg, state = _share_cfg(), EngineState()
+    inp = _inputs(now=W0, battery_soc=40.0, grid_power_w=900.0, battery_power_w=0.0)
+    window = engine.update_peak_window(W0, 900.0, cfg, state)
+    share = engine._house_share(inp, cfg, state, window)
+    blind = replace(window, degraded=True)
+    plain = engine.Decision(control=True)
+    assert engine._refill_setpoint(plain, inp, cfg, state, blind, share) is None
+
+
+def test_a_charger_the_brain_is_not_driving_is_not_paused_by_the_refill():
+    # Smart control off: only the hard tier may stop a charger we aren't driving.
+    cfg, state = _share_cfg(smart_enabled=False), EngineState()
+    d = _step(cfg, state, 0, car_connected=True, phases=3, car_actual_power_w=0.0,
+              battery_soc=40.0, grid_power_w=900.0, battery_power_w=0.0)
+    assert d.battery_refilling is True
+    assert d.control is False
+
+
+def test_switching_peak_protection_off_forgets_the_refill():
+    cfg, state = _grid_charge_cfg(), EngineState()
+    _step(cfg, state, 0, car_connected=False, battery_soc=40.0,
+          grid_power_w=400.0, battery_power_w=0.0)
+    assert state.peak_refill_setpoint_w is not None
+    off = _grid_charge_cfg(peak_guard_enabled=False)
+    d = _step(off, state, 10, car_connected=False, battery_soc=40.0,
+              grid_power_w=400.0, battery_power_w=0.0, price_now=0.08)
+    assert state.peak_refill_setpoint_w is None
+    assert d.grid_charging is True  # cheap-hour charging is no longer stood aside
+
+
+def test_without_battery_power_the_tier_ladder_still_caps_the_minimum_soc():
+    cfg, state = _peak_cfg(), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=38.2,
+              grid_power_w=900.0)
+    assert d.battery_refilling is False  # no refill without the battery's power
+    assert d.battery_min_soc == 38.0
+
+
+def test_with_the_soc_unknown_the_minimum_soc_may_fall_but_never_rise():
+    state = EngineState()
+    d = engine.Decision(control=True, battery_min_soc=50.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=42.4), state)
+    assert d.battery_min_soc == 42.0
+    d = engine.Decision(control=True, battery_min_soc=50.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=None), state)
+    assert d.battery_min_soc == 42.0  # not back up to 50 blind
+    d = engine.Decision(control=True, battery_min_soc=35.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=None), state)
+    assert d.battery_min_soc == 35.0  # a drop is always safe
+
+
+def test_with_the_soc_never_seen_the_minimum_soc_is_left_alone():
+    d = engine.Decision(control=True, battery_min_soc=50.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=None), EngineState())
+    assert d.battery_min_soc is None
+    assert d.min_soc_skip is True  # not a hand-back: write nothing at all
+
+
+def test_a_minimum_soc_rounds_down_onto_the_entity_grid():
+    assert engine.floor_to_step(43.0, 5.0) == 40.0
+    assert engine.floor_to_step(45.0, 5.0) == 45.0
+    assert engine.floor_to_step(44.999999999, 5.0) == 45.0  # float noise, not a step
+    assert engine.floor_to_step(43.0, None) == 43.0
+    assert engine.floor_to_step(12.0, 5.0, minimum=10.0) == 10.0
+
+
+def test_a_hand_back_upward_follows_the_battery():
+    release = engine.min_soc_release_value
+    assert release(30.0, 50.0, 41.0) == (30.0, True)   # downward: at once
+    assert release(50.0, 35.0, 60.0) == (50.0, True)   # battery above it: at once
+    assert release(50.0, 35.0, 41.7) == (41.0, False)  # follow the charge up
+    assert release(50.0, 41.0, 41.9) == (None, False)  # nothing new to write
+    assert release(50.0, 35.0, None) == (None, False)  # blind: keep what is there
+
+
+def test_a_held_minimum_soc_does_not_walk_down_with_the_charge():
+    # The ESS holds 50 %, the battery reads 49.9: that is the hold working, and
+    # capping down to it would let the battery discharge one step further each lap.
+    state = EngineState()
+    d = engine.Decision(control=True, battery_min_soc=50.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=50.2), state)
+    assert d.battery_min_soc == 50.0
+    d = engine.Decision(control=True, battery_min_soc=50.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=49.9), state)
+    assert d.battery_min_soc == 50.0
+    # A shave still takes it down at once, and the raise after it is capped again.
+    d = engine.Decision(control=True, battery_min_soc=35.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=49.0), state)
+    assert d.battery_min_soc == 35.0
+    d = engine.Decision(control=True, battery_min_soc=50.0)
+    engine._limit_min_soc(d, _inputs(battery_soc=41.5), state)
+    assert d.battery_min_soc == 41.0
+
+
+
+def test_stocking_up_fills_at_the_target_without_cheap_hour_charging():
+    # The switch is the user's: with peak protection on it needs nothing else.
+    cfg, state = _share_cfg(stock_up=True, stock_up_target_soc=95.0), EngineState()
+    d = _step(cfg, state, 0, car_connected=False, battery_soc=70.0, **_ess(900.0))
+    assert d.battery_refilling is True
+    assert d.grid_setpoint_w == 3700.0
+    assert d.battery_min_soc == 70.0
+
+
+def test_while_stocking_up_the_car_waits_and_is_told_why():
+    cfg = _share_cfg(mode=ChargingMode.FAST, stock_up=True, stock_up_target_soc=95.0)
+    d = _step(cfg, EngineState(), 0, car_connected=True, phases=3,
+              car_actual_power_w=0.0, battery_soc=70.0,
+              grid_power_w=900.0, battery_power_w=0.0)
+    assert d.should_charge is False
+    assert d.reason_key == "peak_stock_up_car"

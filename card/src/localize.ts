@@ -151,6 +151,7 @@ const en: Dict = {
   "chip.peak_hard": "Peak limit — {projected} kW this ¼ h",
   "chip.peak_degraded": "Peak reading incomplete",
   "chip.grid_charging": "Buying cheap — {power} W",
+  "chip.battery_refill": "Refilling home battery — {power} W",
 
   "peak.title": "Peak protection",
   "peak.month_label": "Highest ¼ hour this month",
@@ -197,6 +198,14 @@ const en: Dict = {
     "Heading for {projected} kW — letting the home battery cover more of the house to stay under {target} kW",
   "reason.peak_pause":
     "Heading for {projected} kW — the car is paused until there's room for it again",
+  "reason.peak_refill":
+    "Refilling the home battery from {soc}% to {reserve}% — the grid carries up to {grid} kW, within the {target} kW limit",
+  "reason.peak_refill_car":
+    "Refilling the home battery from {soc}% to {reserve}% first — the car continues once it's there",
+  "reason.peak_stock_up":
+    "Stocking up for tonight — filling the home battery from {soc}% to {reserve}%, the grid carries up to {grid} kW within the {target} kW limit",
+  "reason.peak_stock_up_car":
+    "Stocking up for tonight — filling the home battery from {soc}% to {reserve}% first, the car continues once it's there",
   "reason.peak_battery_empty":
     "Heading for {projected} kW and the home battery is down to its {soc}% floor — nothing left to shave with",
   "reason.peak_degraded":
@@ -372,6 +381,7 @@ const de: Dict = {
   "chip.peak_hard": "Lastspitze — {projected} kW diese ¼ h",
   "chip.peak_degraded": "Messung der Spitze unvollständig",
   "chip.grid_charging": "Kauft günstig — {power} W",
+  "chip.battery_refill": "Lädt Hausbatterie nach — {power} W",
 
   "peak.title": "Lastspitzenschutz",
   "peak.month_label": "Höchste ¼ Stunde dieses Monats",
@@ -419,6 +429,14 @@ const de: Dict = {
     "Läuft auf {projected} kW zu — die Hausbatterie übernimmt mehr vom Haus, um unter {target} kW zu bleiben",
   "reason.peak_pause":
     "Läuft auf {projected} kW zu — das Auto pausiert, bis wieder Platz dafür ist",
+  "reason.peak_refill":
+    "Lädt die Hausbatterie von {soc}% auf {reserve}% nach — das Netz liefert bis zu {grid} kW, innerhalb der Grenze von {target} kW",
+  "reason.peak_refill_car":
+    "Lädt zuerst die Hausbatterie von {soc}% auf {reserve}% nach — das Auto lädt weiter, sobald sie dort ist",
+  "reason.peak_stock_up":
+    "Vorladen für heute Abend — füllt die Hausbatterie von {soc}% auf {reserve}%, das Netz liefert bis zu {grid} kW innerhalb der Grenze von {target} kW",
+  "reason.peak_stock_up_car":
+    "Vorladen für heute Abend — füllt zuerst die Hausbatterie von {soc}% auf {reserve}%, das Auto lädt weiter, sobald sie dort ist",
   "reason.peak_battery_empty":
     "Läuft auf {projected} kW zu und die Hausbatterie ist auf ihrer {soc}%-Grenze — nichts mehr zum Kappen da",
   "reason.peak_degraded":

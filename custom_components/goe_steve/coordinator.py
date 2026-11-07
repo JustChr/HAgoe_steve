@@ -100,6 +100,8 @@ from .engine import (
     PriceSlot,
     attach_peak_status,
     decide,
+    floor_to_step,
+    min_soc_release_value,
     resolve_peak_tier,
     update_peak_window,
 )
@@ -611,7 +613,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # mapped, and hand the entity back when the engine has nothing to say.
         if decision.house_control:
             await self._write_setpoint(decision.grid_setpoint_w)
-            await self._write_min_soc(decision.battery_min_soc)
+            # Skipped, not released: with the SoC unknown the engine can't say what
+            # is safe, and a hand-back may be an upward write too.
+            if not decision.min_soc_skip:
+                await self._write_min_soc(decision.battery_min_soc)
         else:
             await self._release_setpoint()
             await self._release_min_soc()
@@ -820,6 +825,9 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         self._setpoint_before = _float_or_none(data.get("setpoint_before"))
         self._last_written_min_soc = _float_or_none(data.get("min_soc"))
         self._min_soc_before = _float_or_none(data.get("min_soc_before"))
+        # The value on the entity is one the engine already holds: without this a
+        # restart with the battery a hair under it would cap it down a whole step.
+        self._state.house_min_soc = self._last_written_min_soc
 
     async def _write_hold(self, hold: bool) -> None:
         """Drive the battery-hold switch so the car draws grid, not the battery.
@@ -906,6 +914,21 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         if not owned and self._last_written_setpoint is not None:
             await self._save_house_ownership()
 
+    def _number_step(self, conf_key: str) -> tuple[float | None, float]:
+        """A mapped number entity's ``(step, min)``, from its attributes."""
+        entity_id = self._cfg.get(conf_key)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        if state is None:
+            return None, 0.0
+
+        def _attr(name: str) -> float | None:
+            try:
+                return float(state.attributes[name])
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        return _attr("step"), _attr("min") or 0.0
+
     async def _write_min_soc(self, value: float | None) -> None:
         """Command the ESS minimum SoC — the shaving reserve, or the peak floor.
 
@@ -914,10 +937,17 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         the peak floor while shaving. Those two values are the whole contract while
         we hold it — we never try to blend a user's own edits into them — but the
         contract does end, and :meth:`_release_min_soc` is how.
+
+        The engine never asks for more than the battery holds (a minimum SoC above
+        the charge makes the ESS recharge at full power); the value is rounded *down*
+        onto the entity's grid here so the rounding can't undo that — a Victron
+        minimum SoC takes 5 % steps.
         """
         if value is None:
             await self._release_min_soc()
             return
+        step, minimum = self._number_step(CONF_VICTRON_MIN_SOC)
+        value = floor_to_step(value, step, minimum)
         owned = self._last_written_min_soc is not None
         if not owned:
             self._min_soc_before = self._get_float(CONF_VICTRON_MIN_SOC)
@@ -945,13 +975,38 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         await self._save_house_ownership()
 
     async def _release_min_soc(self) -> None:
-        """Hand the ESS minimum SoC back — see :meth:`_release_setpoint`."""
+        """Hand the ESS minimum SoC back — see :meth:`_release_setpoint`.
+
+        Unlike the setpoint, this hand-back can itself cause a peak: if the number
+        it held before sits above the battery's charge, the ESS recharges at full
+        power the moment it is written. So an upward hand-back follows the battery
+        (:func:`min_soc_release_value`) and the entity stays ours — persisted, so a
+        restart carries on — until the original value is safe to write.
+        """
         if self._last_written_min_soc is None:
             return
-        restore, self._min_soc_before = self._min_soc_before, None
-        self._last_written_min_soc = None
+        restore = self._min_soc_before
         if restore is not None:
+            value, done = min_soc_release_value(
+                restore, self._last_written_min_soc, self._get_float(CONF_BATTERY_SOC)
+            )
+            if not done:
+                if value is not None:
+                    step, minimum = self._number_step(CONF_VICTRON_MIN_SOC)
+                    value = floor_to_step(value, step, minimum)
+                    if value > self._last_written_min_soc:
+                        # ``last=None`` forces the write; a failed one returns that
+                        # None, which must not be mistaken for "no longer ours".
+                        written = await self._write_number(
+                            CONF_VICTRON_MIN_SOC, value, None, 0.0
+                        )
+                        if written is not None:
+                            self._last_written_min_soc = written
+                            await self._save_house_ownership()
+                return
             await self._write_number(CONF_VICTRON_MIN_SOC, restore, None, 0.0)
+        self._min_soc_before = None
+        self._last_written_min_soc = None
         await self._save_house_ownership()
 
     async def _save_house_ownership(self) -> None:
