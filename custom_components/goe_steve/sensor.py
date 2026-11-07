@@ -300,6 +300,18 @@ class PeakStatusSensor(GoeSteveEntity, SensorEntity):
             "grid_setpoint_w": data.grid_setpoint_w,
             "battery_min_soc": data.battery_min_soc,
             "battery_refilling": data.battery_refilling,
+            # The reserve plan: the level held against ordinary loads, the level a
+            # refill buys up to, and the forecast (and day) they were sized from.
+            "reserve_hold_soc": (
+                round(data.reserve_hold_soc, 1)
+                if data.reserve_hold_soc is not None else None
+            ),
+            "reserve_fill_soc": (
+                round(data.reserve_fill_soc, 1)
+                if data.reserve_fill_soc is not None else None
+            ),
+            "reserve_forecast_kwh": data.reserve_forecast_kwh,
+            "reserve_day": data.reserve_day or None,
         }
 
 

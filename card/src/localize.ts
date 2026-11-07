@@ -206,6 +206,14 @@ const en: Dict = {
     "Stocking up for tonight — filling the home battery from {soc}% to {reserve}%, the grid carries up to {grid} kW within the {target} kW limit",
   "reason.peak_stock_up_car":
     "Stocking up for tonight — filling the home battery from {soc}% to {reserve}% first, the car continues once it's there",
+  "reason.peak_dark_day":
+    "Little sun on the way ({forecast} kWh forecast) — filling the home battery from {soc}% to {reserve}% for the peaks, the grid carries up to {grid} kW within the {target} kW limit",
+  "reason.peak_dark_day_car":
+    "Little sun on the way ({forecast} kWh forecast) — filling the home battery from {soc}% to {reserve}% first, the car continues once it's there",
+  "reason.peak_ready":
+    "Keeping the home battery ready for peaks — filling it from {soc}% to {reserve}%, the grid carries up to {grid} kW within the {target} kW limit",
+  "reason.peak_ready_car":
+    "Keeping the home battery ready for peaks — filling it from {soc}% to {reserve}% first, the car continues once it's there",
   "reason.peak_battery_empty":
     "Heading for {projected} kW and the home battery is down to its {soc}% floor — nothing left to shave with",
   "reason.peak_degraded":
@@ -215,10 +223,8 @@ const en: Dict = {
   "reason.grid_charge_dark":
     "Cheap hour at {price}/kWh and little sun expected — importing {power} W to fill the home battery to {target}%",
   "reason.grid_charge_bright":
-    "Cheap hour at {price}/kWh, but tomorrow looks bright — filling the home battery only to {target}% so the sun has somewhere to go",
+    "Cheap hour at {price}/kWh, but plenty of sun is on the way — filling the home battery only to {target}% so the sun has somewhere to go",
   "reason.grid_charge_full": "Home battery at {soc}% — nothing left to buy this cheaply",
-  "reason.grid_charge_ready":
-    "Home battery down to {soc}% and too low to hold the peak limit — importing {power} W to get it back to {target}%, cheap hour or not",
   "reason.grid_charge_stock_up":
     "Stocking up for tonight — importing {power} W to fill the home battery to {target}% and holding it there",
   "reason.grid_charge_stocked":
@@ -437,6 +443,14 @@ const de: Dict = {
     "Vorladen für heute Abend — füllt die Hausbatterie von {soc}% auf {reserve}%, das Netz liefert bis zu {grid} kW innerhalb der Grenze von {target} kW",
   "reason.peak_stock_up_car":
     "Vorladen für heute Abend — füllt zuerst die Hausbatterie von {soc}% auf {reserve}%, das Auto lädt weiter, sobald sie dort ist",
+  "reason.peak_dark_day":
+    "Wenig Sonne in Sicht ({forecast} kWh Prognose) — füllt die Hausbatterie von {soc}% auf {reserve}% für die Lastspitzen, das Netz liefert bis zu {grid} kW innerhalb der Grenze von {target} kW",
+  "reason.peak_dark_day_car":
+    "Wenig Sonne in Sicht ({forecast} kWh Prognose) — füllt zuerst die Hausbatterie von {soc}% auf {reserve}%, das Auto lädt weiter, sobald sie dort ist",
+  "reason.peak_ready":
+    "Hält die Hausbatterie für Lastspitzen bereit — füllt sie von {soc}% auf {reserve}%, das Netz liefert bis zu {grid} kW innerhalb der Grenze von {target} kW",
+  "reason.peak_ready_car":
+    "Hält die Hausbatterie für Lastspitzen bereit — füllt sie zuerst von {soc}% auf {reserve}%, das Auto lädt weiter, sobald sie dort ist",
   "reason.peak_battery_empty":
     "Läuft auf {projected} kW zu und die Hausbatterie ist auf ihrer {soc}%-Grenze — nichts mehr zum Kappen da",
   "reason.peak_degraded":
@@ -446,11 +460,9 @@ const de: Dict = {
   "reason.grid_charge_dark":
     "Günstige Stunde zu {price}/kWh und wenig Sonne erwartet — bezieht {power} W, um die Hausbatterie auf {target}% zu füllen",
   "reason.grid_charge_bright":
-    "Günstige Stunde zu {price}/kWh, aber morgen wird es sonnig — füllt die Hausbatterie nur auf {target}%, damit die Sonne noch Platz hat",
+    "Günstige Stunde zu {price}/kWh, aber es kommt viel Sonne — füllt die Hausbatterie nur auf {target}%, damit die Sonne noch Platz hat",
   "reason.grid_charge_full":
     "Hausbatterie bei {soc}% — zu diesem Preis gibt es nichts mehr zu kaufen",
-  "reason.grid_charge_ready":
-    "Hausbatterie nur noch bei {soc}% und zu leer, um die Lastspitze zu halten — bezieht {power} W zurück auf {target}%, günstige Stunde hin oder her",
   "reason.grid_charge_stock_up":
     "Lädt für heute Abend vor — bezieht {power} W, um die Hausbatterie auf {target}% zu füllen und dort zu halten",
   "reason.grid_charge_stocked":

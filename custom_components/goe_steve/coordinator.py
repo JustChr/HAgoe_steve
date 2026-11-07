@@ -34,6 +34,8 @@ from .const import (
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
     CONF_PV_FORECAST,
+    CONF_PV_FORECAST_REMAINING,
+    CONF_PV_FORECAST_TODAY,
     CONF_PV_POWER,
     CONF_PHASES,
     CONF_STEVE_PASSWORD,
@@ -63,6 +65,7 @@ from .const import (
     DEFAULT_PHASES,
     DEFAULT_PRICE_FORECAST_ATTR,
     DEFAULT_PEAK_READY_SOC,
+    DEFAULT_SOLAR_SELF_USE_KWH,
     DEFAULT_PV_FORECAST_LOW_KWH,
     DEFAULT_STOCK_UP,
     DEFAULT_STOCK_UP_TARGET_SOC,
@@ -188,6 +191,7 @@ class RuntimeSettings:
     dark_day_target_soc: float = DEFAULT_DARK_DAY_TARGET_SOC
     pv_forecast_low_kwh: float = DEFAULT_PV_FORECAST_LOW_KWH
     peak_ready_soc: float = DEFAULT_PEAK_READY_SOC
+    solar_self_use_kwh: float = DEFAULT_SOLAR_SELF_USE_KWH
     stock_up: bool = DEFAULT_STOCK_UP
     stock_up_target_soc: float = DEFAULT_STOCK_UP_TARGET_SOC
 
@@ -343,6 +347,17 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             return float(state.state)
         except (ValueError, TypeError):
             return None
+
+    def _sun_up(self) -> bool | None:
+        """Whether the sun is up, from Home Assistant's own ``sun.sun`` — or None.
+
+        The reserve plan buys differently by day (only what the sun won't deliver);
+        without this entity the engine falls back to the local clock.
+        """
+        state = self.hass.states.get("sun.sun")
+        if state is None or state.state not in ("above_horizon", "below_horizon"):
+            return None
+        return state.state == "above_horizon"
 
     def _get_energy_kwh(self, conf_key: str) -> float | None:
         """A cumulative energy reading in kWh, whatever unit the sensor reports.
@@ -526,7 +541,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             battery_power_w=self._get_float(CONF_BATTERY_POWER),
             price_now=price_now,
             price_forecast=forecast,
-            pv_forecast_kwh=self._get_float(CONF_PV_FORECAST),
+            pv_forecast_kwh=self._get_energy_kwh(CONF_PV_FORECAST),
+            pv_forecast_today_kwh=self._get_energy_kwh(CONF_PV_FORECAST_TODAY),
+            pv_forecast_remaining_kwh=self._get_energy_kwh(CONF_PV_FORECAST_REMAINING),
+            sun_up=self._sun_up(),
             session_delivered_kwh=self._session_delivered_kwh(connected),
             now=dt_util.utcnow(),
         )
@@ -605,6 +623,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             dark_day_target_soc=self.settings.dark_day_target_soc,
             pv_forecast_low_kwh=self.settings.pv_forecast_low_kwh,
             peak_ready_soc=self.settings.peak_ready_soc,
+            solar_self_use_kwh=self.settings.solar_self_use_kwh,
             stock_up=self.settings.stock_up,
             stock_up_target_soc=self.settings.stock_up_target_soc,
             # The engine works in UTC; the billed month and any clock time it puts
@@ -1166,6 +1185,10 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                 target_w=decision.peak_target_w,
                 hard_w=decision.peak_hard_w,
                 month_peak_w=decision.month_peak_w,
+                plan_hold_soc=decision.reserve_hold_soc,
+                plan_fill_soc=decision.reserve_fill_soc,
+                plan_forecast_kwh=decision.reserve_forecast_kwh,
+                plan_day=decision.reserve_day,
             )
             if inputs is not None:
                 sample.grid_w = inputs.grid_power_w

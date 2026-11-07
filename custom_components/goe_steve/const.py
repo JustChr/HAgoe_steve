@@ -43,6 +43,11 @@ CONF_VICTRON_MIN_SOC: Final = "victron_min_soc_entity"
 # Its job is not "is it winter" but "don't fill the battery from the grid the night
 # before a bright day" — see the bright/dark targets below.
 CONF_PV_FORECAST: Final = "pv_forecast_entity"
+# …and today's: the whole day, and what is still to come of it. The reserve plan
+# reads the *coming* solar day, which after midnight is "today" — the "tomorrow"
+# sensor then already describes the day after. Both optional.
+CONF_PV_FORECAST_TODAY: Final = "pv_forecast_today_entity"
+CONF_PV_FORECAST_REMAINING: Final = "pv_forecast_remaining_entity"
 # --- Charger link: direct go-e MQTT (v4+) -----------------------------------------
 # The brain talks to the go-e charger over its native MQTT instead of mapping
 # entities from a separate go-e integration. Only the base topic is needed:
@@ -162,11 +167,16 @@ DEFAULT_CHEAP_CHARGE_POWER_W: Final = 2000.0  # what we'd import in a cheap hour
 DEFAULT_BRIGHT_DAY_TARGET_SOC: Final = 40.0
 DEFAULT_DARK_DAY_TARGET_SOC: Final = 80.0
 DEFAULT_PV_FORECAST_LOW_KWH: Final = 8.0  # below this, tomorrow counts as "dark"
-# Cheapest hours first, then any hour. The two targets above are what a *cheap* hour
-# fills to; below this level the battery is topped up whatever the price, because a
-# pack sitting on its floor cannot hold a peak limit at all — and in a dark winter
-# week the five cheap hours a day do not keep up with the house. 0 disables it.
+# The reserve on a dark day: how full the battery is kept for the peaks when little
+# sun is coming. With a solar forecast it is the top of a reserve that follows the
+# forecast (a bright day keeps it near the shaving reserve, leaving the sun its room);
+# without one it is a flat level. At or below the shaving reserve it does nothing,
+# which is the default. Keeps the v5.6 key ("keep ready for peaks") so the stored
+# value carries over.
 DEFAULT_PEAK_READY_SOC: Final = 0.0
+# The PV the house uses as it comes on a sunny day (kWh) — no room the battery has to
+# keep free. 0 counts the whole forecast as room, which buys the least.
+DEFAULT_SOLAR_SELF_USE_KWH: Final = 0.0
 # "Stock up for tonight": the user knows a sauna/oven/party evening is coming and the
 # brain cannot. Fills toward this level at any price **and holds it there**, so the
 # ordinary afternoon is served from the grid (far below the ceiling) instead of

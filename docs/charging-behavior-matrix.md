@@ -440,21 +440,23 @@ already covers, and the tier ladder keeps its old levers.
 
 ### The SoC ladder
 
-Peak protection *owns* the mapped minimum-SoC number, with two values (three while
-stocking up). Both are **upper bounds**, never orders: the number written is capped at the
+Peak protection *owns* the mapped minimum-SoC number: a *resting* value, and a lower one
+while shaving. Both are **upper bounds**, never orders: the number written is capped at the
 battery's charge — see *Never above the charge* below.
 
 ```
 100 % ┤
  95 % ┤◄══ Stock-up target ═══ fill to here at any price while the switch is on,
       │      and REST here too, so the afternoon can't spend what tonight needs
+ 90 % ┤◄══ Reserve on a dark day ═══ example: the top of the reserve plan — on a dark
+      │      day the battery RESTS and is refilled up to here (0 % = off, the default)
       │
  80 % ┤◄══ Keep home battery above ═══ the CAR may not drain below this (the reserve line)
-      │◄══ Cheap-hour target, dark day ═══ how deep a cheap hour fills it when tomorrow is poor
+      │◄══ Cheap-hour target, dark day ═══ how deep a cheap hour fills it before a poor day
       │
- 60 % ┤◄── Keep ready for peaks above ─── example: below this, top up at ANY price,
-      │      because a flat battery cannot shave (0 % = off, the default)
- 50 % ┤◄══ Keep in reserve for peaks ═══ where minimum-SoC RESTS
+ 62 % ┤  ··· where the plan rests before a 22 kWh day: the sun needs the room above
+      │
+ 50 % ┤◄══ Keep in reserve for peaks ═══ where minimum-SoC RESTS on a bright day
       │      ordinary house loads cannot drain the battery below this, so there is
       │      always something banked for a peak nobody saw coming
       │
@@ -465,9 +467,9 @@ battery's charge — see *Never above the charge* below.
   0 % ┤      that works with no car anywhere near the house
 ```
 
-Stocking up raises only the *resting* value. `May discharge to` is computed from the
-reserve you set, never from the stock-up target — otherwise the charge just bought would
-be locked away from the very evening it was bought for.
+The reserve plan and stocking up raise only the *resting* value. `May discharge to` is
+computed from the reserve you set, never from either — otherwise the charge just bought
+would be locked away from the very evening it was bought for.
 
 #### Never above the charge
 
@@ -548,6 +550,74 @@ morning at 48 % instead of 50 %. v5.8.2 looked better there only because the ESS
 recharge kept buying the battery back — at the cost of 49 more quarter-hours over the line.
 That is the intended order (Chris, Nov 2026): **the car's departure wins over the refill**,
 and the battery still shaves down to *May discharge to for peaks* meanwhile.
+
+#### Stock for a dark day — the reserve follows the forecast
+
+On a flat tariff the battery has exactly two jobs: keep **room for the sun**, and keep
+**stock for the peaks**. Grid energy bought into it costs what it would have cost an hour
+later, less the round trip — so the only questions are how much, and when. A fixed 50 %
+reserve answers neither: before a bright day it is right, before a dark one the battery
+meets the evening with 15 % to shave with (4.6 kWh on a 30.5 kWh pack) and a sauna takes
+the month. *Reserve on a dark day* turns the resting reserve into a plan:
+
+```
+level = 100 % − room the coming day's sun needs        between Keep in reserve (50 %)
+room  = (forecast − Solar the house uses directly)        and Reserve on a dark day (90 %)
+        ÷ battery capacity
+```
+
+| | |
+|---|---|
+| **The coming day** | runs sunset to sunset: after dark it is *tomorrow*; past midnight the calendar says *today*, but it is the same day. `sun.sun` tells day from night (without it, 08:00–16:00 counts as day) |
+| **By night** | the battery is **held** at the level and **refilled** to it — the house is quiet, so the quarter-hour budget has the most room |
+| **By day** | held at the day's own level (a dark day keeps last night's stock for its evening), but only **bought** up to tonight's level *less what the sun still brings today* (`remaining forecast` minus the house's share of it). Buying in the morning what the afternoon brings free is the one waste the plan could cause |
+| **At sunset** | the coming day becomes tomorrow. Before a bright one the level drops and the house drains the battery overnight, making the sun its room |
+| **How it buys** | through the refill above, unchanged: the setpoint at `min(budget, target)`, **the battery first, the car waits** (Chris, Nov 2026 — on a dark night with the car plugged in the budget can't fill both; the stock is what the peaks are defended with). The departure guarantee still wins |
+| **Status** | *"Little sun on the way (4 kWh forecast) — filling the home battery from 60% to 90% first, the car continues once it's there"* |
+| **Sensor** | *Peak protection* carries `reserve_hold_soc`, `reserve_fill_soc`, `reserve_forecast_kwh`, `reserve_day` |
+
+Three forecast sensors feed it (all optional, all in kWh): **tomorrow**, **today**, and
+**the rest of today** (Solcast and Forecast.Solar both provide all three).
+
+| What's mapped | Behaviour |
+|---|---|
+| all three | as above |
+| tomorrow only | before midnight as above; after midnight the evening's reading of *tomorrow* is carried over (the sensor itself has moved on to the day after). After a restart past midnight there is no such reading: the flat level until sunset |
+| no *rest of today* | by day nothing is bought beyond *Keep in reserve*; the stock comes after sunset |
+| no forecast at all, or no battery capacity | a **flat** level at *Reserve on a dark day* — the old *Keep ready for peaks*, now held as well as filled |
+| no battery power | no refill (as always): the level is held, never bought |
+| peak protection off, or *Reserve on a dark day* ≤ *Keep in reserve* | no plan — exactly the old behaviour |
+
+**Solar the house uses directly** (kWh/day) is the PV the house uses the moment it is made,
+so the battery needn't keep room for it. Measured here: a median of 10.5 kWh on days with
+more than 8 kWh of PV (p25 7.6, p75 12.1, Sep–Nov 2026). It moves with the season; 0 counts
+the whole forecast as room, which buys the least.
+
+The forecast errs **optimistic** on cloudy days (Solcast, the evening before: median +1.4 kWh,
+p90 +6 kWh; 4 Nov forecast 13.9, delivered 3.9). Then the stock arrives by day instead of
+overnight, as the *rest of today* falls short — the plan corrects itself, a few hours late.
+
+**What it changes**, closed loop on three real weeks (`tools/sim/reserve_plan.py`:
+15 Oct – 6 Nov 2026, measured hourly house load, real PV, Solcast forecasts as issued; four
+modelled sauna evenings, the car on the nights it really charged; limits 3.5 / 3.7 / 3.9 kW,
+month allowance on, 90 % round trip, the ESS's full-power recharge modelled):
+
+| | As shipped | Plan (forecast) | Flat 90 % (no forecast) |
+|---|---|---|---|
+| Worst quarter-hour | 6.12 kW | **3.70 kW** | 3.70 kW |
+| Quarter-hours over 3.7 kW | 98 | **0** | 0 |
+| Grid import | 601 kWh | 604 kWh | 672 kWh |
+| PV exported | 25.8 kWh | 41.3 kWh | 111.0 kWh |
+| Energy cost (flat 0.2446 €/kWh) | €146.94 | **€147.87** | €164.34 |
+| Car | 327 kWh | 313 kWh | 312 kWh |
+| SoC at the sauna, dark days (29 Oct, 3 Nov) | 50 %, 50 % | 84 %, 89 % | 90 %, 90 % |
+| ESS full-power recharge | 0 | 0 | 0 |
+
+As shipped, both dark-day saunas breach (6.1 and 6.0 kW), and the month allowance then
+lets the following days float up to that record (31 Oct, 5–6 Nov) — 98 quarter-hours from
+two evenings. The plan holds every one for **€0.93 over three weeks**. The flat level holds
+them too, but exports 85 kWh more: that is what the forecast saves. The car loses 14 kWh
+(4 %) to the battery-first nights.
 
 #### Handing it back
 
@@ -768,15 +838,20 @@ not the one that just ended. Any clock time in a status line is local for the sa
 
 ## Grid charging the home battery
 
-Buys energy into the home battery — and runs the house from the grid — for one of three
+Buys energy into the home battery — and runs the house from the grid — for one of two
 reasons, in descending order of urgency. Off by default, and it needs a mapped
 grid-setpoint entity to do anything at all.
 
 | Reason | When | Fills to | Price? |
 |---|---|---|---|
 | **Stock up for tonight** | you turned the switch on | **Stock-up target** (95 %) | ignored |
-| **Keep ready for peaks** | peak protection on and SoC below the level | **Keep ready for peaks above** (0 % = off) | ignored |
 | **A cheap hour** | price ≤ **Cheap price threshold** | the bright/dark target below | that's the point |
+
+Keeping the battery stocked for the peaks *whatever the price* used to be a third reason
+here (*Keep ready for peaks above*, v5.6). It is peak protection's job now — see *Stock for
+a dark day* above: the same setting, renamed *Reserve on a dark day*, lowered before a
+bright day, held as well as filled, and bought through the refill at the quarter-hour
+budget rather than at the cheap-hour rate under the soft line.
 
 On an ESS the grid setpoint *is* total grid import, so what is commanded here is exactly the
 quantity a capacity tariff bills:
@@ -787,19 +862,6 @@ nothing does            → setpoint = your normal grid import (~50 W): the batt
 SoC ≥ target            → stop, and don't resume until it drops 2 % below (see below)
 peak protection engaged → abandoned outright
 ```
-
-### Cheapest hours first, then any hour
-
-*Keep ready for peaks* exists because a battery sitting on its floor defends nothing, and
-in a dark winter week the few cheap hours a day do not keep up: a 15-day simulation of a
-heat-pump house at −9 °C found the pack pinned to its floor through almost every breach,
-with PV contributing about 1 kWh against 30–58 kWh of daily consumption. Below this level
-the price stops being the question — an unshaved quarter-hour costs more than the
-difference between a cheap kilowatt-hour and an ordinary one.
-
-It is a **floor, not a cap**: a cheap hour still fills deeper if its own target is higher,
-so turning readiness on never makes cheap hours buy *less*. Set it to 0 to switch the whole
-behaviour off, which is the default and the old behaviour exactly.
 
 ### Stocking up has two halves
 
@@ -835,15 +897,21 @@ cheap energy without the peak.
 
 ### The forecast decides how deep, not whether
 
-| Solar forecast for tomorrow | Fill to |
+| Solar forecast for the coming day | Fill to |
 |---|---|
 | below `pv_forecast_low_kwh` (8 kWh) — a dark day | **Cheap-hour target, dark day** (80 %) |
 | above it — a bright day | **Cheap-hour target, bright day** (40 %), leaving the sun somewhere to land |
 | no forecast entity mapped | always the dark-day target (the safe assumption) |
 
-The point is not "is it winter". It is *don't fill the battery from the grid the night before
-a bright day*, where the sun would have done it for free and the paid-for charge only leaves
-the PV nowhere to go.
+The point is not "is it winter". It is *don't fill the battery from the grid before a bright
+day*, where the sun would have done it for free and the paid-for charge only leaves the PV
+nowhere to go.
+
+*The coming day* is the same one the reserve plan reads: tomorrow after sunset, today from
+midnight until sunset (with today's forecast mapped, or the evening's reading of tomorrow
+carried over). Up to v5.10 a cheap hour always read the *tomorrow* sensor — at 02:00 that is
+the day after the one about to start, and at a solar-shaped price's cheap noon it ignored
+the sun still to come today.
 
 ---
 

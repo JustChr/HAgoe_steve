@@ -125,3 +125,22 @@ def test_reasons_are_timed():
     _, (rec,), _ = _run(samples + [_s(900)])
     assert rec["reasons"] == {"fast": 300, "peak_pause": 600}
     assert rec["s"]["car_held"] == 600
+
+
+def test_the_reserve_plan_is_recorded_and_its_held_car_counts():
+    """The plan in force at the end of the quarter-hour, and a car waiting for the
+    dark-day stock booked as held, like any other refill."""
+    samples = [
+        _s(t, plan_hold_soc=90.0, plan_fill_soc=90.0, plan_forecast_kwh=4.2,
+           plan_day="tomorrow", refilling=True, reason_key="peak_dark_day_car")
+        for t in range(0, 900, 10)
+    ] + [_s(900)]
+    _, (rec,), _ = _run(samples)
+    assert rec["plan"] == [90.0, 90.0, 4.2, "tomorrow"]
+    assert rec["s"]["car_held"] == 900
+
+
+def test_no_plan_records_none():
+    samples = [_s(t) for t in range(0, 900, 10)] + [_s(900)]
+    _, (rec,), _ = _run(samples)
+    assert rec["plan"] is None

@@ -38,12 +38,12 @@ limits**.
   already peaked higher, the limits float up to just under that peak — you get the headroom you
   have already paid for, without the record creeping up further.
 - **Cheap-hour grid charging:** buy energy into the home battery while the price is low, deep
-  when tomorrow looks dark and only shallow when it looks bright. Capped by the peak budget, so
+  when the coming day looks dark and only shallow when it looks bright. Capped by the peak budget, so
   it imports steadily instead of in the spike that would set a monthly peak.
-- **Cheapest hours first, then any hour:** a battery on its floor can't shave anything, and in
-  a dark winter week the few cheap hours a day don't keep up. Set *Keep ready for peaks above*
-  and it's topped up below that level whatever the price — a floor, not a cap, so cheap hours
-  still fill deeper. Off by default.
+- **Stock for a dark day:** set *Reserve on a dark day* and map your solar forecast — before a
+  dark day the battery is filled up to it overnight, within the peak budget, and held for the
+  evening; before a bright one it rests only as high as leaves the sun its room. The car waits
+  while the battery fills. Without a forecast it's a flat level. Off by default.
 - **Stock up for tonight:** you know tonight is the sauna; the brain doesn't. One switch fills
   the battery at any price *and holds it*, so the afternoon can't spend what the evening needs.
   With peak protection on it fills at the peak target, and the car waits until it's there.

@@ -2787,43 +2787,46 @@ def test_grid_charging_does_not_chatter_once_it_reaches_its_target():
     assert at(80.0 - band + 0.5).grid_charging is True
 
 
-def test_a_flat_battery_is_topped_up_even_when_the_price_is_not_cheap():
-    """Cheapest hours first, then any hour.
+def test_without_a_forecast_the_dark_day_reserve_is_a_flat_level_the_refill_keeps():
+    """The old "keep ready for peaks", now done by the refill — and held.
 
     A pack sitting on its floor defends nothing, and in a dark winter week the few
-    cheap hours a day do not keep up with the house. Below the readiness level the
-    price stops being the question.
+    cheap hours a day do not keep up with the house, so the price is not the
+    question. Unlike the old readiness path it buys at the *budget* (the refill),
+    and holds what it has rather than letting ordinary loads cycle it.
     """
     cfg = _grid_charge_cfg(peak_ready_soc=60.0)
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            # Above the shaving reserve (50 %) — below it the refill does this job.
-            battery_soc=52.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+            battery_soc=52.0, price_now=0.42, now=W0,
         ),
         cfg, EngineState(),
     )
-    assert d.grid_charging is True
-    assert d.peak_reason_key == "grid_charge_ready"
-    # Still a *ceiling-aware* import: the setpoint is house + charge rate, capped.
-    assert d.grid_setpoint_w == pytest.approx(2400.0)
+    assert d.reserve_day == "flat"
+    assert d.reserve_fill_soc == pytest.approx(60.0)
+    assert d.battery_refilling is True
+    assert d.grid_charging is False  # the refill owns the setpoint, not grid charging
+    assert d.grid_setpoint_w == pytest.approx(3700.0)
+    assert d.peak_reason_key == "peak_ready"
+    assert d.battery_min_soc == pytest.approx(52.0)  # held where it is, not spent
 
 
-def test_readiness_tops_up_only_to_its_own_level_outside_a_cheap_hour():
-    """Above the readiness level an expensive hour buys nothing — that is the point
-    of having two thresholds rather than one."""
-    cfg = _grid_charge_cfg(peak_ready_soc=60.0)
+def test_the_dark_day_reserve_does_nothing_at_or_below_the_shaving_reserve():
+    cfg = _grid_charge_cfg(peak_ready_soc=50.0, shaving_reserve_soc=50.0)
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=70.0, price_now=0.42, pv_forecast_kwh=2.0, now=W0,
+            battery_soc=52.0, price_now=0.42, now=W0,
         ),
         cfg, EngineState(),
     )
-    assert d.grid_charging is False
+    assert d.reserve_day == ""
+    assert d.battery_refilling is False
+    assert d.grid_setpoint_w == pytest.approx(50.0)
 
 
-def test_readiness_is_ignored_when_peak_protection_is_off():
+def test_the_dark_day_reserve_is_ignored_when_peak_protection_is_off():
     """It exists to keep the guard supplied; with nothing to defend it must not buy."""
     cfg = _grid_charge_cfg(peak_ready_soc=60.0, peak_guard_enabled=False)
     d = decide(
@@ -2834,22 +2837,170 @@ def test_readiness_is_ignored_when_peak_protection_is_off():
         cfg, EngineState(),
     )
     assert d.grid_charging is False
+    assert d.battery_refilling is False
 
 
-def test_a_cheap_hour_still_fills_deeper_than_the_readiness_level():
-    """Readiness is a floor, not a cap: the cheap-hour target still wins when it is
-    higher, or turning readiness on would make cheap hours buy *less*."""
-    cfg = _grid_charge_cfg(peak_ready_soc=60.0, dark_day_target_soc=80.0)
+# --- The reserve plan: stock for a dark day, room for a bright one -------------------
+#
+# Chris's numbers: a 30.5 kWh pack, 10.5 kWh of PV the house uses as it comes (his
+# median, Sep–Nov 2026), shaving reserve 50 %, dark-day reserve 90 %.
+
+def _plan_cfg(**kw) -> "engine.EngineConfig":
+    base = dict(
+        peak_guard_enabled=True, shaving_reserve_soc=50.0, peak_ready_soc=90.0,
+        battery_capacity_kwh=30.5, solar_self_use_kwh=10.5, local_tz=VIENNA,
+    )
+    base.update(kw)
+    return EngineConfig(**base)
+
+
+def _at_local(hour: int, day: int = 7) -> datetime:
+    return datetime(2026, 11, day, hour, 0, tzinfo=VIENNA).astimezone(timezone.utc)
+
+
+def _plan(cfg, state=None, **kw):
+    state = state if state is not None else EngineState()
+    return engine.reserve_plan(cfg, _inputs(**kw), state)
+
+
+def test_the_night_before_a_dark_day_stocks_the_battery_to_the_top():
+    p = _plan(_plan_cfg(), now=_at_local(22), sun_up=False, pv_forecast_kwh=4.0)
+    assert p.day == "tomorrow"
+    assert p.forecast_kwh == pytest.approx(4.0)
+    assert p.hold_soc == pytest.approx(90.0)
+    assert p.fill_soc == pytest.approx(90.0)
+
+
+def test_the_night_before_a_bright_day_leaves_the_sun_its_room():
+    # 22 kWh − 10.5 used as it comes = 11.5 kWh of surplus = 37.7 % of the pack.
+    p = _plan(_plan_cfg(), now=_at_local(22), sun_up=False, pv_forecast_kwh=22.0)
+    assert p.hold_soc == pytest.approx(100.0 - 100.0 * 11.5 / 30.5)
+    assert p.fill_soc == pytest.approx(p.hold_soc)
+    # A summer-bright day wants more room than there is: the shaving reserve, i.e.
+    # exactly what the battery did before there was a plan.
+    p = _plan(_plan_cfg(), now=_at_local(22), sun_up=False, pv_forecast_kwh=40.0)
+    assert p.hold_soc == pytest.approx(50.0)
+
+
+def test_after_midnight_the_coming_day_is_today():
+    """"Tomorrow" at 02:00 is the day *after* the one about to start."""
+    p = _plan(_plan_cfg(), now=_at_local(2), sun_up=False,
+              pv_forecast_today_kwh=4.0, pv_forecast_kwh=30.0)
+    assert p.day == "today"
+    assert p.hold_soc == pytest.approx(90.0)
+
+
+def test_with_only_tomorrow_mapped_the_evening_reading_carries_past_midnight():
+    cfg = _plan_cfg()
     state = EngineState()
+    evening = _inputs(now=_at_local(22, day=6), sun_up=False, pv_forecast_kwh=4.0)
+    engine._note_solar_forecast(evening, cfg, state)
+    # 02:00 on the 7th: the sensor now reads the 8th (bright) — the plan must still
+    # be preparing for the dark 7th.
+    p = _plan(cfg, state, now=_at_local(2), sun_up=False, pv_forecast_kwh=30.0)
+    assert p.forecast_kwh == pytest.approx(4.0)
+    assert p.hold_soc == pytest.approx(90.0)
+    # A reading for some other night is no evidence about this one: fall back to
+    # the flat level, the pessimistic case.
+    p = _plan(cfg, EngineState(), now=_at_local(2), sun_up=False, pv_forecast_kwh=30.0)
+    assert p.day == "flat"
+    assert p.hold_soc == pytest.approx(90.0)
+
+
+def test_by_day_it_buys_only_what_the_sun_will_not_deliver():
+    """A bright today before a dark tomorrow, at 13:00.
+
+    Tonight wants 90 %. The rest of today brings 6 kWh, of which the house uses its
+    share (10.5 × 6/22 kWh) — the other 3.1 kWh, 10.3 % of the pack, is the sun's.
+    So the refill buys to 79.7 % and the afternoon does the rest.
+    """
+    p = _plan(_plan_cfg(), now=_at_local(13), sun_up=True, pv_forecast_today_kwh=22.0,
+              pv_forecast_remaining_kwh=6.0, pv_forecast_kwh=4.0)
+    still_room = 100.0 * (6.0 - 10.5 * 6.0 / 22.0) / 30.5
+    assert p.fill_soc == pytest.approx(90.0 - still_room)
+    # …and holds what it has meanwhile: the stock is for tonight, not the afternoon.
+    assert p.hold_soc == pytest.approx(p.fill_soc)
+
+
+def test_a_dark_day_keeps_its_stock_even_before_a_bright_tomorrow():
+    """Bought last night for today's peaks: the afternoon doesn't get to spend it.
+    The release comes at sunset, when the coming day becomes tomorrow."""
+    cfg = _plan_cfg()
+    day = _plan(cfg, now=_at_local(13), sun_up=True, pv_forecast_today_kwh=3.0,
+                pv_forecast_remaining_kwh=1.0, pv_forecast_kwh=25.0)
+    assert day.hold_soc == pytest.approx(90.0)
+    assert day.fill_soc == pytest.approx(100.0 - 100.0 * 14.5 / 30.5)  # tomorrow's
+    night = _plan(cfg, now=_at_local(18), sun_up=False, pv_forecast_today_kwh=3.0,
+                  pv_forecast_remaining_kwh=0.0, pv_forecast_kwh=25.0)
+    assert night.hold_soc == pytest.approx(100.0 - 100.0 * 14.5 / 30.5)
+
+
+def test_by_day_without_a_remaining_forecast_it_waits_for_the_night():
+    p = _plan(_plan_cfg(), now=_at_local(13), sun_up=True, pv_forecast_today_kwh=3.0,
+              pv_forecast_kwh=4.0)
+    assert p.fill_soc == pytest.approx(50.0)
+    assert p.hold_soc == pytest.approx(90.0)
+
+
+def test_without_sun_sun_the_clock_stands_in():
+    cfg = _plan_cfg()
+    assert engine._solar_clock(_inputs(now=_at_local(12)), cfg)[0] is True
+    assert engine._solar_clock(_inputs(now=_at_local(17)), cfg)[0] is False
+    # 05:00 is still before the coming day; 17:00 is after it.
+    assert engine._solar_clock(_inputs(now=_at_local(5)), cfg)[1] is True
+    assert engine._solar_clock(_inputs(now=_at_local(17)), cfg)[1] is False
+
+
+def test_without_a_battery_capacity_the_plan_cannot_size_room_and_stays_flat():
+    p = _plan(_plan_cfg(battery_capacity_kwh=0.0), now=_at_local(22), sun_up=False,
+              pv_forecast_kwh=30.0)
+    assert p.day == "flat"
+    assert p.hold_soc == pytest.approx(90.0)
+
+
+def test_a_dark_night_refills_at_the_budget_and_the_car_waits():
+    """Battery first, as for any refill (Chris, Nov 2026): a dark night can't fill
+    both within the limit, and the stock is what the peaks are defended with."""
+    cfg = _plan_cfg(
+        mode=ChargingMode.FAST, smart_enabled=True, max_current_a=16.0,
+        peak_soft_w=3300.0, peak_target_w=3700.0, peak_hard_w=3900.0,
+        peak_follow_month=False, grid_setpoint_w=50.0,
+    )
+    state = EngineState()
+    now = _at_local(22)
+    d = None
+    for k in range(3):  # a trustworthy reading must arrive before the guard acts
+        d = decide(
+            _inputs(
+                car_connected=True, car_actual_power_w=0.0, grid_power_w=500.0,
+                battery_power_w=0.0, battery_soc=60.0, sun_up=False,
+                pv_forecast_kwh=4.0, now=now + timedelta(seconds=10 * k),
+            ),
+            cfg, state,
+        )
+    assert d.battery_refilling is True
+    assert d.grid_setpoint_w == pytest.approx(3700.0)
+    assert d.should_charge is False
+    assert d.peak_reason_key == "peak_dark_day_car"
+    assert d.peak_reason_params["forecast"] == "4"
+    assert d.peak_reason_params["reserve"] == "90"
+    assert d.battery_min_soc == pytest.approx(60.0)  # never above the charge
+
+
+def test_a_cheap_hour_after_midnight_judges_today_not_the_day_after():
+    """The old bug: at 02:00 the "tomorrow" sensor already describes the day after."""
+    cfg = _grid_charge_cfg(local_tz=VIENNA)
     d = decide(
         _inputs(
             car_connected=False, grid_power_w=400.0, battery_power_w=0.0,
-            battery_soc=70.0, price_now=0.08, pv_forecast_kwh=2.0, now=W0,
+            battery_soc=55.0, price_now=0.08, sun_up=False, now=_at_local(2),
+            pv_forecast_today_kwh=30.0, pv_forecast_kwh=2.0,
         ),
-        cfg, state,
+        cfg, EngineState(),
     )
-    assert d.grid_charging is True
-    assert d.peak_reason_key == "grid_charge_dark"
+    # Today is bright: 55 % is already past the bright-day target.
+    assert d.grid_charging is False
+    assert d.peak_reason_key == "grid_charge_full"
 
 
 def test_stocking_up_buys_at_any_price_and_holds_what_it_bought():

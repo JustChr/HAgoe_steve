@@ -81,7 +81,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
 
 
@@ -161,6 +161,14 @@ class ChargerInputs:
     # sensor. Used by cheap-hour grid charging to decide *how deep* to fill the home
     # battery — not whether to: see ``bright_day_target_soc`` / ``dark_day_target_soc``.
     pv_forecast_kwh: float | None = None
+    # …and today's: the whole day, and what is still to come of it. "Tomorrow" alone
+    # describes the wrong day after midnight, and says nothing about whether the sun
+    # still has work to do this afternoon. Both optional; see :func:`reserve_plan`.
+    pv_forecast_today_kwh: float | None = None
+    pv_forecast_remaining_kwh: float | None = None
+    # Whether the sun is up (Home Assistant's ``sun.sun``). None = unknown, and the
+    # local clock stands in for it — see :func:`_solar_clock`.
+    sun_up: bool | None = None
     # Energy delivered in the running session (kWh), anchored at plug-in by the
     # coordinator. Feeds the departure plan (remaining = target − delivered).
     session_delivered_kwh: float | None = None
@@ -262,15 +270,25 @@ class EngineConfig:
     bright_day_target_soc: float = 40.0  # stop here when tomorrow looks good
     dark_day_target_soc: float = 80.0  # …and fill to here when it doesn't
     pv_forecast_low_kwh: float = 8.0  # below this, tomorrow counts as "dark"
-    # --- Keeping the battery able to shave ------------------------------------------
-    # Cheap hours first, then any hour: the two targets above are what a *cheap* hour
-    # fills to, and this is the level below which the battery is topped up at **any**
-    # price. In a December week the binding constraint is not what the energy costs,
-    # it is having any stored energy at all — a pack sitting on its floor defends
-    # nothing, and the five cheap midday hours do not keep up with a house that draws
-    # 30–58 kWh a day against ~1 kWh of PV. Only consulted while peak protection is
-    # on; 0 disables it, which is exactly the old behaviour.
+    # --- The reserve on a dark day -------------------------------------------------
+    # How full to keep the home battery for the peaks when little sun is coming. In a
+    # December week the binding constraint is not what the energy costs, it is having
+    # any stored energy at all — a pack sitting on its floor defends nothing, and the
+    # house draws 30–58 kWh a day against ~1 kWh of PV.
+    #
+    # With a solar forecast this is the *top* of a reserve that follows the forecast
+    # (see :func:`reserve_plan`): the battery is held and refilled up to it on a dark
+    # day, and only as high as leaves room for the sun on a bright one. Without a
+    # forecast it is a flat level. Only consulted while peak protection is on; at or
+    # below the shaving reserve it does nothing, which is exactly the old behaviour.
+    #
+    # The field kept its old name (it was "Keep ready for peaks above", v5.6) so the
+    # number entity, its restored value and the card all carry over unchanged.
     peak_ready_soc: float = 0.0
+    # The PV the house uses straight away on a sunny day (kWh), which is therefore no
+    # room the battery has to keep free. 0 counts the whole forecast as room — the
+    # least the plan will ever buy.
+    solar_self_use_kwh: float = 0.0
     # --- Stocking up before a known event --------------------------------------------
     # The user knows tonight is a sauna; the brain cannot. While this is set the
     # battery fills toward its target at any price *and is held there* — ordinary
@@ -396,6 +414,11 @@ class EngineState:
     # when the SoC is unknown: then the number may fall, never rise.
     house_min_soc: float | None = None
     grid_charging: bool = False
+    # The reserve plan's memory of tomorrow's forecast, read before midnight, for the
+    # setup that maps no forecast for *today*: after midnight the "tomorrow" sensor
+    # already describes the day after. ``solar_next_date`` is the local date it is for.
+    solar_next_date: str | None = None
+    solar_next_kwh: float | None = None
 
 
 @dataclass(slots=True)
@@ -486,6 +509,12 @@ class Decision:
     min_soc_skip: bool = False
     grid_charging: bool = False  # deliberately importing on a cheap price
     battery_refilling: bool = False  # bringing the battery back to the shaving reserve
+    # The reserve plan (see :func:`reserve_plan`), surfaced for the sensor and the
+    # test log. None while peak protection isn't steering the house.
+    reserve_hold_soc: float | None = None  # the level held against ordinary loads
+    reserve_fill_soc: float | None = None  # the level the refill buys up to
+    reserve_forecast_kwh: float | None = None  # the forecast it read
+    reserve_day: str = ""  # "today" | "tomorrow" | "flat" | "" (off)
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
@@ -1344,6 +1373,23 @@ _REASON_TEMPLATES: dict[str, str] = {
         "Stocking up for tonight — filling the home battery from {soc}% to "
         "{reserve}% first, the car continues once it's there"
     ),
+    "peak_dark_day": (
+        "Little sun on the way ({forecast} kWh forecast) — filling the home battery "
+        "from {soc}% to {reserve}% for the peaks, the grid carries up to {grid} kW "
+        "within the {target} kW limit"
+    ),
+    "peak_dark_day_car": (
+        "Little sun on the way ({forecast} kWh forecast) — filling the home battery "
+        "from {soc}% to {reserve}% first, the car continues once it's there"
+    ),
+    "peak_ready": (
+        "Keeping the home battery ready for peaks — filling it from {soc}% to "
+        "{reserve}%, the grid carries up to {grid} kW within the {target} kW limit"
+    ),
+    "peak_ready_car": (
+        "Keeping the home battery ready for peaks — filling it from {soc}% to "
+        "{reserve}% first, the car continues once it's there"
+    ),
     "peak_battery_empty": (
         "Heading for {projected} kW and the home battery is down to its {soc}% "
         "floor — nothing left to shave with"
@@ -1362,14 +1408,10 @@ _REASON_TEMPLATES: dict[str, str] = {
         "to fill the home battery to {target}%"
     ),
     "grid_charge_bright": (
-        "Cheap hour at {price}/kWh, but tomorrow looks bright — filling the home "
-        "battery only to {target}% so the sun has somewhere to go"
+        "Cheap hour at {price}/kWh, but plenty of sun is on the way — filling the "
+        "home battery only to {target}% so the sun has somewhere to go"
     ),
     "grid_charge_full": "Home battery at {soc}% — nothing left to buy this cheaply",
-    "grid_charge_ready": (
-        "Home battery down to {soc}% and too low to hold the peak limit — importing "
-        "{power} W to get it back to {target}%, cheap hour or not"
-    ),
     "grid_charge_stock_up": (
         "Stocking up for tonight — importing {power} W to fill the home battery to "
         "{target}% and holding it there"
@@ -1565,17 +1607,157 @@ def _peak_soc_floor(cfg: EngineConfig) -> float:
     return min(cfg.peak_min_soc, cfg.shaving_reserve_soc)
 
 
-def _resting_reserve_soc(cfg: EngineConfig) -> float:
+@dataclass(slots=True, frozen=True)
+class ReservePlan:
+    """Where the home battery rests between peaks, and how far a refill buys it up.
+
+    Two numbers because they part company by day: before a dark evening the battery
+    is *held* at what it has (the stock is for the peaks, not for the afternoon), but
+    only *bought* up to what the sun won't deliver on its own before sunset.
+    """
+
+    hold_soc: float
+    fill_soc: float
+    forecast_kwh: float | None = None  # the coming solar day's forecast it read
+    day: str = ""  # "today" | "tomorrow" | "flat" (no forecast) | "" (off)
+
+
+#: Without ``sun.sun`` the local clock stands in for it. A deliberately narrow day:
+#: a missing sun entity errs towards "night", where the plan buys what the forecast
+#: says it needs rather than waiting on a sun that may already be down.
+_FALLBACK_SUNRISE_H: int = 8
+_FALLBACK_SUNSET_H: int = 16
+
+
+def _solar_clock(inp: ChargerInputs, cfg: EngineConfig) -> tuple[bool, bool, date | None]:
+    """``(sun_up, coming_is_today, local_date)`` — which solar day comes next.
+
+    The day the battery is preparing for runs from sunset to sunset, not midnight to
+    midnight: after dark it is tomorrow; once midnight has passed it is "today" by
+    the calendar, but the same day. Without a clock: night, and tomorrow.
+    """
+    if inp.now is None:
+        return False, False, None
+    local = inp.now.astimezone(cfg.local_tz) if cfg.local_tz is not None else inp.now
+    if inp.sun_up is not None:
+        up = inp.sun_up
+    else:
+        up = _FALLBACK_SUNRISE_H <= local.hour < _FALLBACK_SUNSET_H
+    return up, up or local.hour < 12, local.date()
+
+
+def _note_solar_forecast(inp: ChargerInputs, cfg: EngineConfig, state: EngineState) -> None:
+    """Remember tomorrow's forecast with the date it is for, while it still means that.
+
+    For a setup that maps only a "tomorrow" sensor: after midnight it already
+    describes the day after, and this is the only record of the day now coming.
+    """
+    _up, coming_today, local_date = _solar_clock(inp, cfg)
+    if inp.pv_forecast_kwh is not None and local_date is not None and not coming_today:
+        state.solar_next_date = (local_date + timedelta(days=1)).isoformat()
+        state.solar_next_kwh = inp.pv_forecast_kwh
+
+
+def _coming_day_forecast(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState
+) -> float | None:
+    """The forecast (kWh) for the solar day coming next, or None if nobody knows it."""
+    _up, coming_today, local_date = _solar_clock(inp, cfg)
+    if not coming_today:
+        return inp.pv_forecast_kwh
+    if inp.pv_forecast_today_kwh is not None:
+        return inp.pv_forecast_today_kwh
+    if local_date is not None and state.solar_next_date == local_date.isoformat():
+        return state.solar_next_kwh
+    return None
+
+
+def _reserve_level(day_kwh: float, cfg: EngineConfig, low: float, high: float) -> float:
+    """How full the battery may be at sunrise and still take a day's surplus.
+
+    The surplus is what the house can't use the moment it is made: the forecast less
+    ``solar_self_use_kwh``. Whatever that comes to, as a share of the pack, is room
+    the sun needs — the rest is stock for the peaks.
+    """
+    room = 100.0 * max(0.0, day_kwh - cfg.solar_self_use_kwh) / cfg.battery_capacity_kwh
+    return _clamp(100.0 - room, low, high)
+
+
+def reserve_plan(cfg: EngineConfig, inp: ChargerInputs, state: EngineState) -> ReservePlan:
+    """The reserve the home battery is held at and refilled to — from the forecast.
+
+    On a flat tariff the battery has two jobs and only two: keep room for the sun,
+    and keep stock for the peaks. Grid energy bought into it costs what it would
+    have cost later, less the round trip, so the only things worth planning are
+    *how much* and *when*:
+
+    * **The level** is ``100 % − room the coming solar day's surplus needs``, between
+      the shaving reserve and the dark-day reserve (``peak_ready_soc``). A dark day
+      leaves no room to keep, so the pack is stocked to the top; a bright one keeps
+      it near the shaving reserve, which is exactly the old behaviour.
+    * **By night** the battery is held and refilled to that level — the house is
+      quiet, so the peak budget has the most room for it.
+    * **By day** it is held at the day's level but only *bought* up to tonight's
+      level less what the sun will still deliver today. Buying in the morning what
+      the afternoon brings for free is the one waste this can cause.
+
+    Without a forecast (or a battery capacity to size the room with) the level is
+    flat at the dark-day reserve: the old "keep ready for peaks", plus the hold.
+    """
+    low = cfg.shaving_reserve_soc
+    high = cfg.peak_ready_soc
+    if not cfg.peak_guard_enabled or high <= low:
+        return ReservePlan(low, low)
+    coming = _coming_day_forecast(inp, cfg, state)
+    if coming is None or cfg.battery_capacity_kwh <= 0.0:
+        return ReservePlan(high, high, None, "flat")
+
+    sun_up, coming_today, _date = _solar_clock(inp, cfg)
+    hold = _reserve_level(coming, cfg, low, high)
+    fill = hold
+    if sun_up:
+        remaining = inp.pv_forecast_remaining_kwh
+        tomorrow = inp.pv_forecast_kwh
+        if remaining is None or tomorrow is None:
+            # Nothing to tell how much the sun still brings: buy nothing beyond the
+            # shaving reserve by day, and let the night stock up.
+            fill = low
+        else:
+            today = inp.pv_forecast_today_kwh
+            share = min(1.0, remaining / today) if today and today > 0.0 else 1.0
+            still_room = (
+                100.0
+                * max(0.0, remaining - cfg.solar_self_use_kwh * share)
+                / cfg.battery_capacity_kwh
+            )
+            fill = _clamp(
+                _reserve_level(tomorrow, cfg, low, high) - still_room, low, high
+            )
+        hold = max(hold, fill)
+    return ReservePlan(hold, fill, coming, "today" if coming_today else "tomorrow")
+
+
+def _resting_reserve_soc(cfg: EngineConfig, plan: ReservePlan | None = None) -> float:
     """The minimum SoC to hold while *not* actively shaving.
 
-    Stocking up raises it, and that second half is what makes stocking up work at
-    all: filling the battery before a known event and then letting the ordinary
-    afternoon serve itself from the pack donates the whole stock to a few hours the
-    grid could have carried at a third of the ceiling.
+    The reserve plan sets it (the shaving reserve when there is none). Stocking up
+    raises it, and that second half is what makes stocking up work at all: filling
+    the battery before a known event and then letting the ordinary afternoon serve
+    itself from the pack donates the whole stock to a few hours the grid could have
+    carried at a third of the ceiling.
     """
+    base = plan.hold_soc if plan is not None else cfg.shaving_reserve_soc
     if cfg.stock_up:
-        return max(cfg.shaving_reserve_soc, cfg.stock_up_target_soc)
-    return cfg.shaving_reserve_soc
+        return max(base, cfg.stock_up_target_soc)
+    return base
+
+
+def _refill_goal_soc(cfg: EngineConfig, plan: ReservePlan | None = None) -> float:
+    """The SoC a refill buys the battery up to — the plan's, or the stock-up target."""
+    base = plan.fill_soc if plan is not None else cfg.shaving_reserve_soc
+    if cfg.stock_up:
+        return max(base, cfg.stock_up_target_soc)
+    return base
 
 
 def _effective_targets(
@@ -2360,6 +2542,7 @@ def _apply_tier_levers(
     state: EngineState,
     window: PeakWindow,
     tier: str,
+    plan: ReservePlan | None = None,
 ) -> tuple[float | None, bool]:
     """The tier ladder's levers — used when the battery's power isn't mapped.
 
@@ -2375,7 +2558,7 @@ def _apply_tier_levers(
     # and drops to the floor while shaving. That drop is what actually releases the
     # headroom — and it works with no car anywhere near the house.
     decision.battery_min_soc = (
-        _peak_soc_floor(cfg) if engaged else _resting_reserve_soc(cfg)
+        _peak_soc_floor(cfg) if engaged else _resting_reserve_soc(cfg, plan)
     )
     decision.grid_setpoint_w = 0.0 if tier == "hard" else cfg.grid_setpoint_w
     if engaged:
@@ -2426,6 +2609,7 @@ def _refill_setpoint(
     state: EngineState,
     window: PeakWindow,
     share: _HouseShare,
+    plan: ReservePlan | None = None,
 ) -> float | None:
     """The grid setpoint that brings the battery back to its shaving reserve, or None.
 
@@ -2447,14 +2631,18 @@ def _refill_setpoint(
     reserve and runs until it is back at it, so a battery resting on the reserve
     doesn't start a refill for every percent the house sips.
 
-    Stocking up is the same job with a higher goal — :func:`_resting_reserve_soc`
+    Stocking up is the same job with a higher goal — :func:`_refill_goal_soc`
     is the stock-up target while the switch is on — and is done the same way (Chris,
     Nov 2026): at the target, battery first. The old way, cheap-hour charging capped
     at the soft line, left the house almost nothing to fill with; it only ever
     reached its target through the ESS's own full-power recharge.
+
+    So is the reserve plan's dark-day stock (:func:`reserve_plan`), and with the
+    same priority: the battery first, the departure guarantee excepted (Chris, Nov
+    2026 — on a dark night with the car plugged in, the budget can't fill both).
     """
     soc = inp.battery_soc
-    reserve = _resting_reserve_soc(cfg)
+    reserve = _refill_goal_soc(cfg, plan)
     if soc is None or soc >= reserve:
         state.peak_refilling = False
     elif not state.peak_refilling and soc < reserve - _GRID_CHARGE_RESUME_BAND_PCT:
@@ -2507,6 +2695,7 @@ def _apply_house_share(
     window: PeakWindow,
     tier: str,
     share: _HouseShare,
+    plan: ReservePlan | None = None,
 ) -> tuple[float | None, bool]:
     """The levers when the house share is known. Returns ``(capped_a, paused)``.
 
@@ -2531,7 +2720,7 @@ def _apply_house_share(
     Below the reserve after a shave, the refill (:func:`_refill_setpoint`) takes the
     setpoint and the car waits for it: the battery comes first.
     """
-    refill_w = _refill_setpoint(decision, inp, cfg, state, window, share)
+    refill_w = _refill_setpoint(decision, inp, cfg, state, window, share, plan)
     decision.battery_refilling = refill_w is not None
     if share.engaged:
         decision.battery_min_soc = _peak_soc_floor(cfg)
@@ -2542,7 +2731,7 @@ def _apply_house_share(
         # The resting reserve — capped at the battery's charge by _limit_min_soc, so
         # after a shave it holds the battery where it is rather than ordering a
         # recharge. The refill below is what brings it back up.
-        decision.battery_min_soc = _resting_reserve_soc(cfg)
+        decision.battery_min_soc = _resting_reserve_soc(cfg, plan)
         decision.grid_setpoint_w = (
             refill_w if refill_w is not None else cfg.grid_setpoint_w
         )
@@ -2605,15 +2794,28 @@ def _share_status_reason(
     *,
     paused: bool,
     refill_w: float | None = None,
+    plan: ReservePlan | None = None,
 ) -> tuple[str, str, dict[str, str]]:
     """The status line when the house share is known."""
     if not share.engaged and refill_w is not None:
-        goal = _resting_reserve_soc(cfg)
+        goal = _refill_goal_soc(cfg, plan)
         params = dict(
             soc=f"{inp.battery_soc:.0f}" if inp.battery_soc is not None else "?",
             reserve=f"{goal:.0f}",
         )
-        key = "peak_stock_up" if goal > cfg.shaving_reserve_soc else "peak_refill"
+        planned = plan.fill_soc if plan is not None else cfg.shaving_reserve_soc
+        if cfg.stock_up and cfg.stock_up_target_soc >= planned:
+            key = "peak_stock_up"
+        elif goal > cfg.shaving_reserve_soc and plan is not None:
+            # Buying above the shaving reserve is the plan's doing: say why — the
+            # sun that isn't coming, or (without a forecast) the flat level.
+            if plan.forecast_kwh is not None:
+                key = "peak_dark_day"
+                params["forecast"] = f"{plan.forecast_kwh:.0f}"
+            else:
+                key = "peak_ready"
+        else:
+            key = "peak_refill"
         if paused:
             return _reason(f"{key}_car", **params)
         return _reason(
@@ -2703,24 +2905,31 @@ def apply_peak_guard(
     # Peak protection answers to its own switch, not to Smart control: a demand
     # charge is money whether or not the brain is currently driving the wallbox.
     decision.house_control = True
+    plan = reserve_plan(cfg, inp, state)
+    decision.reserve_hold_soc = plan.hold_soc
+    decision.reserve_fill_soc = plan.fill_soc
+    decision.reserve_forecast_kwh = plan.forecast_kwh
+    decision.reserve_day = plan.day
     share = _house_share(inp, cfg, state, window)
     if share is None:
         # No refill without the battery's power: nothing could tell it apart from
         # a shave. The minimum SoC is still capped at the charge (_limit_min_soc).
         state.peak_refilling = False
         state.peak_refill_setpoint_w = None
-        capped_a, paused = _apply_tier_levers(decision, inp, cfg, state, window, tier)
+        capped_a, paused = _apply_tier_levers(
+            decision, inp, cfg, state, window, tier, plan
+        )
         decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
             _peak_status_reason(inp, cfg, window, tier, capped_a, paused=paused)
         )
     else:
         capped_a, paused = _apply_house_share(
-            decision, inp, cfg, state, window, tier, share
+            decision, inp, cfg, state, window, tier, share, plan
         )
         decision.peak_reason, decision.peak_reason_key, decision.peak_reason_params = (
             _share_status_reason(
                 inp, cfg, window, tier, share, capped_a, paused=paused,
-                refill_w=state.peak_refill_setpoint_w,
+                refill_w=state.peak_refill_setpoint_w, plan=plan,
             )
         )
 
@@ -2747,15 +2956,29 @@ def apply_peak_guard(
     return decision
 
 
-def _grid_charge_target(cfg: EngineConfig, inp: ChargerInputs) -> float:
-    """How deep to fill the home battery from the grid, given tomorrow's forecast.
+def _grid_charge_forecast(
+    inp: ChargerInputs, cfg: EngineConfig, state: EngineState
+) -> float | None:
+    """The forecast a cheap hour judges the coming day by.
+
+    The coming *solar* day (:func:`_coming_day_forecast`): a cheap hour at 02:00
+    is the night before today, not before tomorrow, and a cheap hour at noon has
+    today's sun still ahead of it. A setup that maps only a "tomorrow" sensor keeps
+    reading that one where nothing better is known — the behaviour it always had.
+    """
+    coming = _coming_day_forecast(inp, cfg, state)
+    return coming if coming is not None else inp.pv_forecast_kwh
+
+
+def _grid_charge_target(cfg: EngineConfig, forecast_kwh: float | None) -> float:
+    """How deep to fill the home battery from the grid, given the coming day's sun.
 
     The forecast's job is not "is it winter" — it is *don't fill the battery from
-    the grid the night before a bright day*, where the sun would have done it for
-    free and the paid-for charge only leaves the PV nowhere to go. With no forecast
-    mapped we assume the pessimistic case, which is the safe one.
+    the grid before a bright day*, where the sun would have done it for free and
+    the paid-for charge only leaves the PV nowhere to go. With no forecast mapped we
+    assume the pessimistic case, which is the safe one.
     """
-    if inp.pv_forecast_kwh is None or inp.pv_forecast_kwh < cfg.pv_forecast_low_kwh:
+    if forecast_kwh is None or forecast_kwh < cfg.pv_forecast_low_kwh:
         return cfg.dark_day_target_soc
     return cfg.bright_day_target_soc
 
@@ -2776,37 +2999,39 @@ def _grid_charge_target(cfg: EngineConfig, inp: ChargerInputs) -> float:
 _GRID_CHARGE_RESUME_BAND_PCT: float = 2.0
 
 
-def _grid_charge_goal(cfg: EngineConfig, inp: ChargerInputs) -> tuple[float, str]:
-    """How full to fill the home battery right now, and why — cheapest hours first.
+def _grid_charge_goal(
+    cfg: EngineConfig, inp: ChargerInputs, state: EngineState
+) -> tuple[float, str]:
+    """How full to fill the home battery right now, and why.
 
-    Three reasons to buy, in descending order of urgency:
+    Two reasons to buy here:
 
     * **Stocking up** for an evening the user has told us about: fill to the stock-up
       target at any price.
-    * **Readiness**, while peak protection is on: below ``peak_ready_soc`` the pack is
-      too flat to defend the limit, and an unshaved quarter-hour costs more than the
-      difference between a cheap kilowatt-hour and an ordinary one.
     * **A cheap hour**, the original reason: fill to the bright/dark target.
 
-    Returns ``(0.0, "")`` when none of them applies, which is the common case and
-    means "don't touch the setpoint".
+    Keeping the battery ready for peaks used to be a third (``peak_ready_soc``, a flat
+    level bought at any price). It is the reserve plan's job now — held as well as
+    filled, and lowered before a bright day — and runs through peak protection's
+    refill (:func:`reserve_plan`, :func:`_refill_setpoint`).
+
+    Returns ``(0.0, "")`` when neither applies, which is the common case and means
+    "don't touch the setpoint".
     """
-    ready_soc = cfg.peak_ready_soc if cfg.peak_guard_enabled else 0.0
     if cfg.stock_up:
-        return max(cfg.stock_up_target_soc, ready_soc), "stock_up"
+        return cfg.stock_up_target_soc, "stock_up"
     if inp.price_now is not None and inp.price_now <= cfg.cheap_price:
-        cheap_target = _grid_charge_target(cfg, inp)
-        if cheap_target >= ready_soc:
-            key = (
-                "grid_charge_bright"
-                if cheap_target == cfg.bright_day_target_soc
-                and inp.pv_forecast_kwh is not None
-                and cfg.bright_day_target_soc != cfg.dark_day_target_soc
-                else "grid_charge_dark"
-            )
-            return cheap_target, key
-        return ready_soc, "ready"
-    return ready_soc, "ready"
+        forecast = _grid_charge_forecast(inp, cfg, state)
+        cheap_target = _grid_charge_target(cfg, forecast)
+        key = (
+            "grid_charge_bright"
+            if cheap_target == cfg.bright_day_target_soc
+            and forecast is not None
+            and cfg.bright_day_target_soc != cfg.dark_day_target_soc
+            else "grid_charge_dark"
+        )
+        return cheap_target, key
+    return 0.0, ""
 
 
 def apply_grid_charge(
@@ -2819,10 +3044,10 @@ def apply_grid_charge(
 ) -> Decision:
     """Buy energy into the home battery — cheaply when we can, anyway when we must.
 
-    Three reasons to import, resolved by :func:`_grid_charge_goal`: a cheap hour, a
-    battery too flat to defend the peak limit, or an evening the user has told us to
-    stock up for. Only the first is about price; the other two are about *having*
-    stored energy, which in December is the scarcer thing.
+    Two reasons to import, resolved by :func:`_grid_charge_goal`: a cheap hour, or
+    an evening the user has told us to stock up for. Only the first is about price;
+    the second is about *having* stored energy, which in December is the scarcer
+    thing.
 
     On an ESS the grid setpoint *is* total grid import, so what we command here is
     exactly the quantity a capacity tariff bills — which is the whole trick. Importing
@@ -2858,7 +3083,7 @@ def apply_grid_charge(
         state.grid_charging = False
         return decision
 
-    target_soc, why = _grid_charge_goal(cfg, inp)
+    target_soc, why = _grid_charge_goal(cfg, inp, state)
     soc = inp.battery_soc
     if soc is None or target_soc <= 0.0:
         state.grid_charging = False
@@ -2898,11 +3123,6 @@ def apply_grid_charge(
     if why == "stock_up":
         params = dict(power=f"{setpoint_w:.0f}", target=f"{target_soc:.0f}")
         key = "grid_charge_stock_up"
-    elif why == "ready":
-        params = dict(
-            soc=f"{soc:.0f}", power=f"{setpoint_w:.0f}", target=f"{target_soc:.0f}"
-        )
-        key = "grid_charge_ready"
     else:
         params = dict(
             price=f"{inp.price_now:.3f}",
@@ -3160,6 +3380,7 @@ def decide(
     """
     if state is None:
         state = EngineState()
+    _note_solar_forecast(inp, cfg, state)
 
     window = update_peak_window(
         inp.now, inp.grid_power_w, cfg, state, inp.grid_import_kwh

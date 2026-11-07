@@ -31,6 +31,8 @@ from .const import (
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
     CONF_PV_FORECAST,
+    CONF_PV_FORECAST_REMAINING,
+    CONF_PV_FORECAST_TODAY,
     CONF_PV_POWER,
     CONF_VICTRON_MIN_SOC,
     CONF_VICTRON_SETPOINT,
@@ -180,6 +182,16 @@ def _energy_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_PV_FORECAST,
                 description={"suggested_value": defaults.get(CONF_PV_FORECAST)},
+            ): _PV_FORECAST_ENTITY,
+            vol.Optional(
+                CONF_PV_FORECAST_TODAY,
+                description={"suggested_value": defaults.get(CONF_PV_FORECAST_TODAY)},
+            ): _PV_FORECAST_ENTITY,
+            vol.Optional(
+                CONF_PV_FORECAST_REMAINING,
+                description={
+                    "suggested_value": defaults.get(CONF_PV_FORECAST_REMAINING)
+                },
             ): _PV_FORECAST_ENTITY,
         }
     )

@@ -69,16 +69,20 @@ See [`docs/concept`](#concept) for the full design.
   battery capacity* and the grid's share rises gradually when the battery won't last, instead of
   the whole load landing on the grid the moment the battery is empty.
 - **Cheap-hour grid charging:** while the price is low, buy energy into the home battery and
-  run the house from the grid, filling deep when tomorrow looks dark and stopping early when
-  it looks bright so the sun still has somewhere to go. Capped by the peak budget, so it
+  run the house from the grid, filling deep when the coming day looks dark and stopping early
+  when it looks bright so the sun still has somewhere to go. Capped by the peak budget, so it
   imports steadily instead of in the spike that would set a monthly peak — the cheap energy
   without the demand charge.
-- **Keep the battery able to shave — cheapest hours first, then any hour:** a pack sitting on
-  its floor defends nothing, and in a dark winter week the few cheap hours a day don't keep up
-  with the house. Set *Keep ready for peaks above* and the battery is topped up below that
-  level whatever the price, because an unshaved quarter-hour costs more than the difference
-  between a cheap kilowatt-hour and an ordinary one. It's a floor, not a cap: cheap hours
-  still fill deeper. Off by default.
+- **Stock for a dark day — the reserve follows the solar forecast:** a pack sitting on its
+  reserve before a dark evening has little to shave with, and one sauna then sets the month.
+  Set *Reserve on a dark day* (say 90 %) and map your solar forecast: before a dark day the
+  battery is filled up to it overnight, within the peak budget, and held for the evening; before
+  a bright one it rests only as high as leaves the sun its room, so nothing is bought that the
+  sun would have delivered. *Solar the house uses directly* tells it how much of the forecast
+  the house uses the moment it is made. On three real autumn weeks this held every quarter-hour
+  under 3.7 kW (as shipped: 98 over, worst 6.1 kW) for €0.93 more energy. The car waits while
+  the battery fills (a departure you've planned still wins). Without a forecast it is a flat
+  level. Off by default.
 - **Stock up for tonight:** you know tonight is the sauna; the brain doesn't. One switch fills
   the battery toward its target at any price **and holds it there**, so the afternoon's
   ordinary load comes off the grid — far below your limit anyway — instead of quietly spending
@@ -143,7 +147,10 @@ The config flow has three steps:
    from the grid). Optionally your grid operator's **import energy counter** (a smart-meter
    reader's total-import register): the tariff bills each quarter-hour's import energy, so with it
    the quarter-hour figure and the month's peak come from the meter you're billed on. The price forecast is auto-detected from the sensor (Nordpool, EPEX Spot,
-   EnergyZero, Tibber, …) — leave the override blank unless detection fails.
+   EnergyZero, Tibber, …) — leave the override blank unless detection fails. For the solar
+   forecast map all three of your forecast integration's daily sensors (Solcast and
+   Forecast.Solar both have them): **tomorrow**, **today**, and **the rest of today** — after
+   midnight the *tomorrow* sensor already describes the day after.
 2. **go-e charger** — the charger's **MQTT base topic** (e.g. `go-eCharger/123456`),
    auto-discovered from your broker so you can pick it from a list, plus grid voltage and phase
    count. The integration then creates the wallbox entities (current, phases, force, car state,
@@ -236,8 +243,9 @@ committed to `custom_components/goe_steve/www/` and rebuilt with
 | `number` Home battery capacity | Usable kWh; lets a heavy load lean on the grid earlier when the battery won't last (0 = shave until the floor) |
 | `number` Normal grid import | Your resting ESS grid setpoint (W) |
 | `number` Cheap-hour import power | What a cheap hour may import on top of the house load |
-| `number` Cheap-hour target, bright/dark day | How deep to fill the battery, chosen by tomorrow's solar forecast |
-| `number` Keep ready for peaks above | Below this the battery is topped up at *any* price, so it can still shave (0 = off) |
+| `number` Cheap-hour target, bright/dark day | How deep to fill the battery, chosen by the coming day's solar forecast |
+| `number` Reserve on a dark day | The top of the reserve plan: before a dark day the battery is filled up to it within the peak budget and held there; before a bright one it rests lower, leaving the sun its room. Without a forecast a flat level (0 = off) |
+| `number` Solar the house uses directly | kWh of a sunny day's PV the house uses as it comes — no room the battery has to keep for it (0 = count the whole forecast) |
 | `switch` Stock up for tonight | Fill for a big evening and hold it, instead of letting the afternoon spend it. With peak protection on it fills at the peak target and the car waits until the battery is there |
 | `number` Stock-up target | How full that fills the battery (95%) |
 

@@ -15,7 +15,9 @@
           "price_forecast_attr": "Price forecast attribute (optional)",
           "victron_setpoint_entity": "Grid setpoint number (optional)",
           "victron_min_soc_entity": "Battery minimum-SoC number (optional)",
-          "pv_forecast_entity": "Solar forecast for tomorrow (optional)"
+          "pv_forecast_entity": "Solar forecast for tomorrow (optional)",
+          "pv_forecast_today_entity": "Solar forecast for today (optional)",
+          "pv_forecast_remaining_entity": "Solar forecast for the rest of today (optional)"
         },
         "data_description": {
           "grid_power_entity": "Your main meter's power. Positive = drawing from the grid, negative = exporting. This is how the brain detects surplus.",
@@ -28,7 +30,9 @@
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
           "victron_setpoint_entity": "A writable number that sets how much power your battery system draws from the grid (on a Victron ESS, the grid setpoint). Peak protection and cheap-hour charging steer it. Leave empty if you have none — everything else still works.",
           "victron_min_soc_entity": "A writable number holding your battery system's minimum charge level. Peak protection keeps it at your peak reserve and lowers it briefly so the battery can cover a peak. This is what actually frees the headroom, so without it a peak can only be shaved by easing off the car.",
-          "pv_forecast_entity": "Expected solar production tomorrow in kWh (Forecast.Solar, Solcast, …). Decides how deep to fill the battery from cheap grid: there is no point paying for a charge the sun would have given you."
+          "pv_forecast_entity": "Expected solar production tomorrow in kWh (Forecast.Solar, Solcast, …). Tells the brain how much room the coming day's sun needs in the home battery: before a dark day it keeps more in stock for the peaks, before a bright one it leaves the sun its room — and a cheap hour never pays for a charge the sun would have given you. Add today's two forecasts as well: after midnight this sensor already describes the day after.",
+          "pv_forecast_today_entity": "Expected solar production for the whole of today in kWh — the 'today' sensor of the same forecast. After midnight the coming day is today, so this is what the battery plans by until sunset.",
+          "pv_forecast_remaining_entity": "Solar production still expected today in kWh (Solcast: 'forecast remaining today', Forecast.Solar: 'estimated energy production - remaining today'). By day the brain only buys what the sun won't deliver before sunset."
         }
       },
       "charger": {
@@ -82,6 +86,8 @@
           "victron_setpoint_entity": "Grid setpoint number (optional)",
           "victron_min_soc_entity": "Battery minimum-SoC number (optional)",
           "pv_forecast_entity": "Solar forecast for tomorrow (optional)",
+          "pv_forecast_today_entity": "Solar forecast for today (optional)",
+          "pv_forecast_remaining_entity": "Solar forecast for the rest of today (optional)",
           "goe_base_topic": "go-e charger base topic",
           "voltage": "Grid voltage per phase",
           "phases": "Phases used for charging",
@@ -102,7 +108,9 @@
           "price_forecast_attr": "Leave blank — auto-detected from your price sensor (Nordpool, EPEX Spot, EnergyZero and others). Only set this to override detection (the attribute name holding upcoming hourly prices).",
           "victron_setpoint_entity": "A writable number that sets how much power your battery system draws from the grid (on a Victron ESS, the grid setpoint). Peak protection and cheap-hour charging steer it. Leave empty if you have none — everything else still works.",
           "victron_min_soc_entity": "A writable number holding your battery system's minimum charge level. Peak protection keeps it at your peak reserve and lowers it briefly so the battery can cover a peak. This is what actually frees the headroom, so without it a peak can only be shaved by easing off the car.",
-          "pv_forecast_entity": "Expected solar production tomorrow in kWh (Forecast.Solar, Solcast, …). Decides how deep to fill the battery from cheap grid: there is no point paying for a charge the sun would have given you.",
+          "pv_forecast_entity": "Expected solar production tomorrow in kWh (Forecast.Solar, Solcast, …). Tells the brain how much room the coming day's sun needs in the home battery: before a dark day it keeps more in stock for the peaks, before a bright one it leaves the sun its room — and a cheap hour never pays for a charge the sun would have given you. Add today's two forecasts as well: after midnight this sensor already describes the day after.",
+          "pv_forecast_today_entity": "Expected solar production for the whole of today in kWh — the 'today' sensor of the same forecast. After midnight the coming day is today, so this is what the battery plans by until sunset.",
+          "pv_forecast_remaining_entity": "Solar production still expected today in kWh (Solcast: 'forecast remaining today', Forecast.Solar: 'estimated energy production - remaining today'). By day the brain only buys what the sun won't deliver before sunset.",
           "goe_base_topic": "The MQTT base topic of your go-e charger, e.g. go-eCharger/123456 (a leading slash is fine if your charger uses one). Pick it from the auto-discovered list, or type it.",
           "voltage": "Mains voltage per phase (≈230 V in the EU). Used to convert between amps and watts.",
           "phases": "How many phases charging uses by default when automatic phase switching is off."
@@ -199,7 +207,8 @@
       "cheap_charge_power": { "name": "Cheap-hour import power" },
       "bright_day_target_soc": { "name": "Cheap-hour target, bright day" },
       "dark_day_target_soc": { "name": "Cheap-hour target, dark day" },
-      "peak_ready_soc": { "name": "Keep ready for peaks above" },
+      "peak_ready_soc": { "name": "Reserve on a dark day" },
+      "solar_self_use": { "name": "Solar the house uses directly" },
       "stock_up_target_soc": { "name": "Stock-up target" }
     },
     "datetime": {

@@ -15,7 +15,9 @@
           "price_forecast_attr": "Attribut der Preisprognose (optional)",
           "victron_setpoint_entity": "Netz-Sollwert (optional)",
           "victron_min_soc_entity": "Minimaler Batteriestand (optional)",
-          "pv_forecast_entity": "Solarprognose für morgen (optional)"
+          "pv_forecast_entity": "Solarprognose für morgen (optional)",
+          "pv_forecast_today_entity": "Solarprognose für heute (optional)",
+          "pv_forecast_remaining_entity": "Solarprognose für den Rest von heute (optional)"
         },
         "data_description": {
           "grid_power_entity": "Leistung deines Hauptzählers. Positiv = Netzbezug, negativ = Einspeisung. Damit erkennt die Steuerung Überschuss.",
@@ -28,7 +30,9 @@
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "victron_setpoint_entity": "Eine beschreibbare Zahl, die festlegt, wie viel Leistung dein Batteriesystem aus dem Netz zieht (bei Victron ESS der Netz-Sollwert). Lastspitzenschutz und Günstig-Laden steuern sie. Leer lassen, wenn nicht vorhanden — alles andere funktioniert trotzdem.",
           "victron_min_soc_entity": "Eine beschreibbare Zahl mit dem minimalen Ladestand deines Batteriesystems. Der Lastspitzenschutz hält sie auf deiner Spitzenreserve und senkt sie kurz ab, damit die Batterie eine Spitze abfangen kann. Genau das gibt die Reserve frei — ohne sie lässt sich eine Spitze nur über das Auto abfedern.",
-          "pv_forecast_entity": "Erwartete Solarerzeugung morgen in kWh (Forecast.Solar, Solcast, …). Bestimmt, wie voll die Batterie aus günstigem Netzstrom geladen wird: für Strom zu zahlen, den die Sonne geschenkt hätte, lohnt nicht."
+          "pv_forecast_entity": "Erwartete Solarerzeugung morgen in kWh (Forecast.Solar, Solcast, …). Sagt dem Gehirn, wie viel Platz die Sonne des kommenden Tages in der Hausbatterie braucht: vor einem dunklen Tag hält es mehr Vorrat für Lastspitzen, vor einem hellen lässt es der Sonne ihren Platz — und eine günstige Stunde bezahlt nie eine Ladung, die die Sonne geschenkt hätte. Die beiden Prognosen für heute ebenfalls eintragen: nach Mitternacht beschreibt dieser Sensor schon den übernächsten Tag.",
+          "pv_forecast_today_entity": "Erwartete Solarerzeugung für den ganzen heutigen Tag in kWh — der 'heute'-Sensor derselben Prognose. Nach Mitternacht ist der kommende Tag heute; bis Sonnenuntergang plant die Batterie danach.",
+          "pv_forecast_remaining_entity": "Heute noch erwartete Solarerzeugung in kWh (Solcast: 'Prognose verbleibende Leistung heute', Forecast.Solar: 'geschätzte Energieproduktion - verbleibend heute'). Tagsüber kauft das Gehirn nur, was die Sonne bis Sonnenuntergang nicht mehr liefert."
         }
       },
       "charger": {
@@ -82,6 +86,8 @@
           "victron_setpoint_entity": "Netz-Sollwert (optional)",
           "victron_min_soc_entity": "Minimaler Batteriestand (optional)",
           "pv_forecast_entity": "Solarprognose für morgen (optional)",
+          "pv_forecast_today_entity": "Solarprognose für heute (optional)",
+          "pv_forecast_remaining_entity": "Solarprognose für den Rest von heute (optional)",
           "goe_base_topic": "go-e Basis-Topic",
           "voltage": "Netzspannung pro Phase",
           "phases": "Phasen für das Laden",
@@ -102,7 +108,9 @@
           "price_forecast_attr": "Leer lassen — wird automatisch aus dem Preissensor erkannt (Nordpool, EPEX Spot, EnergyZero u. a.). Nur ausfüllen, um die Erkennung zu überschreiben (Attributname mit den kommenden Stundenpreisen).",
           "victron_setpoint_entity": "Eine beschreibbare Zahl, die festlegt, wie viel Leistung dein Batteriesystem aus dem Netz zieht (bei Victron ESS der Netz-Sollwert). Lastspitzenschutz und Günstig-Laden steuern sie. Leer lassen, wenn nicht vorhanden — alles andere funktioniert trotzdem.",
           "victron_min_soc_entity": "Eine beschreibbare Zahl mit dem minimalen Ladestand deines Batteriesystems. Der Lastspitzenschutz hält sie auf deiner Spitzenreserve und senkt sie kurz ab, damit die Batterie eine Spitze abfangen kann. Genau das gibt die Reserve frei — ohne sie lässt sich eine Spitze nur über das Auto abfedern.",
-          "pv_forecast_entity": "Erwartete Solarerzeugung morgen in kWh (Forecast.Solar, Solcast, …). Bestimmt, wie voll die Batterie aus günstigem Netzstrom geladen wird: für Strom zu zahlen, den die Sonne geschenkt hätte, lohnt nicht.",
+          "pv_forecast_entity": "Erwartete Solarerzeugung morgen in kWh (Forecast.Solar, Solcast, …). Sagt dem Gehirn, wie viel Platz die Sonne des kommenden Tages in der Hausbatterie braucht: vor einem dunklen Tag hält es mehr Vorrat für Lastspitzen, vor einem hellen lässt es der Sonne ihren Platz — und eine günstige Stunde bezahlt nie eine Ladung, die die Sonne geschenkt hätte. Die beiden Prognosen für heute ebenfalls eintragen: nach Mitternacht beschreibt dieser Sensor schon den übernächsten Tag.",
+          "pv_forecast_today_entity": "Erwartete Solarerzeugung für den ganzen heutigen Tag in kWh — der 'heute'-Sensor derselben Prognose. Nach Mitternacht ist der kommende Tag heute; bis Sonnenuntergang plant die Batterie danach.",
+          "pv_forecast_remaining_entity": "Heute noch erwartete Solarerzeugung in kWh (Solcast: 'Prognose verbleibende Leistung heute', Forecast.Solar: 'geschätzte Energieproduktion - verbleibend heute'). Tagsüber kauft das Gehirn nur, was die Sonne bis Sonnenuntergang nicht mehr liefert.",
           "goe_base_topic": "Das MQTT-Basis-Topic deiner go-e Wallbox, z. B. go-eCharger/123456 (ein führender Schrägstrich ist ok, falls deine Wallbox einen verwendet). Aus der automatischen Erkennung wählen oder eintippen.",
           "voltage": "Netzspannung pro Phase (≈230 V in der EU). Zur Umrechnung zwischen Ampere und Watt.",
           "phases": "Anzahl der Phasen beim Laden, wenn die automatische Phasenumschaltung aus ist."
@@ -199,7 +207,8 @@
       "cheap_charge_power": { "name": "Bezugsleistung in günstigen Stunden" },
       "bright_day_target_soc": { "name": "Zielstand, sonniger Tag" },
       "dark_day_target_soc": { "name": "Zielstand, trüber Tag" },
-      "peak_ready_soc": { "name": "Für Lastspitzen bereit ab" },
+      "peak_ready_soc": { "name": "Reserve an dunklen Tagen" },
+      "solar_self_use": { "name": "Direkt genutzter Solarstrom" },
       "stock_up_target_soc": { "name": "Zielstand beim Vorladen" }
     },
     "datetime": {

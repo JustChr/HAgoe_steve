@@ -417,6 +417,30 @@ the shave had avoided; takeover with a low battery and stocking up (95 %) did th
       the borderline ±1 A stepping above, now measured. Raise margin if the weeks show it matters.
 - [ ] Analyse the field-test weeks before go-live (January 2027 at the latest).
 
+## Stock for a dark day — the reserve follows the forecast (branch `feat/reserve-plan`, 2026-11-07)
+
+Chris asked how energy gets "bought" ahead of a dark day. As built it barely did: the cheap-hour
+trigger can't fire on his flat tariff (0.2446 €/kWh vs. a 0.20 threshold), and it read the
+"tomorrow" sensor at any hour (at 02:00 that is the day after). On a flat tariff the only
+reason to pre-buy is the capacity tariff, so the plan lives in peak protection.
+- [x] Decided with Chris: **battery first** on dark nights (car waits, departure guarantee
+      exempt); the dark-day level **replaces** *Keep ready for peaks* (same key, value carries
+      over); daytime self-use is a **setting** (his median 10.5 kWh, Sep–Nov 2026).
+- [x] `reserve_plan`: level = 100 % − room the coming solar day's surplus needs, between the
+      shaving reserve and the dark-day reserve; held + refilled by night, by day only bought up
+      to tonight's level less the sun still to come. Coming day = sunset to sunset (`sun.sun`).
+      Today + rest-of-today forecast sensors added (optional, no migration).
+- [x] Cheap-hour target judges the coming solar day too (bug: 02:00 read the day after).
+- [x] Sim `tools/sim/reserve_plan.py`, three real autumn weeks: 98 → 0 quarter-hours over 3.7 kW,
+      worst 6.12 → 3.70 kW, +€0.93 energy, +15 kWh PV export (flat 90 %: +85 kWh), car −14 kWh.
+      Scenarios + refill sims identical to main with the plan off.
+- [ ] Chris: map *today* + *rest of today* (Solcast), set *Reserve on a dark day* (90 %?) and
+      *Solar the house uses directly* (10.5 kWh) — then watch `plan` in the test log.
+- [ ] Self-use moves with the season — revisit whether to learn it once the test log has weeks
+      of PV vs. surplus.
+- [ ] Solcast's p10 (`estimate10` attribute) would make the plan less trusting of cloudy-day
+      forecasts (median +1.4 kWh optimistic, p90 +6 kWh). Not wired: generic sensors don't have it.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

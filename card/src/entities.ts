@@ -59,6 +59,7 @@ export interface ResolvedEntities {
   bright_day_target_soc?: string;
   dark_day_target_soc?: string;
   peak_ready_soc?: string;
+  solar_self_use?: string;
   stock_up?: string;
   stock_up_target_soc?: string;
   reset_monthly_peak?: string;
@@ -153,6 +154,7 @@ export function resolveEntities(hass: HassLike, deviceId?: string): ResolvedEnti
   result.bright_day_target_soc = find("bright_day_target_soc");
   result.dark_day_target_soc = find("dark_day_target_soc");
   result.peak_ready_soc = find("peak_ready_soc");
+  result.solar_self_use = find("solar_self_use");
   result.stock_up = find("stock_up");
   result.stock_up_target_soc = find("stock_up_target_soc");
   result.reset_monthly_peak = find("reset_monthly_peak");

@@ -29,7 +29,10 @@ MIN_SOC_ABOVE_SLACK_PCT: float = 0.5
 
 #: Status reasons under which peak protection is holding the car off.
 CAR_HELD_KEYS: frozenset[str] = frozenset(
-    {"peak_pause", "peak_refill_car", "peak_stock_up_car"}
+    {
+        "peak_pause", "peak_refill_car", "peak_stock_up_car", "peak_dark_day_car",
+        "peak_ready_car",
+    }
 )
 
 #: Peak reasons that mean the battery is carrying part of a heavy house load.
@@ -65,6 +68,12 @@ class Sample:
     target_w: float = 0.0
     hard_w: float = 0.0
     month_peak_w: float = 0.0
+    # The reserve plan in force: held level, refill level, the forecast it read, and
+    # which day that forecast was for ("today" | "tomorrow" | "flat" | "").
+    plan_hold_soc: float | None = None
+    plan_fill_soc: float | None = None
+    plan_forecast_kwh: float | None = None
+    plan_day: str = ""
 
 
 def _round(value: float | None, digits: int = 0) -> float | int | None:
@@ -265,6 +274,14 @@ class QuarterLog:
             "wh": {k: _round(v) for k, v in sorted(q.wh.items())},
             "writes": dict(sorted(q.writes.items())),
             "car_starts": q.car_starts,
+            "plan": (
+                [
+                    _round(last.plan_hold_soc, 1), _round(last.plan_fill_soc, 1),
+                    _round(last.plan_forecast_kwh, 1), last.plan_day,
+                ]
+                if last and last.plan_day
+                else None
+            ),
             "reasons": {k: _round(v) for k, v in sorted(q.reasons.items())},
             "peak_reasons": {k: _round(v) for k, v in sorted(q.peak_reasons.items())},
         }

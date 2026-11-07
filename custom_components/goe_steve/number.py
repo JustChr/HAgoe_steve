@@ -255,6 +255,18 @@ NUMBERS: tuple[GoeNumberDescription, ...] = (
         setter=lambda s, v: setattr(s, "peak_ready_soc", v),
     ),
     GoeNumberDescription(
+        key="solar_self_use",
+        attr="solar_self_use_kwh",
+        icon="mdi:home-lightning-bolt-outline",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=0.5,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        entity_category=EntityCategory.CONFIG,
+        getter=lambda s: s.solar_self_use_kwh,
+        setter=lambda s, v: setattr(s, "solar_self_use_kwh", v),
+    ),
+    GoeNumberDescription(
         key="stock_up_target_soc",
         attr="stock_up_target_soc",
         icon="mdi:battery-plus-outline",
