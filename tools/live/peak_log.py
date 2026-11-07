@@ -26,6 +26,9 @@ BASE = os.environ.get("HA_URL", "http://hass.smartpi.home.arpa").rstrip("/") + "
 HEADERS = {"Authorization": "Bearer " + os.environ.get("HA_TOKEN", "")}
 P = "sensor.smart_wallbox_charging_"
 SETPOINT = "number.victron_mqtt_c0619ab4e653_system_0_system_ac_power_set_point"
+# What the ESS actually holds, beside what the engine asked for: since v5.9 they differ
+# by the cap at the battery's charge and the entity's 5 % step.
+MIN_SOC = "number.victron_mqtt_c0619ab4e653_system_0_system_ess_min_soc_limit"
 
 
 def get(entity: str) -> dict:
@@ -48,7 +51,9 @@ def log(path: str) -> None:
         row = (
             *(flow.get(k, "?") for k in ("grid_w", "battery_w", "car_w", "house_w", "battery_soc", "pv_w")),
             qh.get("projected_w"), qh.get("tier"),
-            get(SETPOINT)["state"], peak["attributes"].get("battery_min_soc"),
+            get(SETPOINT)["state"],
+            f"{peak['attributes'].get('battery_min_soc')}/{get(MIN_SOC)['state']}"
+            f" {'REFILL' if peak['attributes'].get('battery_refilling') else '-'}",
             get("select.smart_wallbox_charging_wallbox_force_state")["state"],
             get(P + "status")["state"], peak["state"],
         )

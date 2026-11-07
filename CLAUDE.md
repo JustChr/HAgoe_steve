@@ -23,6 +23,8 @@ platforms — it belongs in the engine so it stays unit-testable without HA.
 | `engine.py` | **The brain.** Pure, HA-free. Strategies + arbiter, battery reserve-line model, start/stop dwell logic, departure planning, `compute_power_flow` / `compute_car_sources`. Also the capacity-tariff layer: `update_peak_window` (the billing quarter-hour + the month record), `resolve_peak_tier`, `apply_peak_guard` (a ceiling *after* the arbiter), `apply_grid_charge`. |
 | `coordinator.py` | Glue: reads HA entities + go-e MQTT cache, calls engine, writes `amp`/`frc`/`psm`, throttles writes. Event-driven (debounced ~1.5 s) with a 30 s poll as safety net. Also `SteVeCoordinator` (60 s poll). |
 | `goe_parse.py` | Pure, HA-free go-e MQTT decoding: topic split, JSON payloads, `nrg[11]` power, `car`→connected. Unit-tested. |
+| `testlog.py` | Pure, HA-free field-test log: one record per billing quarter-hour (billed average, seconds per tier / share / refill / held car, energy split, SoC, min SoC asked vs. on the ESS, hardware writes, reasons) plus shave/refill/held-car events. The coordinator keeps one `Store` file per local day for 45 days. |
+| `diagnostics.py` | *Download diagnostics*: settings, mapping (SteVe credentials redacted) and the whole test log. |
 | `goe_mqtt.py` | HA MQTT client: subscribes `<base>/#`, caches, publishes `<base>/<key>/set`, broker discovery, `local_push` listeners. |
 | `steve_api.py` | Pure, HA-free SteVe REST client (HTTP Basic). |
 | `forecast.py` | Price-forecast parsing (Nordpool / EPEX / EnergyZero / Tibber-style attributes). |

@@ -271,6 +271,21 @@ other two under *Stocking up*.
 > user's **API password**. Remote start/stop requires a SteVe build that exposes the
 > `remote/start` · `remote/stop` endpoints.
 
+## Field-test log
+
+Every quarter-hour the integration writes one record of what happened, and keeps the last
+**45 days**: the billed average (from your smart meter, if mapped), how long it was easing
+off, shaving, refilling or holding the car, where the energy went (grid, battery, solar,
+car, house), the battery's charge, the minimum SoC it asked for next to what your battery
+system actually held, how often it wrote to the charger and the battery system, and the
+reasons it gave. Shaves, refills and held cars are logged as events too.
+
+Home Assistant's own history keeps ten days and leaves most of the integration's decisions
+out, so this is what lets you look back at a month and see *why* a quarter-hour cost what
+it did. Get it under **Settings → Devices & services → go-e + SteVe → ⋮ → Download
+diagnostics**. SteVe credentials are removed from the download; everything stays on your
+Home Assistant, one small file per day.
+
 ## How it works
 
 The decision logic lives in a pure, HA-free module

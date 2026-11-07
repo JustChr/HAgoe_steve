@@ -54,6 +54,8 @@ limits**.
 - **Fast on the knob, slow on the switches:** the charging current follows the solar surplus
   within seconds, while starting, stopping and phase switching wait for it to hold — and the
   card's countdown before a solar start is a button, so you can skip that wait.
+- **Field-test log:** one record per quarter-hour for the last 45 days — what it cost, what the
+  brain did and why, where the energy went. *Download diagnostics* on the integration.
 - **Automatic 1↔3 phase switching** with anti-flap hysteresis, a confirmation window and
   dwell timers.
 - **Provider-agnostic price input** (Tibber, EPEX, Nordpool, EnergyZero, …).

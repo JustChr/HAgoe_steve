@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -92,6 +92,7 @@ from .const import (
 )
 from .engine import (
     HARDWARE_MIN_CURRENT_A,
+    PEAK_WINDOW_S,
     ChargerInputs,
     ChargingMode,
     Decision,
@@ -106,6 +107,7 @@ from .engine import (
     update_peak_window,
 )
 from .forecast import dedupe_slots, parse_forecast
+from .testlog import QuarterLog, Sample
 from .goe_mqtt import (
     FRC_NEUTRAL,
     FRC_OFF,
@@ -122,6 +124,12 @@ _LOGGER = logging.getLogger(__name__)
 # chatter at, and neither value is worth a service call for a rounding difference.
 _SETPOINT_DEADBAND_W: float = 25.0
 _MIN_SOC_DEADBAND_PCT: float = 1.0
+
+#: The field-test log keeps this many days (live from January at the latest — a full
+#: billing month plus margin), and at most this many events per day: a load cycling
+#: every few seconds must not be able to grow a day file without bound.
+TESTLOG_KEEP_DAYS: int = 45
+TESTLOG_MAX_EVENTS_PER_DAY: int = 3000
 
 # How often the billing window + month record are persisted. Frequent enough that a
 # crash loses at most this much of a quarter-hour, rare enough not to churn the disk.
@@ -273,6 +281,14 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # Saved at most every PEAK_SAVE_INTERVAL_S so this never churns the disk.
         self._peak_store: Store = Store(hass, 1, f"{DOMAIN}_{entry.entry_id}_peak")
         self._peak_saved_at: datetime | None = None
+        # The field-test log (see testlog.py): one record per quarter-hour plus
+        # events, one storage file per local day, served by Download diagnostics.
+        # A file per day keeps each save small — the Pi's SD card would otherwise
+        # rewrite the whole 45 days every quarter-hour.
+        self._testlog = QuarterLog()
+        self._testlog_day: str | None = None
+        self._testlog_data: dict[str, list] = {"q": [], "ev": []}
+        self._testlog_loaded = False
         # True for the window after the user switches *into* Manual mode but before
         # they touch a manual control: we leave the charger exactly as it was — no
         # writes, no releases — so entering Manual never disturbs a running session.
@@ -483,13 +499,15 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             window = update_peak_window(now, grid_raw, cfg, self._state, import_kwh)
             tier = resolve_peak_tier(now, window, cfg, self._state)
             await self._save_peak_state(now)
-            return attach_peak_status(
+            blind = attach_peak_status(
                 Decision(control=False, reason="Waiting for charger / grid data"),
                 cfg,
                 self._state,
                 window,
                 tier,
             )
+            await self._testlog_observe(now, None, blind)
+            return blind
 
         price_now, forecast = self._read_price()
 
@@ -516,6 +534,8 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
 
         decision = decide(inputs, cfg, self._state)
         await self._save_peak_state(inputs.now)
+        # Before _apply, so the writes it makes are counted in this quarter-hour.
+        await self._testlog_observe(inputs.now, inputs, decision)
         # In the passive window right after switching into Manual, leave the
         # *charger* exactly as it was: no force write, no release, until the user
         # takes over via a manual control.
@@ -695,6 +715,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             return
 
         await self.goe.set_amp(target)
+        self._testlog.note_write("amp")
         self._last_written_a = float(target)
         self._last_write_at = now
 
@@ -719,6 +740,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         ):
             return
         await self.goe.set_phase_count(decision.target_phases)
+        self._testlog.note_write("psm")
         self._last_written_phases = decision.target_phases
         self._phases_written_at = dt_util.utcnow()
 
@@ -750,6 +772,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         ):
             return
         await self.goe.set_force(want)
+        self._testlog.note_write("frc")
         self._last_written_force = want_charge
         self._force_written_at = dt_util.utcnow()
 
@@ -774,6 +797,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         if live is not None and live <= HARDWARE_MIN_CURRENT_A:
             return
         await self.goe.set_amp(int(HARDWARE_MIN_CURRENT_A))
+        self._testlog.note_write("amp")
 
     def _since(self, stamp: datetime | None) -> float | None:
         """Seconds since ``stamp``, or None if we never wrote that key."""
@@ -789,6 +813,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         if self._last_written_force is None:
             return
         await self.goe.set_force(FRC_NEUTRAL)
+        self._testlog.note_write("frc")
         self._last_written_force = None
         # Released means we have no opinion left to re-assert, so the read-back in
         # _write_force must not resurrect one: clearing the stamp with the state
@@ -850,6 +875,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                 domain, service, {"entity_id": hold_entity}, blocking=False
             )
             self._last_written_hold = hold
+            self._testlog.note_write("hold")
             # Persist immediately so a restart can't forget we own an on-switch.
             await self._save_house_ownership()
         except Exception as err:  # noqa: BLE001 - never let a write break the loop
@@ -891,6 +917,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         except Exception as err:  # noqa: BLE001 - never let a write break the loop
             _LOGGER.warning("Failed to set %s to %s: %s", entity_id, value, err)
             return last
+        self._testlog.note_write(
+            "setpoint" if conf_key == CONF_VICTRON_SETPOINT
+            else "min_soc" if conf_key == CONF_VICTRON_MIN_SOC
+            else conf_key
+        )
         return value
 
     async def _write_setpoint(self, value: float | None) -> None:
@@ -1100,6 +1131,110 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             ]
         except (TypeError, ValueError) as err:
             _LOGGER.warning("Ignoring unreadable peak state: %s", err)
+
+    # --- The field-test log ---------------------------------------------------------
+    def _testlog_store(self, day: str) -> Store:
+        return Store(self.hass, 1, f"{DOMAIN}_{self.config_entry.entry_id}_testlog_{day}")
+
+    async def _testlog_observe(
+        self, now: datetime | None, inputs: ChargerInputs | None, decision: Decision
+    ) -> None:
+        """Feed one cycle to the test log; store whatever it closes.
+
+        Never allowed to disturb regulation: any failure is logged and swallowed.
+        """
+        if now is None:
+            return
+        try:
+            ends = decision.peak_window_ends
+            sample = Sample(
+                now=now,
+                window_start=(
+                    ends - timedelta(seconds=PEAK_WINDOW_S) if ends is not None else None
+                ),
+                control_ok=inputs is not None,
+                tier=decision.peak_tier,
+                reason_key=decision.reason_key,
+                peak_reason_key=decision.peak_reason_key,
+                refilling=decision.battery_refilling,
+                grid_charging=decision.grid_charging,
+                setpoint_w=decision.grid_setpoint_w if decision.house_control else None,
+                min_soc=decision.battery_min_soc if decision.house_control else None,
+                ess_min_soc=self._get_float(CONF_VICTRON_MIN_SOC),
+                peak_degraded=decision.peak_degraded,
+                peak_metered=decision.peak_metered,
+                target_w=decision.peak_target_w,
+                hard_w=decision.peak_hard_w,
+                month_peak_w=decision.month_peak_w,
+            )
+            if inputs is not None:
+                sample.grid_w = inputs.grid_power_w
+                sample.battery_w = inputs.battery_power_w
+                sample.battery_soc = inputs.battery_soc
+                sample.pv_w = inputs.pv_power_w
+                sample.car_w = inputs.car_actual_power_w if inputs.car_connected else 0.0
+                sample.car_connected = inputs.car_connected
+            closed, events = self._testlog.observe(sample, self._state.peak_history)
+            if closed is None and not events:
+                return
+            await self._testlog_append(now, closed, events)
+        except Exception as err:  # noqa: BLE001 - diagnostics must never break the loop
+            _LOGGER.debug("Test log: %s", err)
+
+    async def _testlog_append(
+        self, now: datetime, closed: dict | None, events: list[dict]
+    ) -> None:
+        """Append to today's file; on a new day, start a file and drop old ones."""
+        day = dt_util.as_local(now).date().isoformat()
+        if not self._testlog_loaded:
+            self._testlog_loaded = True
+            stored = await self._testlog_store(day).async_load()
+            if isinstance(stored, dict):
+                self._testlog_data = {
+                    "q": list(stored.get("q", [])), "ev": list(stored.get("ev", []))
+                }
+            self._testlog_day = day
+        if day != self._testlog_day:
+            if self._testlog_day is not None:
+                await self._testlog_store(self._testlog_day).async_save(self._testlog_data)
+            self._testlog_day = day
+            self._testlog_data = {"q": [], "ev": []}
+            await self._testlog_prune(now)
+        if closed is not None:
+            self._testlog_data["q"].append(closed)
+        room = TESTLOG_MAX_EVENTS_PER_DAY - len(self._testlog_data["ev"])
+        if room > 0:
+            self._testlog_data["ev"].extend(events[:room])
+        if closed is not None:
+            # Once per quarter-hour: events ride along with the next record.
+            await self._testlog_store(day).async_save(self._testlog_data)
+
+    async def _testlog_prune(self, now: datetime) -> None:
+        """Remove day files that have aged out of the window."""
+        today = dt_util.as_local(now).date()
+        for back in range(TESTLOG_KEEP_DAYS + 1, TESTLOG_KEEP_DAYS + 15):
+            day = (today - timedelta(days=back)).isoformat()
+            try:
+                await self._testlog_store(day).async_remove()
+            except Exception:  # noqa: BLE001 - a missing file is the normal case
+                pass
+
+    async def async_testlog_dump(self) -> dict:
+        """Every stored day, oldest first — for Download diagnostics."""
+        today = dt_util.as_local(dt_util.utcnow()).date()
+        days: dict[str, dict] = {}
+        for back in range(TESTLOG_KEEP_DAYS, -1, -1):
+            day = (today - timedelta(days=back)).isoformat()
+            if day == self._testlog_day:
+                days[day] = self._testlog_data
+                continue
+            try:
+                stored = await self._testlog_store(day).async_load()
+            except Exception:  # noqa: BLE001
+                stored = None
+            if isinstance(stored, dict):
+                days[day] = stored
+        return days
 
     async def _save_peak_state(self, now: datetime | None) -> None:
         """Persist the window + month record, at most every few dozen seconds."""
