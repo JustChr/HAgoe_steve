@@ -393,6 +393,30 @@ under the soft line (2.87, 2.87 kW …), and minimum SoC / setpoint were handed 
       boundary (19:36:53, target − house = 11.99 A). Real, cheap, and in the safe direction; the
       raise-margin idea (≈150 W headroom before going up) would settle it if it ever matters.
 
+## Refill within the peak limit + field-test log ✅ (v5.9.0, v5.10.0 — 2026-11-07)
+
+A Victron ESS recharges at **full power** when its minimum SoC sits above the battery's
+charge (Chris, live). Every shave ended by raising it 35 → 50 %, so the ESS bought the peak
+the shave had avoided; takeover with a low battery and stocking up (95 %) did the same.
+- [x] Minimum SoC is a hold: a raise capped at floor(SoC), a held value kept, rounded down to
+      the entity step (Victron 5 %); gradual hand-back on switch-off. (v5.9.0)
+- [x] Refill through the setpoint at `min(allowed, target)`, battery first (car paused);
+      steps aside for the departure guarantee (Chris: car wins, battery may shave to the floor
+      meanwhile), a heavy house load, a degraded window. Stocking up = the same refill with the
+      stock-up target. Spec + sim numbers: matrix § *Never above the charge*. (v5.9.0)
+- [x] Field-test log: one record per quarter-hour + events, 45 days, Download diagnostics.
+      Verified on the Pi: meter vs. Victron integral within 1 %, energy balance closes. (v5.10.0)
+- [x] Live 2026-11-07 08:50 (short peak, house 8.45 kW): share, setpoint, min SoC 35 → 50 correct.
+- [ ] **Refill + min-SoC cap not yet seen live** — needs a shave that takes the battery below 48 %
+      (a sauna evening). Check in the test log: `refill` events, `ess_min_soc` ≤ SoC,
+      `min_soc_above_soc` = 0, quarter-hours during the refill ≤ target.
+- [ ] A fast-cycling house load (20–60 s) started/stopped the car 4× in 102 s (live 08:50).
+      Candidate: resume only after the house stayed calm 30–60 s — simulate first (holding the
+      pause to the window end cost 83 kWh/fortnight).
+- [ ] Amp writes at the peak limit: 62 in 2 h (1–14 per quarter-hour, test log 2026-11-07) —
+      the borderline ±1 A stepping above, now measured. Raise margin if the weeks show it matters.
+- [ ] Analyse the field-test weeks before go-live (January 2027 at the latest).
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).
