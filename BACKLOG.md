@@ -458,13 +458,20 @@ counted every step twice. Decision page: https://claude.ai/artifact/6N3e2BAQC51Y
 - [x] Battery guard trims at most what the car draws (Sun 8 Nov: 7 ↔ 8 A, 37 writes/QH with a
       full car on Auto).
 - [x] Test log: seconds on the measured house load (`s.measured`).
-- [ ] Chris: map the three `system_consumption_power_l1..l3` sensors, then check `s.measured`
-      ≈ 900 per quarter-hour and the setpoint writes on the next sauna / car start.
+- [x] Mapped live 2026-11-09 22:58: measured house 522 W vs derived 441 W; 23:00 quarter-hour
+      `s.measured` 873/899 s, 0 setpoint writes. Car start 23:23 calm (one start, setpoint at
+      100 W, measured house 611 → 983 W) — but with the battery held at its reserve, so the
+      ESS handover that fooled the derived figure didn't happen.
+- [ ] The real test: a car start with the battery *above* its reserve, or a sauna / cooking
+      evening — check setpoint writes, car starts and `s.measured` in the test log
+      (`tools/live/share_watch.py` for a live view).
 - [ ] Live latency check: websocket sniff of grid / battery / consumption / nrg during a car start.
 - [x] 5 s `manual_paused` + car restart after the reload on Mon 9 Nov 21:15: the first engine
       run landed before the setting entities restored, so it acted on factory defaults (Manual,
       peak protection off): `frc` off, minimum SoC handed back to 40 %, then all of it re-taken.
       The coordinator now writes nothing until the platforms are set up. (v5.12.1)
+      Restart on v5.12.1 (23:21): force state, minimum SoC and setpoint untouched — car was idle
+      then, so re-check once on a restart while it charges.
 
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
