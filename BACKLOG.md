@@ -441,6 +441,28 @@ reason to pre-buy is the capacity tariff, so the plan lives in peak protection.
 - [ ] Solcast's p10 (`estimate10` attribute) would make the plan less trusting of cloudy-day
       forecasts (median +1.4 kWh optimistic, p90 +6 kWh). Not wired: generic sensors don't have it.
 
+## House share vs. meters that don't report together ✅ (v5.12.0 — 2026-11-09)
+
+Live check of v5.11.0 (Sat 14:30 – Mon 22:00, 243 quarter-hours): no quarter-hour over target,
+minimum SoC never above the charge, first dark-night refill clean. But Mon 07:03–07:10 the share
+swung the setpoint 0 ↔ 3.9 kW (115 writes/QH, 11 car starts, battery charged from the grid), and
+again at 16:42 with no car. `grid − battery` from two Victron meters reporting seconds apart
+counted every step twice. Decision page: https://claude.ai/artifact/6N3e2BAQC51YWLPEUNqoBj
+- [x] Sim `tools/sim/meter_skew.py`: 0.25 s, ESS lag, meter cadences + delays swept; reproduces it.
+- [x] Optional *House consumption* mapping (Victron AC consumption L1–L3, summed), used as read.
+      No migration (optional key). Chris: recommended options taken (2026-11-09).
+- [x] Without it: derived load held 15 s for rises (swept 0–30 s), falls at once.
+- [x] Engaging stays immediate on the raw reading (a held battery is only freed by engaging).
+- [x] A consumption more than 500 W below the car for 2 min is set aside (one log warning,
+      `consumption_rejected` in diagnostics); single readings fall back to the derived figure.
+- [x] Battery guard trims at most what the car draws (Sun 8 Nov: 7 ↔ 8 A, 37 writes/QH with a
+      full car on Auto).
+- [x] Test log: seconds on the measured house load (`s.measured`).
+- [ ] Chris: map the three `system_consumption_power_l1..l3` sensors, then check `s.measured`
+      ≈ 900 per quarter-hour and the setpoint writes on the next sauna / car start.
+- [ ] Live latency check: websocket sniff of grid / battery / consumption / nrg during a car start.
+- [ ] 5 s `manual_paused` + car restart after the reload on Mon 9 Nov 21:15 — unexplained.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

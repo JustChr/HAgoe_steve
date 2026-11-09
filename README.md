@@ -67,7 +67,10 @@ See [`docs/concept`](#concept) for the full design.
   budget (a sauna, oven and hob), the grid carries up to the budget and the battery only the part
   above it, so the same charge lasts far longer. The car gives way first. Tell it your *Home
   battery capacity* and the grid's share rises gradually when the battery won't last, instead of
-  the whole load landing on the grid the moment the battery is empty.
+  the whole load landing on the grid the moment the battery is empty. Map your battery system's
+  **house consumption** (Victron: AC consumption) and the split reads the house load directly.
+  Without it the brain works the load out from the grid and battery meters, and because those
+  report seconds apart, it follows a rise only once it has held for 15 seconds.
 - **Cheap-hour grid charging:** while the price is low, buy energy into the home battery and
   run the house from the grid, filling deep when the coming day looks dark and stopping early
   when it looks bright so the sun still has somewhere to go. Capped by the peak budget, so it
@@ -142,7 +145,9 @@ needed — this integration talks to the charger directly.
 The config flow has three steps:
 
 1. **Energy sources** — grid power (required; + import / − export), optionally PV production,
-   home-battery charge level and battery power, an electricity-price sensor, and an optional
+   home-battery charge level and battery power, the **house consumption** (what all loads draw
+   together, wallbox included, before solar; on a Victron the AC consumption, one sensor per
+   phase is fine), an electricity-price sensor, and an optional
    home-battery **hold switch** (turned on to stop the battery discharging while charging the car
    from the grid). Optionally your grid operator's **import energy counter** (a smart-meter
    reader's total-import register): the tariff bills each quarter-hour's import energy, so with it

@@ -74,6 +74,8 @@ class Sample:
     plan_fill_soc: float | None = None
     plan_forecast_kwh: float | None = None
     plan_day: str = ""
+    # Where the house share read the house load: "measured" | "derived" | "".
+    house_source: str = ""
 
 
 def _round(value: float | None, digits: int = 0) -> float | int | None:
@@ -186,6 +188,8 @@ class QuarterLog:
             q.add_s("grid_charge", dt)
         if s.peak_reason_key in SHARE_KEYS:
             q.add_s("share", dt)
+        if s.house_source == "measured":
+            q.add_s("measured", dt)
         if s.reason_key in CAR_HELD_KEYS:
             q.add_s("car_held", dt)
         if (

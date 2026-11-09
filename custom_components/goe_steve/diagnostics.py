@@ -42,5 +42,8 @@ async def async_get_config_entry_diagnostics(
             key: _plain(value)
             for key, value in (asdict(settings) if is_dataclass(settings) else {}).items()
         },
+        # True once a mapped house consumption read below the wallbox alone for two
+        # minutes and was set aside until the next restart.
+        "consumption_rejected": coordinator.consumption_rejected,
         "test_log": await coordinator.async_testlog_dump(),
     }

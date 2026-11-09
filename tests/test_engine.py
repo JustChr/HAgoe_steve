@@ -129,12 +129,36 @@ def test_manual_guard_trims_when_battery_discharges_anyway():
     # Grid-assisted and the battery is bleeding 2.3 kW into the car (hold switch
     # missing/ineffective) → the guard trims the current by the discharge.
     d = decide(
-        _inputs(battery_soc=90.0, battery_power_w=-2300.0),
+        _inputs(battery_soc=90.0, battery_power_w=-2300.0, car_actual_power_w=11000.0),
         _cfg(mode=ChargingMode.MANUAL, manual_charge=True, manual_current_a=16.0),
     )
     assert d.hold_battery is True
     assert d.target_current_a < 16.0
     assert d.reason_key == "manual_charging_guarded"
+
+
+def test_guard_ignores_the_house_discharge_while_the_car_takes_nothing():
+    # A full car stays plugged in: the battery discharging for the house is not the
+    # car's, and trimming by it moved the current with every house load (live, Nov
+    # 2026: 7↔8 A every few seconds, 37 amp writes a quarter-hour).
+    for discharge in (-1497.0, -1761.0, -1570.0, -1655.0):
+        d = decide(
+            _inputs(battery_soc=89.0, battery_power_w=discharge, car_actual_power_w=0.0),
+            _cfg(mode=ChargingMode.MANUAL, manual_charge=True, manual_current_a=16.0),
+        )
+        assert d.target_current_a == 16.0
+
+
+def test_guard_trims_no_more_than_the_car_draws():
+    # 3 kW out of the battery, 1.4 kW of it into the car: only the car's share is
+    # the car's to give back.
+    d = decide(
+        _inputs(battery_soc=90.0, battery_power_w=-3000.0, car_actual_power_w=1380.0,
+                phases=1),
+        _cfg(mode=ChargingMode.MANUAL, manual_charge=True, manual_current_a=16.0,
+             manual_phases=1),
+    )
+    assert d.target_current_a == 10.0  # 16 A − 1380 W / 230 V = 10 A
 
 
 # --- Solar surplus (availability + battery zones) ------------------------------------
@@ -730,7 +754,10 @@ def test_an_explicit_hold_stays_on_for_a_full_car():
 
 def test_cheap_grid_holds_battery_and_guards():
     d = decide(
-        _inputs(price_now=0.10, battery_soc=90.0, battery_power_w=-2300.0),
+        _inputs(
+            price_now=0.10, battery_soc=90.0, battery_power_w=-2300.0,
+            car_actual_power_w=11000.0,
+        ),
         _cfg(mode=ChargingMode.SMART, cheap_price=0.15),
     )
     assert d.should_charge is True
@@ -3422,3 +3449,88 @@ def test_while_stocking_up_the_car_waits_and_is_told_why():
               grid_power_w=900.0, battery_power_w=0.0)
     assert d.should_charge is False
     assert d.reason_key == "peak_stock_up_car"
+
+
+# --- The house share against meters that don't report together (Nov 2026) ----------
+#
+# Live, a 2.6 kW car start read as 2.6 kW of *house* load: the grid meter had seen the
+# step, the battery reading came after the ESS had taken it over, and the difference
+# counted it twice. The share engaged, the setpoint sat above the load and the ESS
+# charged the battery from the grid. tools/sim/meter_skew.py reproduces it.
+
+def _quiet_then(cfg, state, *, until=30, **kw):
+    """A quiet house (900 W, battery covering it) for ``until`` seconds."""
+    for t in range(0, until, 5):
+        _step(cfg, state, t, car_connected=False, battery_soc=70.0, **_ess(900.0), **kw)
+
+
+def test_a_meter_glitch_engages_the_share_but_the_setpoint_stays_at_the_real_load():
+    cfg, state = _share_cfg(), EngineState()
+    _quiet_then(cfg, state)
+    # Grid caught the step, battery reading already after the ESS answered it.
+    d = _step(cfg, state, 30, car_connected=False, battery_soc=70.0,
+              grid_power_w=2300.0, battery_power_w=-2900.0)
+    assert state.peak_share_engaged is True  # engaging frees a held battery: at once
+    assert d.battery_min_soc == 35.0
+    assert d.grid_setpoint_w == 900.0  # the held load, not the 5.2 kW glitch
+    assert d.house_load_source == "derived"
+
+
+def test_a_real_heavy_load_reaches_the_setpoint_once_it_has_held():
+    cfg, state = _share_cfg(), EngineState()
+    _quiet_then(cfg, state)
+    d = _step(cfg, state, 30, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    assert state.peak_share_engaged is True
+    assert d.grid_setpoint_w == 900.0  # the battery carries it while it proves itself
+    d = _step(cfg, state, 40, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    assert d.grid_setpoint_w == 900.0
+    d = _step(cfg, state, 50, car_connected=False, battery_soc=70.0, **_ess(9600.0))
+    assert d.grid_setpoint_w == 3700.0  # held for 15 s: the grid takes its share
+
+
+def test_a_measured_house_load_is_used_as_read():
+    cfg, state = _share_cfg(), EngineState()
+    _quiet_then(cfg, state, house_consumption_w=900.0)
+    # The same glitch in the meters: the consumption reading isn't fooled by it.
+    d = _step(cfg, state, 30, car_connected=False, battery_soc=70.0,
+              grid_power_w=2300.0, battery_power_w=-2900.0, house_consumption_w=900.0)
+    assert state.peak_share_engaged is False
+    assert d.house_load_source == "measured"
+    # A real step reaches the setpoint at once — there is nothing to wait out.
+    d = _step(cfg, state, 35, car_connected=False, battery_soc=70.0,
+              house_consumption_w=9600.0, **_ess(9600.0))
+    assert state.peak_share_engaged is True
+    assert d.grid_setpoint_w == 3700.0
+
+
+def _charging(cfg, state, t, consumption):
+    return _step(cfg, state, t, car_connected=True, phases=1, car_actual_power_w=3000.0,
+                 battery_soc=70.0, grid_power_w=3100.0, battery_power_w=-800.0,
+                 house_consumption_w=consumption)
+
+
+def test_a_consumption_that_leaves_out_the_wallbox_is_set_aside():
+    # 900 W "consumption" while the car alone draws 3 kW: it can't include the
+    # wallbox. Each such reading falls back to the meters; two minutes of it and the
+    # mapping is set aside until the next restart.
+    cfg, state = _share_cfg(mode=ChargingMode.FAST), EngineState()
+    d = None
+    for t in range(0, 120, 10):
+        d = _charging(cfg, state, t, 900.0)
+        assert d.house_load_source == "derived"
+    assert state.consumption_rejected is False
+    _charging(cfg, state, 120, 900.0)
+    assert state.consumption_rejected is True
+    d = _charging(cfg, state, 130, 4000.0)  # even a plausible reading now
+    assert d.house_load_source == "derived"
+
+
+def test_a_brief_dip_below_the_car_keeps_the_consumption():
+    # After a car start the go-e reports the car before the consumption includes it.
+    cfg, state = _share_cfg(mode=ChargingMode.FAST), EngineState()
+    for t in range(0, 20, 5):
+        _charging(cfg, state, t, 900.0)
+    d = _charging(cfg, state, 20, 3900.0)
+    assert d.house_load_source == "measured"
+    assert state.consumption_low_since is None
+    assert state.consumption_rejected is False

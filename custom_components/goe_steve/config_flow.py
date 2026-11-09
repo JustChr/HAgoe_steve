@@ -27,6 +27,7 @@ from .const import (
     CONF_GOE_BASE_TOPIC,
     CONF_GRID_IMPORT_ENERGY,
     CONF_GRID_POWER,
+    CONF_HOUSE_CONSUMPTION,
     CONF_PHASES,
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
@@ -55,6 +56,10 @@ _POWER_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="power")
 )
 _OPTIONAL_POWER_SENSOR = _POWER_SENSOR
+# One entity per phase or a single total; summed.
+_CONSUMPTION_SENSORS = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain="sensor", device_class="power", multiple=True)
+)
 _ENERGY_SENSOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor", device_class="energy")
 )
@@ -154,6 +159,10 @@ def _energy_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_BATTERY_POWER,
                 description={"suggested_value": defaults.get(CONF_BATTERY_POWER)},
             ): _OPTIONAL_POWER_SENSOR,
+            vol.Optional(
+                CONF_HOUSE_CONSUMPTION,
+                description={"suggested_value": defaults.get(CONF_HOUSE_CONSUMPTION)},
+            ): _CONSUMPTION_SENSORS,
             vol.Optional(
                 CONF_BATTERY_HOLD,
                 description={"suggested_value": defaults.get(CONF_BATTERY_HOLD)},
@@ -272,7 +281,7 @@ def _apply_forecast_autodetect(hass: Any, data: dict[str, Any]) -> None:
 
 def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     """Coerce numeric strings (phases/voltage/connector) and drop empty optionals."""
-    out = {k: v for k, v in data.items() if v not in (None, "")}
+    out = {k: v for k, v in data.items() if v not in (None, "", [])}
     if CONF_GOE_BASE_TOPIC in out:
         out[CONF_GOE_BASE_TOPIC] = normalize_base_topic(out[CONF_GOE_BASE_TOPIC])
     if CONF_PHASES in out:

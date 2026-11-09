@@ -122,7 +122,11 @@ One slider — **"Keep home battery above X %"** — plus one principle:
 Manual whenever the requested power exceeds the surplus), the brain turns the mapped
 **battery-hold switch ON** so grid power charges the car, never the battery. It is released
 as soon as solar carries the session again or the brain lets go. As a fallback when no hold
-switch is mapped, the current is trimmed by whatever the battery discharges.
+switch is mapped, the current is trimmed by whatever the battery discharges — but never by
+more than the car draws: the battery can't be feeding the car more than that. A car that takes
+nothing (full, asleep) has its hold released for the house, and the discharge is then the
+house's alone; trimming by it moved the current with every kettle (live, Nov 2026: 7 ↔ 8 A,
+up to 37 writes a quarter-hour).
 
 It is also released when the **car stops taking power** — full, or waiting on its own
 charge timer. Once the charger has been allowed to charge for **3 minutes** with the car
@@ -393,6 +397,51 @@ budget, the grid and the battery split it:
   (less 150 W) for 120 s, and never happens in a degraded window. The setpoint is only moved
   when it changes by 300 W or more, and not at all while the battery sits at its floor —
   except that it never stays above the load.
+
+**Reading the house load.** Everything above hangs on one number, and getting it right is
+harder than it looks:
+
+1. **Measured (recommended):** map *House consumption*, meaning what all loads draw together,
+   wallbox included, before solar. On a Victron ESS that's the AC consumption, one sensor per
+   phase, summed. The house load is then `consumption − car − PV`, used as read. Setpoint moves
+   can't touch it.
+2. **Derived:** otherwise it is `grid − battery − car`. That is independent of the setpoint only
+   if both meters are read at the same moment, and on a Victron they aren't: the grid value
+   and the battery's DC power arrive every ~5 s and ~6 s on their own clocks, and the ESS needs a
+   moment to follow a step. So a step is counted twice for a reading or two. Live on 9 Nov 2026,
+   a 2.6 kW car start read as 2.6–4.1 kW of *house* load while the house drew 0.9 kW. The share
+   engaged, and the setpoint then swung 0 ↔ 3.9 kW every few seconds for seven minutes,
+   charging the battery from the grid between swings (115 setpoint writes, 11 car starts in one
+   quarter-hour). So the derived load counts as **the lowest reading of the last 15 s**: drops
+   take effect at once, a rise only once it has held.
+
+Which reading does what:
+
+| | uses |
+|---|---|
+| **Engaging** | the reading *as it is now*. Engaging is what frees a held battery (minimum SoC at its charge, a refill, the hold switch); until it does, the grid carries the whole step. Delayed by the 15 s, a sauna thermostat during a refill put 9.6 kW on the grid and the quarter-hour went 3.84 → 3.91 kW (sim). |
+| **Setpoint, car room, pacing, release** | the held load. A share engaged by a meter glitch therefore sits at the real load, takes nothing from the car, and lets go once calm. |
+
+A measured load isn't held: there's no skew to filter, and holding it only delays the real
+rises (sim: 25 car starts instead of 15 on a sauna evening). A consumption reading that is more
+than 500 W below the car's own power can't include the wallbox. That reading falls back to the
+derived figure (it happens for a few seconds after a car start, before the consumption's next
+report). If it persists for 2 minutes, the mapping is set aside until the next restart, with
+one warning in the log.
+
+Measured by `tools/sim/meter_skew.py` (real engine at 0.25 s, ESS lag, meter cadences and
+delays swept over 0–5 s, the coordinator's debounce and throttles; worst timing for each):
+
+| Scenario | As shipped (v5.11) | Derived + 15 s hold | Measured |
+|---|---|---|---|
+| Car wakes up, quiet house (Mon 07:03) | 124 setpoint writes, 19 car starts, 157 Wh grid → battery | 21 · 2 · 6 Wh | **0 · 1 · 0 Wh** |
+| Cooking + car | 289 · 31 · 241 Wh | 110 · 9 · 25 Wh | **39 · 2 · 9 Wh** |
+| Sauna + car, 3 h | 1024 · 148 · 1043 Wh | 368 · 32 · 161 Wh | **163 · 15 · 125 Wh** |
+
+No variant moves a quarter-hour: the worst stays at the 3.86 kW target in force. What remains
+with a measured load is the share following a sauna thermostat (8.7 kW on/off): until the next
+reading, the setpoint briefly sits above a load that has just dropped. That is 25 Wh an evening
+with ideal 1 s meters, and 45–125 Wh here.
 
 **When the energy won't last.** With *Home battery capacity* set, the share rises when the
 energy above the peak floor can't carry the present excess for another **15 minutes**:
@@ -944,5 +993,7 @@ the sun still to come today.
 | `PEAK_METER_MAX_W` | 100 kW | a register climbing faster is a glitch, not usage: re-anchor, don't bill it |
 | `PEAK_ENERGY_HORIZON_S` | 15 min | with capacity set: how long the battery must be able to carry a heavy load's excess before the grid's share rises (swept) |
 | `PEAK_SETPOINT_MIN_MOVE_W` | 300 W | a heavy load's setpoint is only rewritten for a change this large (never left above the load) |
+| `SHARE_HOLD_S` | 15 s | a derived house load (grid − battery) must hold this long before the share follows it up (swept 0–30 s) |
+| `CONSUMPTION_IMPLAUSIBLE_W` / `CONSUMPTION_REJECT_S` | 500 W / 2 min | a house consumption this far below the car alone, for this long, is set aside until restart |
 | `PEAK_MIN_REMAINING_S` | 60 s | floor on "time left" when sizing the remaining budget |
 | `PEAK_HISTORY_LEN` | 96 | completed quarter-hours kept for the card (24 h) |

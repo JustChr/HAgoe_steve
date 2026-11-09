@@ -154,6 +154,11 @@ class ChargerInputs:
     # Home battery. ``battery_power_w``: + charging, - discharging.
     battery_soc: float | None = None
     battery_power_w: float | None = None
+    # What all the house's loads draw, measured directly: the wallbox included, before
+    # PV (W). On a Victron ESS its AC consumption, summed over the phases. Optional;
+    # see :func:`_house_share` for why it beats deriving the same number from the grid
+    # and battery meters.
+    house_consumption_w: float | None = None
     # Price environment.
     price_now: float | None = None
     price_forecast: list[PriceSlot] | None = None
@@ -405,6 +410,14 @@ class EngineState:
     peak_share_engaged: bool = False
     peak_share_calm_since: datetime | None = None
     peak_share_setpoint_w: float | None = None  # the setpoint last handed out
+    # Recent house-load readings ``(when, W)``, for the held load (see
+    # :func:`_held_house_load`).
+    peak_house_samples: list[tuple[datetime, float]] = field(default_factory=list)
+    # A consumption reading that leaves the wallbox out (see
+    # :func:`_measured_house_load`): since when it has read implausibly low, and
+    # whether it has been set aside for good (until the next restart).
+    consumption_low_since: datetime | None = None
+    consumption_rejected: bool = False
     # The refill after a shave (see :func:`_refill_setpoint`): whether the battery is
     # being brought back to the shaving reserve, and the setpoint last handed out for
     # it (None while the refill isn't writing — not running, or suspended).
@@ -515,6 +528,9 @@ class Decision:
     reserve_fill_soc: float | None = None  # the level the refill buys up to
     reserve_forecast_kwh: float | None = None  # the forecast it read
     reserve_day: str = ""  # "today" | "tomorrow" | "flat" | "" (off)
+    # Where the house share read the house load: "measured" (the consumption
+    # reading), "derived" (grid − battery, held) or "" (the share didn't run).
+    house_load_source: str = ""
 
 
 # Ignore tiny home-battery discharge (sensor noise / standby) before the guard
@@ -931,7 +947,14 @@ def _battery_guard_current(
     """
     if not hold or inp.battery_power_w is None:
         return full_current_a, False
-    discharge_w = max(0.0, -inp.battery_power_w)
+    # The battery can't be feeding the car more than the car draws. A car that has
+    # stopped taking power (full, or asleep) has its hold released for the house
+    # (:func:`_release_hold_for_idle_car`), and the discharge is then the house's
+    # alone — trimming by it moved the current with every kettle and oven element,
+    # an amp write every few seconds into a car that took nothing (live, Nov 2026).
+    discharge_w = min(
+        max(0.0, -inp.battery_power_w), max(0.0, inp.car_actual_power_w)
+    )
     if discharge_w <= _BATTERY_DRAIN_TOLERANCE_W:
         return full_current_a, False
     trim_a = _power_to_current(discharge_w, max(1, phases), inp.voltage_v)
@@ -2104,6 +2127,7 @@ def resolve_peak_tier(
         state.peak_cap_at = None
         state.peak_share_engaged = False
         state.peak_share_calm_since = None
+        state.peak_house_samples = []
         state.peak_refilling = False
         state.peak_refill_setpoint_w = None
         return "off"
@@ -2422,6 +2446,81 @@ _PEAK_SETPOINT_MIN_MOVE_W: float = 300.0
 #: and still takes a kilowatt off the evenings that run short.
 _PEAK_ENERGY_HORIZON_S: float = 900.0
 
+#: How long a house load has to hold before the share engages on it or raises the
+#: setpoint to it. Falls are taken at once. See :func:`_held_house_load`.
+_SHARE_HOLD_S: float = 15.0
+
+
+def _held_house_load(now: datetime, house_w: float, state: EngineState) -> float:
+    """The house load that has held for :data:`_SHARE_HOLD_S`: the lowest recent reading.
+
+    Grid minus battery is the house load only when both readings are of the same
+    moment, and on a Victron ESS they are not: the grid meter and the battery report
+    every 5–6 s, apart, and the ESS needs a few seconds to settle after any step. A
+    car starting shows up in the grid reading before the battery takes it over, and
+    in the battery reading after — so for a reading or two the step is counted
+    twice. Live (Nov 2026) a 2.6 kW car start read as 2.6 kW of *house* where the
+    house drew 0.9; the share engaged, raised the setpoint, paused the car, and the
+    setpoint then sat above the load — which an ESS answers by charging the battery
+    from the grid. The setpoint's own moves made the next readings just as wrong, and
+    it swung 0 ↔ 3.9 kW every few seconds for seven minutes.
+
+    The errors are short — gone once both meters have reported after the ESS
+    settled — and the dangerous ones point up. So the share rises only on a load that
+    has held for the whole window, and falls on the reading at once, which is the
+    safe direction twice over: before the share engages the battery is already
+    covering everything, and a setpoint below the load only means the battery covers
+    a little more.
+    """
+    cutoff = now - timedelta(seconds=_SHARE_HOLD_S)
+    # The readings inside the window, plus the one that was in force when it opened:
+    # a reading holds until the next one, so it still covers the window's start.
+    older = [s for s in state.peak_house_samples if s[0] <= cutoff]
+    samples = older[-1:] + [s for s in state.peak_house_samples if s[0] > cutoff]
+    samples.append((now, house_w))
+    state.peak_house_samples = samples
+    return min(w for _t, w in samples)
+
+
+#: A measured house load below minus this means the consumption reading can't include
+#: the wallbox: it reads less than the car alone draws.
+_CONSUMPTION_IMPLAUSIBLE_W: float = 500.0
+
+#: …and once it has read that way this long, it is set aside until the next restart.
+#: A correct reading only dips below the car for the few seconds its next report
+#: takes after a car start; two minutes is a mapping that leaves the wallbox out.
+_CONSUMPTION_REJECT_S: float = 120.0
+
+
+def _measured_house_load(
+    inp: ChargerInputs, car_w: float, now: datetime, state: EngineState
+) -> float | None:
+    """The house load from the consumption reading — consumption less the car — or None.
+
+    None when no consumption is mapped, when this reading can't be right (it is below
+    what the car alone draws), and for good once that has lasted
+    :data:`_CONSUMPTION_REJECT_S`: a consumption that leaves the wallbox out makes the
+    house look a car smaller than it is, the share engages late, and a held battery
+    leaves the grid to carry the step meanwhile. The caller then uses the held
+    grid − battery figure, which is right for any mapping.
+
+    A correct mapping trips the per-reading check too, briefly: after a car start the
+    go-e reports the car before the consumption's next report includes it. The held
+    figure covers those seconds.
+    """
+    if inp.house_consumption_w is None or state.consumption_rejected:
+        state.consumption_low_since = None
+        return None
+    load_w = inp.house_consumption_w - car_w
+    if load_w >= -_CONSUMPTION_IMPLAUSIBLE_W:
+        state.consumption_low_since = None
+        return load_w
+    if state.consumption_low_since is None:
+        state.consumption_low_since = now
+    elif (now - state.consumption_low_since).total_seconds() >= _CONSUMPTION_REJECT_S:
+        state.consumption_rejected = True
+    return None
+
 
 @dataclass(slots=True)
 class _HouseShare:
@@ -2433,6 +2532,7 @@ class _HouseShare:
     car_room_w: float  # what is left of the share for the car
     setpoint_w: float  # the ESS grid setpoint to write while engaged
     paced: bool  # the share was raised because the battery wouldn't last
+    source: str = "derived"  # where the house load came from: "measured" | "derived"
 
 
 def _house_share(
@@ -2471,14 +2571,29 @@ def _house_share(
     if inp.battery_power_w is None or window.start is None or inp.now is None:
         state.peak_share_engaged = False
         state.peak_share_calm_since = None
+        state.peak_house_samples = []
         return None
 
     now = inp.now
-    # What the grid and battery jointly serve, net of PV. Invariant to the setpoint:
-    # whatever we command only moves watts between those two terms.
-    net_load_w = inp.grid_power_w - inp.battery_power_w
     car_w = max(0.0, inp.car_actual_power_w) if inp.car_connected else 0.0
-    house_net_w = net_load_w - car_w
+    # What the grid and battery jointly serve, net of PV, less the car. Invariant to
+    # the setpoint only when both readings are of the same moment — see
+    # :func:`_held_house_load` for when they aren't. Kept up every cycle, so the
+    # held value is ready whenever the measured one can't be used.
+    derived_w = inp.grid_power_w - inp.battery_power_w - car_w
+    held_w = (
+        _held_house_load(now, derived_w, state) if _SHARE_HOLD_S > 0.0 else derived_w
+    )
+    measured_w = _measured_house_load(inp, car_w, now, state)
+    if measured_w is not None:
+        # Measured directly: the setpoint doesn't move it at all, so it is used as
+        # read. Holding it as well only delays the real rises — more setpoint writes
+        # and more car starts on a sauna evening, nothing gained
+        # (tools/sim/meter_skew.py).
+        reading_w = house_net_w = measured_w - (inp.pv_power_w or 0.0)
+        source = "measured"
+    else:
+        reading_w, house_net_w, source = derived_w, held_w, "derived"
 
     share_w = max(0.0, min(window.allowed_w, window.target_w))
     paced = False
@@ -2492,7 +2607,12 @@ def _house_share(
             share_w = house_net_w - sustainable_w
             paced = True
 
-    if house_net_w > share_w:
+    # Engaging reads the load as it is *now*: engaging is what releases a held battery
+    # (minimum SoC at the charge, a refill, the hold switch), and until it does the
+    # grid carries the whole step. A false reading costs nothing here — the setpoint,
+    # the car's room and the release below all go by the held load, so a share engaged
+    # on a meter glitch sits at the real load and lets go again once it's calm.
+    if reading_w > share_w:
         state.peak_share_engaged = True
         state.peak_share_calm_since = None
     elif state.peak_share_engaged:
@@ -2532,6 +2652,7 @@ def _house_share(
         car_room_w=car_room_w,
         setpoint_w=setpoint_w,
         paced=paced,
+        source=source,
     )
 
 
@@ -2923,6 +3044,7 @@ def apply_peak_guard(
             _peak_status_reason(inp, cfg, window, tier, capped_a, paused=paused)
         )
     else:
+        decision.house_load_source = share.source
         capped_a, paused = _apply_house_share(
             decision, inp, cfg, state, window, tier, share, plan
         )

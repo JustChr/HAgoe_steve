@@ -144,3 +144,10 @@ def test_no_plan_records_none():
     samples = [_s(t) for t in range(0, 900, 10)] + [_s(900)]
     _, (rec,), _ = _run(samples)
     assert rec["plan"] is None
+
+
+def test_time_on_the_measured_house_load_is_counted():
+    samples = [_s(t, house_source="measured" if t < 600 else "derived")
+               for t in range(0, 900, 10)] + [_s(900)]
+    _, records, _ = _run(samples)
+    assert records[0]["s"]["measured"] == 600

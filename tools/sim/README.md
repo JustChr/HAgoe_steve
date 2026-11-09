@@ -30,6 +30,7 @@ self-consumption and the guard's hard-tier `setpoint → 0`.
 | `peak15.py` | 15 winter days vs a 4 kW ceiling, recorded per billing quarter-hour |
 | `heavy_load.py` | The measured sauna, cooking and sauna + car on the real 30.5 kWh / 10.2 kW pack: the old tier ladder against the house share, plus the energy-horizon sweep |
 | `reserve_plan.py` | Three real autumn weeks (measured hourly load, real PV, Solcast forecasts as issued) with the reserve plan off, on, and flat — does stocking for dark days pay? `pull` fetches `autumn_raw.json` |
+| `meter_skew.py` | The house share against meters that don't report together: 0.25 s ticks, an ESS that lags, grid / battery / consumption / go-e on their own cadences and delays, the coordinator's debounce and throttles. Reproduces the Nov 2026 setpoint swing; compares as-shipped, the 15 s hold and a measured house load |
 | `build_chart.py` | Renders that run into a self-contained HTML readout |
 | `ha_ws.py` / `pull_winter.py` | Pull long-term statistics out of Home Assistant |
 
@@ -41,6 +42,8 @@ python tools/sim/real_ab.py              # needs the snapshots below
 python tools/sim/peak15.py               # 15 days × 3 variants → peak15_run.json
 python tools/sim/heavy_load.py           # heavy loads: tiers vs house share
 python tools/sim/heavy_load.py sweep     # the 15-minute energy horizon, swept
+python tools/sim/meter_skew.py           # house share vs. meter timing: shipped / held / measured
+python tools/sim/meter_skew.py sweep     # the hold window, swept
 python tools/sim/reserve_plan.py pull    # → autumn_raw.json (HA_URL + HA_TOKEN)
 python tools/sim/reserve_plan.py         # the reserve plan on three real autumn weeks
 python tools/sim/build_chart.py          # → peak15_chart.html (git-ignored: real data)

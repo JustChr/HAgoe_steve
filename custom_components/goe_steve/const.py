@@ -48,6 +48,11 @@ CONF_PV_FORECAST: Final = "pv_forecast_entity"
 # sensor then already describes the day after. Both optional.
 CONF_PV_FORECAST_TODAY: Final = "pv_forecast_today_entity"
 CONF_PV_FORECAST_REMAINING: Final = "pv_forecast_remaining_entity"
+# Optional: what all the house's loads draw, wallbox included, before PV — on a
+# Victron ESS its AC consumption, one entity per phase (summed). Peak protection's
+# house share then reads the house load directly instead of deriving it from the
+# grid and battery meters, which report seconds apart. A list of entity ids.
+CONF_HOUSE_CONSUMPTION: Final = "house_consumption_entity"
 # --- Charger link: direct go-e MQTT (v4+) -----------------------------------------
 # The brain talks to the go-e charger over its native MQTT instead of mapping
 # entities from a separate go-e integration. Only the base topic is needed:

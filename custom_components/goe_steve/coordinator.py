@@ -31,6 +31,7 @@ from .const import (
     CONF_GOE_BASE_TOPIC,
     CONF_GRID_IMPORT_ENERGY,
     CONF_GRID_POWER,
+    CONF_HOUSE_CONSUMPTION,
     CONF_PRICE,
     CONF_PRICE_FORECAST_ATTR,
     CONF_PV_FORECAST,
@@ -348,6 +349,38 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         except (ValueError, TypeError):
             return None
 
+    def _consumption_entities(self) -> list[str]:
+        """The mapped house-consumption entities (one per phase, or one total)."""
+        value = self._cfg.get(CONF_HOUSE_CONSUMPTION)
+        if not value:
+            return []
+        return [value] if isinstance(value, str) else [e for e in value if e]
+
+    def _read_house_consumption(self) -> float | None:
+        """The house's total consumption (W), summed — or None if any part is missing.
+
+        A sum with one phase missing would read a third of the house too small, which
+        is the direction that makes the share engage late. All or nothing.
+        """
+        entities = self._consumption_entities()
+        if not entities:
+            return None
+        total = 0.0
+        for entity_id in entities:
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
+                return None
+            try:
+                total += float(state.state)
+            except (ValueError, TypeError):
+                return None
+        return total
+
+    @property
+    def consumption_rejected(self) -> bool:
+        """True once the engine has set the consumption reading aside (see engine)."""
+        return self._state.consumption_rejected
+
     def _sun_up(self) -> bool | None:
         """Whether the sun is up, from Home Assistant's own ``sun.sun`` — or None.
 
@@ -539,6 +572,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             pv_power_w=self._get_float(CONF_PV_POWER),
             battery_soc=self._get_float(CONF_BATTERY_SOC),
             battery_power_w=self._get_float(CONF_BATTERY_POWER),
+            house_consumption_w=self._read_house_consumption(),
             price_now=price_now,
             price_forecast=forecast,
             pv_forecast_kwh=self._get_energy_kwh(CONF_PV_FORECAST),
@@ -550,7 +584,17 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         )
         self.last_inputs = inputs
 
+        rejected_before = self._state.consumption_rejected
         decision = decide(inputs, cfg, self._state)
+        if self._state.consumption_rejected and not rejected_before:
+            _LOGGER.warning(
+                "The house consumption reading (%s) has read less than the wallbox "
+                "alone draws for two minutes, so it can't include the wallbox. Peak "
+                "protection now works out the house load from the grid and battery "
+                "meters instead. Map a consumption that includes the wallbox, or "
+                "clear the field.",
+                ", ".join(self._consumption_entities()),
+            )
         await self._save_peak_state(inputs.now)
         # Before _apply, so the writes it makes are counted in this quarter-hour.
         await self._testlog_observe(inputs.now, inputs, decision)
@@ -1189,6 +1233,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
                 plan_fill_soc=decision.reserve_fill_soc,
                 plan_forecast_kwh=decision.reserve_forecast_kwh,
                 plan_day=decision.reserve_day,
+                house_source=decision.house_load_source,
             )
             if inputs is not None:
                 sample.grid_w = inputs.grid_power_w
@@ -1384,7 +1429,7 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             entity_id
             for key in (CONF_GRID_POWER, CONF_PV_POWER, CONF_BATTERY_POWER)
             if (entity_id := self._cfg.get(key))
-        ]
+        ] + self._consumption_entities()
         if not entity_ids:
             return lambda: None
 
