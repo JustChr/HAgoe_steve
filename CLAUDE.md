@@ -99,7 +99,10 @@ with a **stale-bundle check** — if you change anything under `card/src/`, you 
     touched; only the billing quarter-hour advances (marked degraded). The power case matters
     after every (re)load: the first engine run lands inside the charger's retained burst
     (~320 keys in a few hundred ms), and a `car` without its `nrg`, read as 0 W, books the car
-    to the house and the peak budget pauses it (seen live 2026-11-06).
+    to the house and the peak budget pauses it (seen live 2026-11-06). Settings not yet restored
+    count too: until the platforms are set up `RuntimeSettings` holds factory defaults (Manual,
+    peak protection off), and a cycle on them paused the car and handed the minimum SoC back
+    (live reload 2026-11-09 21:15). `mark_settings_restored()` after `async_forward_entry_setups`.
   - **No car connected (known) → the brain stays in control and holds the charger paused:**
     `frc` Off, `amp` parked at 6 A, phases written. That is deliberate, not a breach — the next
     car plugged in must not start on whatever was left in the registers. The charger clears

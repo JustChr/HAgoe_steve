@@ -219,6 +219,12 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             ),
         )
         self._cfg = dict(entry.data)
+        # False until the setting entities (mode, switches, numbers) have pushed their
+        # restored values in. Until then ``settings`` holds factory defaults — Manual,
+        # not charging, peak protection off — and a cycle acting on them pauses the
+        # car and hands the house levers back, only to take them again a second later
+        # (live, reload on 2026-11-09 21:15). See :meth:`mark_settings_restored`.
+        self._settings_restored = False
         # Direct link to the go-e charger over MQTT (replaces the old third-party
         # integration + entity mapping). Subscription is started in setup.
         self.goe = GoeMqttClient(hass, self._cfg.get(CONF_GOE_BASE_TOPIC, ""))
@@ -518,6 +524,11 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
             return raw
         return raw - base
 
+    @callback
+    def mark_settings_restored(self) -> None:
+        """The setting entities are set up and restored: the engine may act from now."""
+        self._settings_restored = True
+
     # --- The regulation loop ----------------------------------------------------
     async def _async_update_data(self) -> Decision:
         connected = self.goe.car_connected
@@ -535,7 +546,15 @@ class GoeSteveCoordinator(DataUpdateCoordinator[Decision]):
         # house, the peak budget leaves it nothing, and the brain pauses it for a
         # cycle (seen live on a reload, 2026-11-06). Without a car the power is
         # genuinely irrelevant, so only the connected case waits for it.
-        if connected is None or grid_raw is None or (connected and car_power_w is None):
+        #
+        # Settings not yet restored count as missing too: they are an input like any
+        # other, and the defaults standing in for them are nobody's choice.
+        if (
+            not self._settings_restored
+            or connected is None
+            or grid_raw is None
+            or (connected and car_power_w is None)
+        ):
             # Still refresh the price cache so the price card renders without a car.
             self._read_price()
             # …and still advance the billing quarter-hour. This is exactly the path a

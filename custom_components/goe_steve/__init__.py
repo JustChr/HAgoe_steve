@@ -118,6 +118,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoeSteveConfigEntry) -> 
     entry.async_on_unload(coordinator.async_setup_input_triggers())
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Every setting entity has restored its value by now (adding an entity awaits
+    # its restore). Until this point the coordinator only measured; now it may act.
+    coordinator.mark_settings_restored()
+    await coordinator.async_request_refresh()
 
     # The v1→v2 reserve seed has been applied by the reserve number's restore
     # above — drop it so it can never override a later user choice. Done before

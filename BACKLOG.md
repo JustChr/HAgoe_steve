@@ -461,7 +461,10 @@ counted every step twice. Decision page: https://claude.ai/artifact/6N3e2BAQC51Y
 - [ ] Chris: map the three `system_consumption_power_l1..l3` sensors, then check `s.measured`
       ≈ 900 per quarter-hour and the setpoint writes on the next sauna / car start.
 - [ ] Live latency check: websocket sniff of grid / battery / consumption / nrg during a car start.
-- [ ] 5 s `manual_paused` + car restart after the reload on Mon 9 Nov 21:15 — unexplained.
+- [x] 5 s `manual_paused` + car restart after the reload on Mon 9 Nov 21:15: the first engine
+      run landed before the setting entities restored, so it acted on factory defaults (Manual,
+      peak protection off): `frc` off, minimum SoC handed back to 40 %, then all of it re-taken.
+      The coordinator now writes nothing until the platforms are set up. (v5.12.1)
 
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
