@@ -34,7 +34,8 @@ limits**.
   operator's import energy counter (e.g. a smart-meter reader) and the quarter-hour is measured on
   the meter you're billed on. A heavy load (sauna, cooking) is split: the grid carries up to the
   budget, the battery only the excess, and with the battery's capacity set the grid takes more
-  before the battery runs dry. Map your battery system's house consumption (Victron: AC
+  before the battery runs dry. A full car left plugged in is left alone — not paused and
+  re-started by every heavy load — until it draws again. Map your battery system's house consumption (Victron: AC
   consumption) and the split reads the house load directly instead of working it out from two
   meters that report seconds apart. Once a month has
   already peaked higher, the limits float up to just under that peak — you get the headroom you

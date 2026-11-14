@@ -65,7 +65,10 @@ See [`docs/concept`](#concept) for the full design.
   enough to use the headroom you paid for and far enough not to push the record higher.
   **Heavy loads are split, not dumped on the battery:** when the house alone would go over the
   budget (a sauna, oven and hob), the grid carries up to the budget and the battery only the part
-  above it, so the same charge lasts far longer. The car gives way first. Tell it your *Home
+  above it, so the same charge lasts far longer. The car gives way first — unless it is
+  plugged in but not taking power (full, or waiting on its own timer): a car that draws nothing
+  is left alone, so a heavy load no longer pauses and releases it, and its current no longer
+  follows the house load. If it starts drawing again, the normal rules apply within seconds. Tell it your *Home
   battery capacity* and the grid's share rises gradually when the battery won't last, instead of
   the whole load landing on the grid the moment the battery is empty. Map your battery system's
   **house consumption** (Victron: AC consumption) and the split reads the house load directly.

@@ -133,7 +133,8 @@ charge timer. Once the charger has been allowed to charge for **3 minutes** with
 drawing under 300 W, the Auto hold lets go (*"The car isn't taking power … home battery
 released"*); the charger stays allowed, so a top-up or preconditioning can still start, and
 the hold is back the moment the car draws again. An explicit **Hold** stays on — that
-setting means always.
+setting means always. The 3 minutes only count while the charger really is free: a car that
+peak protection is holding off draws nothing too, and that is our doing, not the car's.
 
 With the battery SoC unknown, the brain is conservative: genuine solar excess only.
 
@@ -696,6 +697,7 @@ limits are likewise raised to keep `soft ≤ target ≤ hard` whichever order yo
 | …and the battery running short (capacity set) | The share rises so the battery lasts — see *Heavy loads* |
 | Hard tier | Pause the car if 6 A won't fit (no battery power mapped: also setpoint → 0 W, minimum-SoC to the floor, hold released) |
 | Car running on **pure solar** | Nothing — stopping it would export the surplus, not reduce the import |
+| Car plugged in but **not taking power** (full, asleep — allowed to charge for 3 min, drawing < 300 W) | Nothing on the charger: no pause, no trim, and the requested current stays where it is instead of following the house load. The house levers act as usual. The moment it draws again the normal rules apply on the next cycle — see *A car that takes nothing* |
 | Battery already at its peak floor | Nothing left to shave with; the status sensor says so plainly |
 | Month already peaked higher | The limits float up to just under it — see below |
 | Back to off (tier) | minimum-SoC → the shaving reserve **or the battery's charge, whichever is lower**, setpoint → normal, the hold returns to the car brain |
@@ -708,6 +710,32 @@ power limit, the excess lands on the grid whatever the setpoint says. Peak prote
 shed a load. The
 `Peak shaving active` binary sensor, with its `tier` attribute, is the hook for your own
 load-shedding automations.
+
+### A car that takes nothing
+
+A full car left plugged in still looks like a charging car to the arbiter: Fast keeps asking
+for its current, so every heavy house load used to pause it and every lull release it, and
+its requested current followed the house load all day. Live (Nov 2026) that was ~400 current
+writes a day and, under an oven thermostat, four pauses in five minutes — for a car drawing
+nothing, so none of it moved the grid by a watt.
+
+Once the charger has let the car charge for **3 minutes** and it draws under **300 W** (the
+same test that releases the battery hold), peak protection leaves it alone: no pause, no
+trim, and the request keeps the current it was last offered. The house share, the setpoint
+and the minimum SoC carry on exactly as before.
+
+If the car wakes (a top-up, preconditioning) it draws at that current until the next cycle,
+1–2 s later, sees it — then it is a charging car again and is trimmed or paused as usual.
+With the house share engaged that moment costs the grid nothing: the setpoint fixes the
+import, so the battery carries the ramp. Without it, the grid carries a few seconds of the
+car — at most ~+120 W on the quarter-hour for a three-phase car at 16 A, a third of that for
+this single-phase one (Chris accepted it, Nov 2026).
+
+Replayed on the measured house load of 12–13 Nov 2026 (`tools/sim/idle_car.py`, 38.5 h,
+19 heavy loads, Chris's settings): a car that never wakes went from 19 start/stop and 645
+current writes to 1 and 2, with no pauses at all. With the car waking two minutes into
+every heavy load and at ten random moments, the worst quarter-hour was 3.82 kW under both
+the old and the new rule, and none crossed the 3.9 kW target.
 
 ### Don't pay twice for a peak you've already bought
 

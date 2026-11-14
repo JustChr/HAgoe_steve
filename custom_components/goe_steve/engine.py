@@ -340,6 +340,15 @@ class EngineState:
     # Since when the car has been allowed to charge but drawing nothing (see
     # :func:`_release_hold_for_idle_car`). None while it draws, or isn't allowed to.
     car_idle_since: datetime | None = None
+    # Whether the charger was actually allowed to charge after the previous cycle —
+    # the *final* decision, peak guard included. The idle timer only runs on top of
+    # it: a car we are holding off draws nothing too, and reading that as "full"
+    # would lift the very pause that made it so.
+    charger_allowed: bool = False
+    # This cycle: the car has been allowed to charge for ``_CAR_IDLE_RELEASE_S`` and
+    # still isn't drawing (see :func:`_car_is_idle`). Peak protection then leaves it
+    # alone — no pause, no trim, no request following the house load.
+    car_idle: bool = False
     # Battery-buffer memory.
     discharge_high_since: datetime | None = None
     avail_zone: str | None = None  # "protect" | "buffer" the samples belong to
@@ -2327,6 +2336,15 @@ def _rate_limit_request(
     """
     previous = state.peak_request_a
     if (
+        state.car_idle
+        and previous is not None
+        and state.peak_request_phases == phases
+    ):
+        # A car that takes nothing keeps the current it was last offered: following
+        # the house load would only re-write the charger (:func:`_car_is_idle`). If it
+        # wakes, the next cycle sizes the request afresh — and lowers it at once.
+        return previous
+    if (
         now is None
         or previous is None
         or state.peak_request_phases != phases
@@ -2691,7 +2709,8 @@ def _apply_tier_levers(
     # --- The wallbox cap ------------------------------------------------------------
     capped_a: float | None = None
     paused = False
-    if not engaged or not inp.car_connected:
+    if not engaged or not inp.car_connected or state.car_idle:
+        # An idle car (:func:`_car_is_idle`) is left alone: it draws nothing.
         state.peak_cap_a = None
         state.peak_cap_at = None
     else:
@@ -2858,6 +2877,13 @@ def _apply_house_share(
         )
 
     if not inp.car_connected or inp.now is None or window.start is None:
+        state.peak_cap_a = None
+        state.peak_cap_at = None
+        return None, False
+
+    if state.car_idle:
+        # Nothing to win by pausing or trimming a car that takes nothing — see
+        # :func:`_car_is_idle`.
         state.peak_cap_a = None
         state.peak_cap_at = None
         return None, False
@@ -3528,13 +3554,40 @@ def decide(
             inp, cfg, _plan_phases(inp, cfg, state, ceiling_w), ceiling_w
         )
 
+    state.car_idle = _car_is_idle(inp, state)
     decision = _decide(inp, cfg, state, plan, ceiling_w)
     decision = _finalize(decision, inp, cfg, state, plan)
     decision = apply_peak_guard(decision, peak_inp, cfg, state, window, tier)
     decision = apply_grid_charge(decision, inp, cfg, state, window, tier)
     _limit_min_soc(decision, inp, state)
     _note_car_raise(decision, inp, state)
+    state.charger_allowed = decision.control and decision.should_charge
     return decision
+
+
+def _car_is_idle(inp: ChargerInputs, state: EngineState) -> bool:
+    """Whether the car is plugged in, allowed to charge, and has stopped taking power.
+
+    Full, or waiting on its own timer: it has been free to charge for
+    ``_CAR_IDLE_RELEASE_S`` (the timer :func:`_release_hold_for_idle_car` keeps) and
+    still draws under ``_CAR_DRAWING_MIN_W``. The moment it draws more, it isn't.
+
+    Peak protection leaves such a car alone. Pausing it frees nothing — it draws
+    nothing — and following the house load with its current only re-writes the
+    charger: live, Nov 2026, a full car was paused and released four times in five
+    minutes by an oven thermostat, and its current re-written ~400 times a day.
+    If it wakes during a heavy load, the next cycle sees it drawing and the normal
+    rules apply. With the house share engaged the setpoint fixes the grid import and
+    the battery carries the ramp; without it, the grid does for those seconds (Chris
+    accepted that, Nov 2026).
+    """
+    return (
+        inp.car_connected
+        and inp.now is not None
+        and state.car_idle_since is not None
+        and inp.car_actual_power_w < _CAR_DRAWING_MIN_W
+        and (inp.now - state.car_idle_since).total_seconds() >= _CAR_IDLE_RELEASE_S
+    )
 
 
 def _settled_inputs(
@@ -3646,6 +3699,9 @@ def _release_hold_for_idle_car(
     if (
         not decision.control
         or not decision.should_charge
+        # Held off last cycle (by peak protection, say): drawing nothing is then our
+        # doing, not the car's. The timer starts once the charger is really free.
+        or not state.charger_allowed
         or inp.car_actual_power_w >= _CAR_DRAWING_MIN_W
     ):
         state.car_idle_since = None

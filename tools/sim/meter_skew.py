@@ -100,6 +100,10 @@ class SkewScenario:
     car_awake_at: float = 0.0  # a car that isn't drawing until it decides to
     seed_month_peak_w: float = 0.0
     pv: Callable[[float], float] = lambda t: 0.0
+    # The car's own side: how many phases it can take (Chris's charges on one), and
+    # what it draws per amp offered relative to 230 V (charger loss, line voltage).
+    car_phases: int = 3
+    car_draw: float = 1.0
 
 
 @dataclass
@@ -308,7 +312,8 @@ def run(sc: SkewScenario, *, use_consumption: bool, hold_s: float,
                     amps_written = amps
                     last_amp_write = t
                     res.amp_writes += 1
-                car_target_w = (amps_written or 6) * phases_written * 230.0
+                car_target_w = ((amps_written or 6) * min(phases_written, sc.car_phases)
+                                * 230.0 * sc.car_draw)
 
     if qh_start is not None and qh_s >= 600:
         res.worst_qh_w = max(res.worst_qh_w, qh_wh * 3600.0 / qh_s)

@@ -473,6 +473,29 @@ counted every step twice. Decision page: https://claude.ai/artifact/6N3e2BAQC51Y
       Restart on v5.12.1 (23:21): force state, minimum SoC and setpoint untouched — car was idle
       then, so re-check once on a restart while it charges.
 
+## A car that takes nothing is left alone ✅ (v5.13.0 — 2026-11-14)
+
+Live check of v5.12.1 (Nov 10–14): no quarter-hour over target (max 3.63 kW), none degraded,
+the measured house load used ~99 % of the time. Waste found: a full car in Fast was re-written
+~400 times a day (its request followed the house load), and on Nov 13 10:06–10:11 UTC a real
+4.2 kW household load (oven) paused and released it four times — the share itself worked (QH
+1.24 kW). Decision page: https://claude.ai/artifact/Qq7Dc2nAKyDEjrSGx3G1Vs
+- [x] Idle car (allowed to charge 3 min, < 300 W): no pause, no trim, request frozen. Chris
+      accepted the wake risk (a few seconds of the car on the grid when no share is engaged).
+- [x] The 3-minute idle timer only counts while the charger is really free (the hold release had
+      counted our own pauses as idle).
+- [x] Replay on recorded 12–13 Nov (`tools/sim/idle_car.py`): frc 19 → 1, amp 645 → 2; with
+      the car waking inside every heavy load the worst QH is 3.82 kW under both rules.
+- [x] **Not built: spending the quarter-hour's unused energy on the car** (Chris's idea). The
+      car left 0.42 kW of 3.9 unused in charging QHs. Simulated on the recorded house (meter_skew
+      loop, 1φ car): aiming at the target gives +4–7 % car energy without raising the worst QH,
+      but +22–46 % car restarts, +45 % amp writes and the soft/hard tier on much of the time —
+      target 3.9 and hard 4.0 leave 100 W. Aiming at the soft line gains 1–2 %. Chris: leave out.
+- [ ] Measure the car's draw per offered amp (inferred 93 %): it decides whether the catch-up is
+      worth +7 % or +4 %, should it come back.
+- [ ] Nov 10 00:15–05:45 the car drew nothing for hours but the reason stayed `fast_peak`, not
+      `car_not_drawing` — find out why the hold-release reason didn't show.
+
 ## Open items / decisions to make during build
 - [x] go-e write path: **direct go-e MQTT** — `amp`/`frc`/`psm` topics (Phase 6, v5.0.0).
 - [x] Pause behavior: **`frc` force-state** (0 neutral / 1 off / 2 on), not current=0 (Phase 6).

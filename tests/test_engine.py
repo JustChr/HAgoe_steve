@@ -3534,3 +3534,107 @@ def test_a_brief_dip_below_the_car_keeps_the_consumption():
     assert d.house_load_source == "measured"
     assert state.consumption_low_since is None
     assert state.consumption_rejected is False
+
+
+# --- An idle car: peak protection leaves it alone ---------------------------------------
+#
+# Live, Nov 2026: a full car in Fast mode was paused and released four times in five
+# minutes by an oven thermostat, and its current re-written ~400 times a day as the
+# house load moved — for a car that took nothing.
+
+def _idle_cfg(**kw) -> "engine.EngineConfig":
+    return _share_cfg(**{"mode": ChargingMode.FAST, **kw})
+
+
+def _settle_idle(cfg, state, until_s=300, load_w=900.0, **kw):
+    """A plugged-in car, allowed to charge, that has drawn nothing for ``until_s``."""
+    d = None
+    for t in range(0, until_s + 1, 10):
+        d = _step(cfg, state, t, battery_soc=70.0, car_actual_power_w=0.0,
+                  **_ess(load_w), **kw)
+    return d
+
+
+def test_a_heavy_house_load_does_not_pause_an_idle_car():
+    cfg, state = _idle_cfg(), EngineState()
+    _settle_idle(cfg, state)
+    assert state.car_idle is True
+    d = _step(cfg, state, 310, battery_soc=70.0, car_actual_power_w=0.0, **_ess(5000.0))
+    assert state.peak_share_engaged is True  # the house share still does its job
+    assert d.should_charge is True  # …but the car is not held off for it
+    assert d.reason_key != "peak_pause"
+
+
+def test_a_drawing_car_is_still_paused_by_a_heavy_house_load():
+    # The rule is about cars that take nothing; a charging car is shed as before.
+    cfg, state = _idle_cfg(), EngineState()
+    d = None
+    for t in range(0, 301, 10):
+        d = _step(cfg, state, t, battery_soc=70.0, car_actual_power_w=4000.0,
+                  **_ess(4900.0))
+    assert state.car_idle is False
+    d = _step(cfg, state, 310, battery_soc=70.0, car_actual_power_w=4000.0,
+              **_ess(9000.0))
+    assert d.should_charge is False
+    assert d.reason_key == "peak_pause"
+
+
+def test_a_car_held_off_by_peak_protection_never_counts_as_idle():
+    # Paused, it draws nothing — that is our doing. Reading it as "full" after three
+    # minutes would release it into the very load it was paused for, every 3 minutes.
+    cfg, state = _idle_cfg(), EngineState()
+    _step(cfg, state, 0, battery_soc=70.0, car_actual_power_w=4000.0, **_ess(4900.0))
+    d = _step(cfg, state, 10, battery_soc=70.0, car_actual_power_w=4000.0,
+              **_ess(9000.0))
+    assert d.should_charge is False
+    for t in range(20, 901, 10):
+        d = _step(cfg, state, t, battery_soc=70.0, car_actual_power_w=0.0,
+                  **_ess(5000.0))
+        assert d.should_charge is False, t
+        assert state.car_idle is False
+
+
+def test_an_idle_car_that_wakes_is_paused_on_the_next_cycle():
+    cfg, state = _idle_cfg(), EngineState()
+    _settle_idle(cfg, state)
+    _step(cfg, state, 310, battery_soc=70.0, car_actual_power_w=0.0, **_ess(5000.0))
+    d = _step(cfg, state, 320, battery_soc=70.0, car_actual_power_w=4000.0,
+              **_ess(9000.0))
+    assert state.car_idle is False
+    assert d.should_charge is False
+    assert d.reason_key == "peak_pause"
+
+
+def test_an_idle_cars_current_does_not_follow_the_house_load():
+    # Limits wide enough that the request has room to move: a minute of 2.4 kW every
+    # six would otherwise walk it down and back up each time.
+    cfg = _idle_cfg(peak_soft_w=9000.0, peak_target_w=10000.0, peak_hard_w=11000.0)
+    state = EngineState()
+    d = None
+    for t in range(0, 301, 10):
+        d = _step(cfg, state, t, battery_soc=70.0, car_actual_power_w=0.0,
+                  grid_power_w=900.0, battery_power_w=0.0)
+    held = d.target_current_a
+    seen = set()
+    for t in range(310, 3000, 10):
+        load = 2400.0 if (t % 360) < 60 else 900.0
+        # The battery at its minimum SoC, as live: the grid carries the house.
+        d = _step(cfg, state, t, battery_soc=70.0, car_actual_power_w=0.0,
+                  grid_power_w=load, battery_power_w=0.0)
+        seen.add(d.target_current_a)
+    assert seen == {held}
+
+
+def test_a_drawing_cars_current_still_follows_the_house_load_down():
+    # Limits wide enough that the car runs well above the 6 A minimum.
+    cfg = _idle_cfg(peak_soft_w=9000.0, peak_target_w=10000.0, peak_hard_w=11000.0)
+    state = EngineState()
+    d = None
+    for t in range(0, 301, 10):
+        d = _step(cfg, state, t, battery_soc=70.0, car_actual_power_w=7000.0,
+                  grid_power_w=7900.0, battery_power_w=0.0)
+    before = d.target_current_a
+    assert before > 6.0
+    d = _step(cfg, state, 310, battery_soc=70.0, car_actual_power_w=7000.0,
+              grid_power_w=10400.0, battery_power_w=0.0)
+    assert d.target_current_a < before
